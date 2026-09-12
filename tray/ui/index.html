@@ -119,6 +119,7 @@ const dur = s => { s = Math.max(0, Math.floor(s)); const d = Math.floor(s / 8640
 const pct = (n, d) => d ? Math.round(n * 100 / d) + "%" : "n/a";
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : w.endsWith("s") ? "es" : "s"}`;
+const kindTag = k => k === "chat" ? `<span class="tag" title="a conversation UI: keeps the whole exchange in the page and grows with it">chat</span>` : k === "local" ? `<span class="tag" title="served from this machine">local</span>` : "";
 const AGENT_LABEL = { claude_code: "Claude Code", codex: "Codex", cursor_agent: "Cursor Agent", gemini_cli: "Gemini CLI", aider: "Aider", open_code: "OpenCode", copilot: "Copilot CLI", open_claw: "OpenClaw" };
 
 const state = { snap: null, src: null, log: [], view: "overview", showAll: false, tabSort: "idle", tabFilter: "", tabProfile: "", sessSort: "rss",
@@ -208,6 +209,8 @@ function adviceTarget(a) {
   const s = state.snap;
   if (a.id === "stale_sessions") { const g = s.groups.find(g => g.kind === "agent" && s.sessions.some(x => x.state === "stale" && g.pids.includes(x.pid))); return g ? "g:" + g.name : null; }
   if (a.id === "old_servers") return "ports";
+  if (a.id === "conversation_tabs") { const b = s.browsers.find(b => a.title.endsWith(" in " + b.name)); return b ? "g:" + b.name : null; }
+  if (a.id.startsWith("page_growth:")) { const pid = +a.id.split(":")[2]; const b = s.browsers.find(b => (b.renderer_procs || []).some(r => r.pid === pid)); return b ? "g:" + b.name : null; }
   if (a.id === "browser_sprawl" || a.id === "heavy_app") { const g = s.groups.find(g => a.title.startsWith(g.name + " ")); return g ? "g:" + g.name : null; }
   if (a.id.startsWith("growth:g:") || a.id.startsWith("cpu:g:")) { const name = a.id.replace(/^(growth|cpu):g:/, ""); return s.groups.some(g => g.name === name) ? "g:" + name : null; }
   if (a.id.startsWith("growth:s:") || a.id.startsWith("cpu:s:")) { const pid = +a.id.split(":")[2]; const g = s.groups.find(g => g.kind === "agent" && g.pids.includes(pid)); return g ? "g:" + g.name : null; }
@@ -228,7 +231,7 @@ function trendsTable(list) {
 
 function viewOverview() {
   const s = state.snap;
-  const trends = (s.trends || []).filter(t => t.span_secs >= 600).slice(0, 8);
+  const trends = (s.trends || []).filter(t => t.kind !== "renderer" && t.span_secs >= 600).slice(0, 8);
   const top = holders(s).slice(0, 8);
   return `<h1>Overview</h1>
     <div class="sub"><span><b>${plural(s.sessions.length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.length, 0), "browser tab")}</b></span><span><b>${plural(s.groups.length, "holder")}</b> of memory</span></div>
@@ -282,28 +285,37 @@ function tabTable(b, tabs) {
     const p = byDir[t.profile];
     const profile = !profiles ? "" : p ? `<td><div class="l1">${esc(p.name)}</div>${p.label !== p.name && p.email ? `<div class="l2" title="${esc(p.email)}">${esc(p.email)}</div>` : ""}</td>` : `<td class="muted">${esc(t.profile)}</td>`;
     return `<tr class="${gone ? "gone" : ""}"><td class="num">${idle}</td><td class="main"><div class="l1" title="${esc(title)}">${esc(title)}${t.pinned ? `<span class="tag">pinned</span>` : ""}</div><div class="l2" title="${esc(t.url)}">${esc(t.url)}</div></td>
-      <td title="${esc(t.site)}">${esc(t.site)}</td>${profile}<td class="num"><button ${b.can_close_tabs && !gone ? "" : "disabled"} data-close-tab="${t.id}" data-browser="${esc(b.name)}">Close</button></td></tr>`;
+      <td title="${esc(t.site)}">${esc(t.site)}${kindTag(t.kind)}</td>${profile}<td class="num"><button ${b.can_close_tabs && !gone ? "" : "disabled"} data-close-tab="${t.id}" data-browser="${esc(b.name)}">Close</button></td></tr>`;
   }).join("");
   return `<table class="fixed">${cols}<tr><th class="num">Idle</th><th>Tab</th><th>Site</th>${profiles ? "<th>Profile</th>" : ""}<th></th></tr>${rows}</table>`;
 }
 
 function viewBrowser(h) {
-  const b = h.browser, est = b.per_tab_estimate;
+  const s = state.snap, b = h.browser, est = b.per_tab_estimate;
   let html = `<h1>${esc(h.name)} <span class="pill">browser</span></h1>
     <div class="sub"><span><b>${bytes(h.rss)}</b> resident</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${b.renderers}</b> tab renderers holding <b>${bytes(b.renderer_rss)}</b></span><span><b>${b.extension_renderers}</b> extension</span>${b.profiles != null ? `<span><b>${b.profiles}</b> profiles on disk</span>` : ""}</div>`;
   if (!b.tabs.length) {
     return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + quitBlock(h);
   }
   const stale = b.tabs.filter(t => isStale(b, t));
+  const staleChat = stale.filter(t => t.kind === "chat" && !t.pinned && !goneTab(t));
+  const staleChatIds = staleChat.map(t => t.id);
   html += `<div class="chips">${b.open_profiles.map(p => `<span class="chip ${state.tabProfile === p.dir ? "sel" : ""}" data-profile="${esc(p.dir)}">${esc(p.label)} · ${p.tabs}</span>`).join("")}
-    <span class="chip" style="cursor:default"><b>${b.tabs.length}</b> tabs · <b>${stale.length}</b> not looked at in over a day${est ? ` · ≈${bytes(est)} per tab` : ""}</span></div>`;
+    <span class="chip" style="cursor:default"><b>${b.tabs.length}</b> tabs · <b>${stale.length}</b> not looked at in over a day${est ? ` · ≈${bytes(est)} per tab` : ""}</span>${b.chat_tabs ? `<span class="chip" style="cursor:default" title="chatgpt.com, claude.ai, gemini.google.com and friends: pages that keep the whole conversation in memory and grow with it"><b>${b.chat_tabs}</b> conversation${b.chat_tabs === 1 ? "" : "s"} · <b>${staleChat.length}</b> stale</span>` : ""}</div>`;
+  const growing = (s.trends || []).filter(t => t.kind === "renderer" && t.growth > 0 && t.span_secs >= 600 && (b.renderer_procs || []).some(r => `r:${r.pid}:${r.start_time}` === t.key)).sort((x, y) => y.growth - x.growth).slice(0, 5);
+  if (growing.length) {
+    html += `<h2>Pages growing <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">one renderer process each; Chrome does not say which tab</span></h2>
+      <div class="wrap"><table><tr><th>Process</th><th class="num">Now</th><th class="num">Change</th><th class="num">Rate / h</th><th class="num">Over</th><th class="num">CPU</th></tr>` +
+      growing.map(t => `<tr><td>${esc(t.name.replace(b.name, "").trim())}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">+${bytes(t.growth)}</td><td class="num">+${bytes(Math.max(0, t.bytes_per_hour))}</td><td class="num">${dur(t.span_secs)}</td><td class="num">${t.cpu_mean.toFixed(0)}%</td></tr>`).join("") + `</table></div>
+      <p class="muted" style="margin:6px 0 12px">A page that grows steadily and never comes back down is usually a long-lived web app: a conversation, mail, an editor, a local dev UI. Close it if you are done with it, or reload it to start the page over.</p>`;
+  }
   html += `<h2>Worst offenders <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">by tabs you have not looked at</span></h2>
     <div class="wrap"><table class="fixed"><colgroup><col><col style="width:56px"><col style="width:56px"><col style="width:72px"><col style="width:90px"><col style="width:236px"></colgroup><tr><th>Site</th><th class="num">Tabs</th><th class="num">Stale</th><th class="num">Oldest</th><th class="num">≈ Memory</th><th></th></tr>` +
     b.sites.slice(0, 12).map(st => {
       const closable = b.tabs.filter(t => t.site === st.site && !t.pinned && !t.active && !goneTab(t));
       const staleIds = closable.filter(t => isStale(b, t)).map(t => t.id);
       const allIds = closable.map(t => t.id);
-      return `<tr><td class="main"><div class="l1">${esc(st.site)}</div></td><td class="num">${st.tabs}</td><td class="num ${st.stale_tabs ? "state stale" : "muted"}">${st.stale_tabs}</td><td class="num">${st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "–"}</td><td class="num muted">${est ? bytes(st.est_rss) : "–"}</td>
+      return `<tr><td class="main"><div class="l1">${esc(st.site)}${kindTag(st.kind)}</div></td><td class="num">${st.tabs}</td><td class="num ${st.stale_tabs ? "state stale" : "muted"}">${st.stale_tabs}</td><td class="num">${st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "–"}</td><td class="num muted">${est ? bytes(st.est_rss) : "–"}</td>
         <td class="num"><button ${b.can_close_tabs && staleIds.length ? "" : "disabled"} data-close-tabs="${staleIds.join(",")}" data-browser="${esc(b.name)}">Close ${staleIds.length} stale</button> <button ${b.can_close_tabs && allIds.length ? "" : "disabled"} data-close-tabs="${allIds.join(",")}" data-browser="${esc(b.name)}">Close all ${allIds.length}</button></td></tr>`;
     }).join("") + `</table></div>`;
   let tabs = b.tabs.filter(t => !state.tabProfile || t.profile === state.tabProfile);
@@ -314,9 +326,10 @@ function viewBrowser(h) {
   const staleUnpinned = stale.filter(t => !t.pinned && !goneTab(t)).map(t => t.id);
   html += `<h2>Tabs <span class="tools"><input data-tab-filter placeholder="filter title, url, site" value="${esc(state.tabFilter)}" size="24">
       <select data-tab-sort>${["idle","site","title","window"].map(k => `<option value="${k}" ${state.tabSort === k ? "selected" : ""}>${{idle:"longest untouched",site:"site",title:"title",window:"window order"}[k]}</option>`).join("")}</select>
-      <button ${b.can_close_tabs && staleUnpinned.length ? "" : "disabled"} data-close-tabs="${staleUnpinned.join(",")}" data-browser="${esc(b.name)}" title="every unpinned tab not looked at in over a day, in every open profile">Close all ${staleUnpinned.length} stale</button></span></h2>
+      <button ${b.can_close_tabs && staleUnpinned.length ? "" : "disabled"} data-close-tabs="${staleUnpinned.join(",")}" data-browser="${esc(b.name)}" title="every unpinned tab not looked at in over a day, in every open profile">Close all ${staleUnpinned.length} stale</button>
+      ${b.chat_tabs ? `<button ${b.can_close_tabs && staleChatIds.length ? "" : "disabled"} data-close-tabs="${staleChatIds.join(",")}" data-browser="${esc(b.name)}" title="unpinned conversation tabs (chatgpt.com, claude.ai, …) not looked at in over a day; the service keeps the conversation">Close ${staleChatIds.length} stale conversation${staleChatIds.length === 1 ? "" : "s"}</button>` : ""}</span></h2>
     <div class="wrap">${tabTable(b, tabs)}</div>
-    <p class="muted" style="margin-top:8px">Idle is how long since the tab was last the one you were looking at, from the browser's own session records. ${b.can_close_tabs ? "Close asks the browser to close that exact tab (matched by id and URL); ⌘⇧T brings it back and the URL is in the action log." : "Closing tabs is not available on this platform yet."} Chrome does not publish per-tab memory; the ≈ figures divide renderer memory evenly across open tabs.</p>`;
+    <p class="muted" style="margin-top:8px">Idle is how long since the tab was last the one you were looking at, from the browser's own session records. ${b.can_close_tabs ? "Close asks the browser to close that exact tab (matched by id and URL); ⌘⇧T brings it back and the URL is in the action log." : "Closing tabs is not available on this platform yet."} Chrome does not publish per-tab memory; the ≈ figures divide renderer memory evenly across open tabs. Conversation pages (chatgpt.com, claude.ai and friends) keep the whole exchange in the page and grow with it, so they usually sit well above that average; the services keep the history, so closing one loses nothing.</p>`;
   return html + quitBlock(h);
 }
 

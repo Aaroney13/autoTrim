@@ -339,6 +339,24 @@ fn observe_trends(h: &mut History, snap: &Snapshot, now: u64, t: &Thresholds) {
             w,
         );
     }
+    // Each tab renderer on its own, so a page that grows all day shows up
+    // even though Chrome never says which tab it is. Small renderers are
+    // frames and spares and are skipped until they grow into a page.
+    for b in &snap.browsers {
+        for r in b
+            .renderer_procs
+            .iter()
+            .filter(|r| r.rss >= 40 * 1024 * 1024)
+        {
+            h.observe(
+                format!("r:{}:{}", r.pid, r.start_time),
+                &format!("{} page (pid {})", b.name, r.pid),
+                "renderer",
+                (now, r.rss, r.cpu),
+                w,
+            );
+        }
+    }
     h.push_system(
         now,
         snap.system.used_swap,

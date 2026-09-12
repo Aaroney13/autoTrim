@@ -1,7 +1,7 @@
 //! Command-line entry point. All the logic lives in the library.
 
 use anyhow::Result;
-use autotrim::browser::{BrowserInfo, TabInfo};
+use autotrim::browser::{BrowserInfo, PageKind, TabInfo};
 use autotrim::config::Config;
 use autotrim::{actions, app, daemon, fmt, report, service, take_snapshot, watch};
 use clap::{Args, Parser, Subcommand};
@@ -301,10 +301,13 @@ fn tabs(args: &TabsArgs, cfg: &Config) -> Result<()> {
     let min_idle = args.idle_hours.map(|h| (h * 3600.0) as u64);
     for b in browsers {
         println!(
-            "{} · {} tabs · {} stale · {}",
+            "{} · {} tabs · {} stale · {} conversation{} ({} stale) · {}",
             b.name,
             b.tabs.len(),
             b.stale_tabs,
+            b.chat_tabs,
+            if b.chat_tabs == 1 { "" } else { "s" },
+            b.stale_chat_tabs,
             b.per_tab_estimate
                 .map(|e| format!("≈{} per tab (renderers ÷ tabs)", fmt::bytes(e)))
                 .unwrap_or_else(|| "no renderer memory to estimate from".to_string())
@@ -339,12 +342,17 @@ fn tabs(args: &TabsArgs, cfg: &Config) -> Result<()> {
                 t.idle_secs.map(fmt::dur).unwrap_or_else(|| "-".to_string())
             };
             println!(
-                "  {:>10} {:>8}  {:<20} {:<44} {}{}",
+                "  {:>10} {:>8}  {:<20} {:<44} {}{}{}",
                 t.id,
                 idle,
                 fmt::fit_right(&label(&t.profile), 20),
                 fmt::fit_right(&t.title, 44),
                 t.site,
+                match t.kind {
+                    PageKind::Chat => "  (conversation)",
+                    PageKind::Local => "  (local app)",
+                    PageKind::Page => "",
+                },
                 if t.pinned { "  (pinned)" } else { "" }
             );
         }

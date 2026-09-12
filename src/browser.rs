@@ -7,6 +7,12 @@
 //! anything. Chrome does not publish per-tab memory to anyone outside
 //! itself; the per-tab figure here is renderer memory divided by open tabs
 //! and is labelled an estimate wherever it is shown.
+//!
+//! Tabs are also classed by site: conversation UIs (chatgpt.com, claude.ai
+//! and friends) and local app pages are the long-lived pages that grow with
+//! use, and the ones a person most often forgets. Which tab a renderer
+//! process belongs to Chrome keeps to itself, so renderers are reported one
+//! by one for the daemon's trends and never matched to a tab.
 
 use crate::automation;
 use crate::groups::AppGroup;
@@ -119,6 +125,12 @@ pub struct BrowserInfo {
     /// each window is never counted.
     #[serde(default)]
     pub stale_tabs: usize,
+    /// Tabs on conversation sites (`PageKind::Chat`), and how many of those
+    /// are stale.
+    #[serde(default)]
+    pub chat_tabs: usize,
+    #[serde(default)]
+    pub stale_chat_tabs: usize,
     /// Renderer memory divided by open tabs. An estimate, not a measurement.
     #[serde(default)]
     pub per_tab_estimate: Option<u64>,
@@ -128,6 +140,76 @@ pub struct BrowserInfo {
     /// Why there are no tabs, when there are none.
     #[serde(default)]
     pub tabs_note: Option<String>,
+    /// The tab renderers one by one, so the daemon can follow each page's
+    /// growth. Which tab a renderer is, Chrome does not say.
+    #[serde(default)]
+    pub renderer_procs: Vec<RendererProc>,
+}
+
+/// One renderer process. Keyed by pid and start time so a reused pid is
+/// never mistaken for the old page.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RendererProc {
+    pub pid: u32,
+    pub start_time: u64,
+    pub rss: u64,
+    pub cpu: f32,
+}
+
+/// What kind of page a tab is, judged from its site. Conversation UIs keep
+/// the whole exchange in the page and grow with it; local dev UIs are the
+/// other long-lived app pages people leave open all day. Everything else
+/// is a page.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PageKind {
+    #[default]
+    Page,
+    /// An AI conversation UI: chatgpt.com, claude.ai, gemini.google.com, ...
+    Chat,
+    /// Served from this machine: localhost, 127.0.0.1, *.localhost.
+    Local,
+}
+
+/// Sites whose pages are conversations. Subdomains count.
+const CHAT_SITES: &[&str] = &[
+    "chatgpt.com",
+    "chat.openai.com",
+    "claude.ai",
+    "gemini.google.com",
+    "aistudio.google.com",
+    "notebooklm.google.com",
+    "copilot.microsoft.com",
+    "perplexity.ai",
+    "poe.com",
+    "chat.mistral.ai",
+    "chat.deepseek.com",
+    "grok.com",
+    "meta.ai",
+    "character.ai",
+    "you.com",
+    "t3.chat",
+    "chat.qwen.ai",
+    "kimi.com",
+    "chat.z.ai",
+    "lmarena.ai",
+    "duck.ai",
+];
+
+pub fn page_kind(site: &str) -> PageKind {
+    let is = |s: &str| site == s || site.strip_suffix(s).is_some_and(|p| p.ends_with('.'));
+    if CHAT_SITES.iter().any(|s| is(s)) {
+        PageKind::Chat
+    } else if site == "localhost"
+        || site == "127.0.0.1"
+        || site == "0.0.0.0"
+        || site.starts_with("[::1]")
+        || site.ends_with(".localhost")
+    {
+        PageKind::Local
+    } else {
+        PageKind::Page
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -152,6 +234,9 @@ pub struct TabInfo {
     /// to this tab, which usually means it was opened in the background and
     /// never looked at.
     pub idle_secs: Option<u64>,
+    /// Conversation UI, local app, or an ordinary page.
+    #[serde(default)]
+    pub kind: PageKind,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -174,6 +259,8 @@ pub struct SiteInfo {
     pub oldest_idle_secs: Option<u64>,
     /// `tabs` times the per-tab estimate.
     pub est_rss: u64,
+    #[serde(default)]
+    pub kind: PageKind,
 }
 
 struct Cached<T> {
@@ -374,12 +461,14 @@ fn fill_tabs(b: &mut BrowserInfo, mains: &[u32], stale_after: u64) {
         });
         for t in tabs {
             let idle_secs = t.last_active.map(|la| now.saturating_sub(la));
+            let site = site_of(&t.url);
             b.tabs.push(TabInfo {
                 id: t.id,
                 window_id: t.window_id,
                 profile: dir.clone(),
                 index: t.index,
-                site: site_of(&t.url),
+                kind: page_kind(&site),
+                site,
                 url: t.url,
                 title: t.title,
                 pinned: t.pinned,
@@ -425,6 +514,12 @@ fn fill_tabs(b: &mut BrowserInfo, mains: &[u32], stale_after: u64) {
     let per_tab = b.per_tab_estimate.unwrap_or(0);
     let is_stale = |t: &TabInfo| !t.active && t.idle_secs.is_some_and(|i| i >= stale_after);
     b.stale_tabs = b.tabs.iter().filter(|t| is_stale(t)).count();
+    b.chat_tabs = b.tabs.iter().filter(|t| t.kind == PageKind::Chat).count();
+    b.stale_chat_tabs = b
+        .tabs
+        .iter()
+        .filter(|t| t.kind == PageKind::Chat && is_stale(t))
+        .count();
 
     let mut sites: HashMap<&str, SiteInfo> = HashMap::new();
     for t in &b.tabs {
@@ -434,6 +529,7 @@ fn fill_tabs(b: &mut BrowserInfo, mains: &[u32], stale_after: u64) {
             stale_tabs: 0,
             oldest_idle_secs: None,
             est_rss: 0,
+            kind: t.kind,
         });
         s.tabs += 1;
         if is_stale(t) {
@@ -485,9 +581,12 @@ pub fn detect(
             open_profiles: Vec::new(),
             sites: Vec::new(),
             stale_tabs: 0,
+            chat_tabs: 0,
+            stale_chat_tabs: 0,
             per_tab_estimate: None,
             can_close_tabs: automation::AVAILABLE && CLOSE_BY_ID.contains(&br.name),
             tabs_note: None,
+            renderer_procs: Vec::new(),
         };
         let mut mains = Vec::new();
         for pid in &g.pids {
@@ -503,6 +602,12 @@ pub fn detect(
                     } else {
                         b.small_renderers += 1;
                     }
+                    b.renderer_procs.push(RendererProc {
+                        pid: p.pid,
+                        start_time: p.start_time,
+                        rss: p.rss,
+                        cpu: p.cpu,
+                    });
                 }
             } else if p.cmd_has("--type=gpu-process") {
                 b.gpu += 1;
@@ -610,5 +715,18 @@ mod tests {
         );
         assert_eq!(site_of("file:///Users/a/doc.html"), "file:");
         assert_eq!(site_of("about:blank"), "about");
+    }
+
+    #[test]
+    fn page_kinds() {
+        assert_eq!(page_kind("chatgpt.com"), PageKind::Chat);
+        assert_eq!(page_kind("claude.ai"), PageKind::Chat);
+        assert_eq!(page_kind("gemini.google.com"), PageKind::Chat);
+        assert_eq!(page_kind("docs.google.com"), PageKind::Page);
+        assert_eq!(page_kind("notclaude.ai"), PageKind::Page);
+        assert_eq!(page_kind("localhost"), PageKind::Local);
+        assert_eq!(page_kind("app.localhost"), PageKind::Local);
+        assert_eq!(page_kind("127.0.0.1"), PageKind::Local);
+        assert_eq!(page_kind("github.com"), PageKind::Page);
     }
 }

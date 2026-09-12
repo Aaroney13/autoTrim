@@ -2,9 +2,10 @@
 
 use crate::Snapshot;
 use crate::agents::SessionState;
-use crate::browser::TabInfo;
+use crate::browser::{PageKind, TabInfo};
 use crate::fmt::{bytes, dur, fit_left, fit_right, pct};
 use crate::rules::Severity;
+use crate::trends::Trend;
 use std::fmt::Write;
 
 pub fn render(s: &Snapshot) -> String {
@@ -108,6 +109,59 @@ pub fn render(s: &Snapshot) -> String {
                 })
                 .collect();
             let _ = writeln!(o, "  {:<16} sites: {}", "", sites.join(" · "));
+            let mut pages = Vec::new();
+            if b.chat_tabs > 0 {
+                let on: Vec<String> = b
+                    .sites
+                    .iter()
+                    .filter(|st| st.kind == PageKind::Chat)
+                    .map(|st| format!("{} {}", st.site, st.tabs))
+                    .collect();
+                pages.push(format!(
+                    "{} conversation{} ({} stale): {}",
+                    b.chat_tabs,
+                    if b.chat_tabs == 1 { "" } else { "s" },
+                    b.stale_chat_tabs,
+                    on.join(", ")
+                ));
+            }
+            let local: Vec<String> = b
+                .sites
+                .iter()
+                .filter(|st| st.kind == PageKind::Local)
+                .map(|st| format!("{} {}", st.site, st.tabs))
+                .collect();
+            if !local.is_empty() {
+                pages.push(format!("local apps: {}", local.join(", ")));
+            }
+            if !pages.is_empty() {
+                let _ = writeln!(o, "  {:<16} pages: {}", "", pages.join(" · "));
+            }
+            let mut growing: Vec<&Trend> = s
+                .trends
+                .iter()
+                .filter(|t| t.kind == "renderer" && t.growth > 0 && t.span_secs >= 10 * 60)
+                .filter(|t| {
+                    t.key
+                        .split(':')
+                        .nth(1)
+                        .and_then(|p| p.parse::<u32>().ok())
+                        .is_some_and(|pid| b.renderer_procs.iter().any(|r| r.pid == pid))
+                })
+                .collect();
+            growing.sort_by_key(|t| std::cmp::Reverse(t.growth));
+            for t in growing.iter().take(3) {
+                let _ = writeln!(
+                    o,
+                    "  {:<16} growing: {} +{} over {} ({}/h) · now {} · Chrome does not say which tab",
+                    "",
+                    t.name.trim_start_matches(b.name.as_str()).trim(),
+                    bytes(t.growth as u64),
+                    dur(t.span_secs),
+                    bytes(t.bytes_per_hour.max(0.0) as u64),
+                    bytes(t.rss_now)
+                );
+            }
             let mut oldest: Vec<&TabInfo> = b
                 .tabs
                 .iter()
@@ -198,10 +252,10 @@ pub fn render(s: &Snapshot) -> String {
         }
     }
 
-    let shown: Vec<&crate::trends::Trend> = s
+    let shown: Vec<&Trend> = s
         .trends
         .iter()
-        .filter(|t| t.span_secs >= 10 * 60)
+        .filter(|t| t.kind != "renderer" && t.span_secs >= 10 * 60)
         .take(8)
         .collect();
     if !shown.is_empty() {

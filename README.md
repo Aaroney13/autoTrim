@@ -27,7 +27,8 @@ In scope:
 - **Attribute.** Treat AI agent sessions as a first-class group: which agent,
   which host (desktop app, editor, terminal), which project, how old, how idle,
   how much memory. Treat browsers as a first-class group: renderer count,
-  profiles, memory.
+  profiles, memory, every open tab by site and age, and which of those
+  pages are conversation UIs or local apps.
 - **Advise.** A deterministic rule set that turns observations into a short
   list of actions with evidence and expected recovery. Examples: restart after
   long uptime with swap full, close stale agent sessions, tighten Chrome's
@@ -223,6 +224,18 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   `autotrim close-tab <id>…` closes them. Per-tab memory is not something
   stable Chrome publishes; the ≈ figure everywhere is renderer memory
   divided by open tabs, and is labelled as an estimate.
+- **Conversation pages, and pages that grow.** Tabs are classed by site:
+  chatgpt.com, claude.ai, gemini.google.com and the other chat UIs are
+  conversations, localhost and friends are local apps, the rest are pages.
+  A conversation page keeps the whole exchange in the DOM and grows with
+  it, and a background tab never gives that back, so the report, the
+  window and `autotrim tabs` mark them, the browser view has a "Close N
+  stale conversations" button, and a rule fires at two stale conversation
+  tabs (`chat_stale_tabs`); the services keep the history, so closing
+  loses nothing. The daemon also follows every tab renderer on its own,
+  and a page that grows steadily gets its own advice card, with the
+  long-lived pages that are open listed as the candidates. Chrome does not
+  say which tab a process is, and autoTrim says so rather than guessing.
 - **Session names.** A session is shown by the title you gave it, when the
   transcript records one, otherwise by the first thing you asked, shortened
   to a line, and only then by the agent's own derived label. Transcripts are
@@ -328,7 +341,9 @@ Known gaps, in the order they should be fixed:
   inside itself (its task manager) or over the DevTools protocol, which
   needs a launch flag. Tabs are attributed by count and age, and memory per
   tab is an average. Discarding a tab (Memory Saver's trick) is likewise
-  not reachable from outside; closing is.
+  not reachable from outside; closing is. The daemon does follow each
+  renderer's growth on its own, which shows a leaking page without naming
+  it.
 - **Tab closing is macOS only** for now: it is an Apple Event to the
   browser, the same as pressing ⌘W in that tab. Linux and Windows list tabs
   but cannot close them yet.
@@ -406,6 +421,17 @@ Things that came up and where they landed.
   renderers into tab-sized and small and the browser rule thresholds on
   the tab-sized count. Asking the browser over AppleScript was tried and
   dropped: it prompts for permission, and the session file already knows.
+- **Which tab is which process is not guessable, so it is not guessed.**
+  Every memory tool sees "Google Chrome Helper (Renderer)" fifty times and
+  cannot say which is the abandoned chat and which is the page doing work.
+  Chrome only maps renderers to tabs inside itself or over a debugging
+  port it does not open by default, and site isolation means the count of
+  renderers is not the count of tabs either. autoTrim reports three things
+  it can know: what each tab is and when it was last looked at (the session
+  file), which pages are the kind that grow with use (conversation UIs,
+  local apps), and which renderer processes are growing (the daemon's
+  series). Together they point at the page without naming it, and the
+  stale conversations are safe to close either way.
 - **Port labels are deterministic, not model-guessed.** The idea of asking
   a local model what a port is came up. The command line, the working
   directory, and a one-request HTTP fingerprint identify nearly every dev

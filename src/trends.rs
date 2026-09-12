@@ -11,7 +11,7 @@ pub type Sample = (u64, u64, f32);
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Series {
     pub name: String,
-    /// "app", "agent", or "session".
+    /// "app", "agent", "session", or "renderer" (one browser page).
     pub kind: String,
     pub samples: VecDeque<Sample>,
 }

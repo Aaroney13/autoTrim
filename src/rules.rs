@@ -1,7 +1,7 @@
 //! Deterministic advice. Same snapshot in, same advice out.
 
 use crate::agents::{AgentSession, SessionState};
-use crate::browser::BrowserInfo;
+use crate::browser::{BrowserInfo, PageKind};
 use crate::fmt;
 use crate::groups::{AppGroup, GroupKind};
 use crate::ports::PortInfo;
@@ -40,6 +40,8 @@ pub struct Thresholds {
     pub tab_stale_after_secs: u64,
     /// Browser advice also fires at this many stale tabs.
     pub browser_stale_tabs: usize,
+    /// Conversation advice fires at this many stale chat-UI tabs.
+    pub chat_stale_tabs: usize,
     pub heavy_app_bytes: u64,
     pub pressure_swap_frac: f64,
     /// Window-mean CPU below this counts as quiet (daemon mode).
@@ -73,6 +75,7 @@ impl Default for Thresholds {
             browser_profiles: 2,
             tab_stale_after_secs: 24 * 3_600,
             browser_stale_tabs: 15,
+            chat_stale_tabs: 2,
             heavy_app_bytes: 600 * 1024 * 1024,
             pressure_swap_frac: 0.5,
             quiet_cpu: 2.0,
@@ -331,6 +334,59 @@ pub fn evaluate(
         });
     }
 
+    // 3b. Conversation pages left open. A chat UI keeps the whole exchange
+    //     in the page, so a long conversation grows the way a leak does and
+    //     a background tab never gives it back. The service keeps the
+    //     conversation, so closing the tab loses nothing.
+    for b in browsers.iter().filter(|b| !ignored_app(&b.name)) {
+        let n = b.stale_chat_tabs;
+        if n == 0 || n < t.chat_stale_tabs {
+            continue;
+        }
+        let sites: Vec<String> = b
+            .sites
+            .iter()
+            .filter(|s| s.kind == PageKind::Chat && s.stale_tabs > 0)
+            .map(|s| {
+                let oldest = s
+                    .oldest_idle_secs
+                    .map(|o| format!(" (oldest {})", fmt::dur(o)))
+                    .unwrap_or_default();
+                format!("{} {}{oldest}", s.site, s.stale_tabs)
+            })
+            .collect();
+        let mut evidence = vec![
+            format!(
+                "{} of {} conversation tab{} not looked at in over {}: {}",
+                n,
+                b.chat_tabs,
+                if b.chat_tabs == 1 { "" } else { "s" },
+                fmt::dur(t.tab_stale_after_secs),
+                sites.join(", ")
+            ),
+            "a conversation page keeps the whole exchange in the page and grows with it; in the background it never gives that back".to_string(),
+        ];
+        if let Some(p) = b.per_tab_estimate {
+            evidence.push(format!(
+                "at least {} at the average renderer size; conversation pages usually run well above it",
+                fmt::bytes(p * n as u64)
+            ));
+        }
+        out.push(Advice {
+            id: "conversation_tabs".to_string(),
+            severity: Severity::Medium,
+            title: format!(
+                "Close {} stale conversation tab{} in {}",
+                n,
+                if n == 1 { "" } else { "s" },
+                b.name
+            ),
+            evidence,
+            action: "Close them from the browser view. The services keep the conversation history on their side (temporary chats excepted), so each one reopens where it was.".to_string(),
+            recovery: None,
+        });
+    }
+
     // 4. Under pressure, name the heaviest ordinary app. Apps that host agent
     //    sessions are skipped: quitting them is covered by the stale-session
     //    advice, and quitting the host of a live session would be destructive.
@@ -416,12 +472,18 @@ pub fn evaluate(
 
     // 6. Leak-like growth: steady, fast, and substantial.
     let min_span = (t.trend_window_secs / 4).max(20 * 60);
+    let leak_like = |tr: &&Trend| {
+        tr.span_secs >= min_span
+            && tr.samples >= 8
+            && tr.growth >= t.growth_min_bytes as i64
+            && tr.bytes_per_hour >= t.growth_bytes_per_hour as f64
+            && tr.rising_frac >= 0.6
+            && tr.r2 >= 0.7
+    };
     let growers: Vec<&Trend> = trends
         .iter()
-        .filter(|tr| tr.span_secs >= min_span && tr.samples >= 8)
-        .filter(|tr| tr.growth >= t.growth_min_bytes as i64)
-        .filter(|tr| tr.bytes_per_hour >= t.growth_bytes_per_hour as f64)
-        .filter(|tr| tr.rising_frac >= 0.6 && tr.r2 >= 0.7)
+        .filter(|tr| tr.kind != "renderer")
+        .filter(|tr| leak_like(tr))
         .filter(|tr| !ignored_app(&tr.name))
         .collect();
     for tr in growers.iter().take(3) {
@@ -453,9 +515,76 @@ pub fn evaluate(
         });
     }
 
+    // 6b. One browser page growing steadily. Chrome does not say which tab
+    //     a renderer process is, so the advice names the process and lists
+    //     the long-lived pages that are open: conversations and local apps
+    //     are the pages that grow with use.
+    let pages: Vec<(&Trend, &BrowserInfo, u32)> = trends
+        .iter()
+        .filter(|tr| tr.kind == "renderer")
+        .filter(|tr| leak_like(tr))
+        .filter_map(|tr| {
+            let pid: u32 = tr.key.split(':').nth(1)?.parse().ok()?;
+            let b = browsers
+                .iter()
+                .find(|b| b.renderer_procs.iter().any(|r| r.pid == pid))?;
+            (!ignored_app(&b.name)).then_some((tr, b, pid))
+        })
+        .collect();
+    for (tr, b, pid) in pages.iter().take(2) {
+        let mut evidence = vec![
+            format!(
+                "one renderer process (pid {pid}) · now {} · was {} · rose in {:.0}% of samples",
+                fmt::bytes(tr.rss_now),
+                fmt::bytes(tr.rss_start),
+                tr.rising_frac * 100.0
+            ),
+            "Chrome does not say which tab a process is; pages that grow like this are the ones that stay open and keep working: conversations, mail, editors, local apps".to_string(),
+        ];
+        let candidates: Vec<String> = b
+            .sites
+            .iter()
+            .filter(|s| s.kind != PageKind::Page)
+            .map(|s| {
+                let idle = s
+                    .oldest_idle_secs
+                    .map(|o| format!(", oldest {}", fmt::dur(o)))
+                    .unwrap_or_default();
+                let what = match s.kind {
+                    PageKind::Chat => "conversation",
+                    PageKind::Local => "local app",
+                    PageKind::Page => "page",
+                };
+                format!("{} {} ({what}{idle})", s.site, s.tabs)
+            })
+            .collect();
+        if !candidates.is_empty() {
+            evidence.push(format!("open now: {}", candidates.join(", ")));
+        }
+        out.push(Advice {
+            id: format!("page_growth:{}", tr.key),
+            severity: if tr.bytes_per_hour >= 1024.0 * 1024.0 * 1024.0 {
+                Severity::High
+            } else {
+                Severity::Medium
+            },
+            title: format!(
+                "A {} page grew {} in {} ({}/h)",
+                b.name,
+                fmt::bytes(tr.growth.max(0) as u64),
+                fmt::dur(tr.span_secs),
+                fmt::bytes(tr.bytes_per_hour.max(0.0) as u64)
+            ),
+            evidence,
+            action: "If it is a conversation or app page you are done with, close it from the browser view. If you still need it, reloading the tab starts the page over and gives the growth back.".to_string(),
+            recovery: Some(tr.growth.max(0) as u64),
+        });
+    }
+
     // 7. Sustained CPU.
     let hogs: Vec<&Trend> = trends
         .iter()
+        .filter(|tr| tr.kind != "renderer")
         .filter(|tr| tr.cpu_span_secs >= t.cpu_hog_secs * 8 / 10)
         .filter(|tr| tr.cpu_mean >= t.cpu_hog_pct && tr.cpu_min >= t.cpu_hog_pct / 2.0)
         .filter(|tr| !ignored_app(&tr.name))
@@ -492,7 +621,11 @@ pub fn evaluate(
                 fmt::bytes(sys.used_swap),
                 fmt::bytes(sys.total_swap)
             )];
-            for tr in trends.iter().filter(|tr| tr.growth > 0).take(3) {
+            for tr in trends
+                .iter()
+                .filter(|tr| tr.kind != "renderer" && tr.growth > 0)
+                .take(3)
+            {
                 evidence.push(format!(
                     "{} +{} ({}/h)",
                     tr.name,

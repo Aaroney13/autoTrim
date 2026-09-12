@@ -44,6 +44,8 @@ pub struct Config {
     pub tab_stale_after_hours: f64,
     /// Browser advice also fires at this many stale tabs.
     pub browser_stale_tabs: usize,
+    /// Conversation advice fires at this many stale chat-UI tabs.
+    pub chat_stale_tabs: usize,
     /// Under pressure, an ordinary app holding more than this is named.
     pub heavy_app_mb: u64,
 
@@ -107,6 +109,7 @@ impl Default for Config {
             browser_profiles: 2,
             tab_stale_after_hours: 24.0,
             browser_stale_tabs: 15,
+            chat_stale_tabs: 2,
             heavy_app_mb: 600,
             port_stale_after_hours: 24.0,
             trend_window_minutes: 120,
@@ -162,6 +165,7 @@ impl Config {
             browser_profiles: self.browser_profiles,
             tab_stale_after_secs: (self.tab_stale_after_hours * 3_600.0) as u64,
             browser_stale_tabs: self.browser_stale_tabs,
+            chat_stale_tabs: self.chat_stale_tabs,
             heavy_app_bytes: self.heavy_app_mb * 1024 * 1024,
             pressure_swap_frac: self.pressure_swap_pct / 100.0,
             quiet_cpu: self.quiet_cpu,
@@ -212,6 +216,7 @@ browser_renderers = {browser_renderers}
 browser_profiles = {browser_profiles}
 tab_stale_after_hours = {tab_stale_after_hours:.1}     # a tab not looked at for this long is stale
 browser_stale_tabs = {browser_stale_tabs}           # advice also fires at this many stale tabs
+chat_stale_tabs = {chat_stale_tabs}              # and at this many stale conversation tabs (chatgpt.com, claude.ai, ...)
 heavy_app_mb = {heavy_app_mb}
 
 # Local servers
@@ -257,6 +262,7 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             browser_profiles = d.browser_profiles,
             tab_stale_after_hours = d.tab_stale_after_hours,
             browser_stale_tabs = d.browser_stale_tabs,
+            chat_stale_tabs = d.chat_stale_tabs,
             heavy_app_mb = d.heavy_app_mb,
             port_stale_after_hours = d.port_stale_after_hours,
             trend_window_minutes = d.trend_window_minutes,
@@ -293,6 +299,7 @@ mod tests {
             parsed.browser_stale_tabs,
             Config::default().browser_stale_tabs
         );
+        assert_eq!(parsed.chat_stale_tabs, Config::default().chat_stale_tabs);
         assert_eq!(
             parsed.tab_stale_after_hours,
             Config::default().tab_stale_after_hours
