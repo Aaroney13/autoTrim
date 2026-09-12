@@ -47,6 +47,19 @@ pub struct Config {
     /// while quiet is reported as an old server.
     pub port_stale_after_hours: f64,
 
+    /// Close stale agent sessions on a timer. Off by default.
+    pub auto_close_sessions: bool,
+    /// Stop old local servers on a timer. Off by default.
+    pub auto_stop_servers: bool,
+    /// Minutes between "will close" and closing. Anything that becomes
+    /// active in between is spared.
+    pub auto_grace_minutes: u64,
+    /// Log and notify what auto mode would do, without doing it.
+    pub auto_dry_run: bool,
+    /// Hosts whose sessions auto mode may close. A host that respawns its
+    /// sessions makes closing pointless, so this is an allowlist.
+    pub auto_hosts: Vec<String>,
+
     /// Ports never to report.
     pub ignore_ports: Vec<u16>,
     /// App group names never to report (as shown in the report).
@@ -73,6 +86,15 @@ impl Default for Config {
             browser_profiles: 2,
             heavy_app_mb: 600,
             port_stale_after_hours: 24.0,
+            auto_close_sessions: false,
+            auto_stop_servers: false,
+            auto_grace_minutes: 10,
+            auto_dry_run: false,
+            auto_hosts: vec![
+                "Claude app".to_string(),
+                "VS Code".to_string(),
+                "terminal".to_string(),
+            ],
             ignore_ports: Vec::new(),
             ignore_apps: Vec::new(),
             ignore_projects: Vec::new(),
@@ -152,6 +174,14 @@ heavy_app_mb = {heavy_app_mb}
 # Local servers
 port_stale_after_hours = {port_stale_after_hours:.1}   # a quiet non-app listener older than this is reported
 
+# Auto mode. Off by default. Try auto_dry_run = true first: it logs and
+# notifies what it would have closed, and closes nothing.
+auto_close_sessions = {auto_close_sessions}
+auto_stop_servers = {auto_stop_servers}
+auto_grace_minutes = {auto_grace_minutes}           # warning first, then this long before acting
+auto_dry_run = {auto_dry_run}
+auto_hosts = ["Claude app", "VS Code", "terminal"]   # sessions under other hosts are never auto-closed
+
 # Never report these
 ignore_ports = []               # e.g. [5432, 6379]
 ignore_apps = []                # e.g. ["Spotify"]
@@ -172,6 +202,10 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             browser_profiles = d.browser_profiles,
             heavy_app_mb = d.heavy_app_mb,
             port_stale_after_hours = d.port_stale_after_hours,
+            auto_close_sessions = d.auto_close_sessions,
+            auto_stop_servers = d.auto_stop_servers,
+            auto_grace_minutes = d.auto_grace_minutes,
+            auto_dry_run = d.auto_dry_run,
         )
     }
 }
@@ -189,6 +223,8 @@ mod tests {
             Config::default().port_stale_after_hours
         );
         assert!(parsed.ignore_ports.is_empty());
+        assert!(!parsed.auto_close_sessions);
+        assert_eq!(parsed.auto_hosts, Config::default().auto_hosts);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! autotrim: notice what is holding your memory, and reclaim it safely.
 
+mod actions;
 mod agents;
 mod browser;
 mod config;
@@ -48,6 +49,12 @@ enum Cmd {
     Watch(WatchArgs),
     /// Print the daemon log.
     Log(LogArgs),
+    /// Close an agent session by pid. Logs the resume command first.
+    Close(TargetArgs),
+    /// Stop an unmanaged local server by pid.
+    Stop(TargetArgs),
+    /// Print the action log: what was closed, when, and how to get it back.
+    Actions(ActionsArgs),
     /// Show the effective settings, or write a commented config file.
     Config {
         #[command(subcommand)]
@@ -144,6 +151,25 @@ struct LogArgs {
     /// Keep printing as the daemon writes.
     #[arg(short = 'f', long)]
     follow: bool,
+}
+
+#[derive(Args, Clone)]
+struct TargetArgs {
+    /// Process id, as shown by scan, status, or watch.
+    pid: u32,
+    /// Show what would happen without doing it.
+    #[arg(long)]
+    dry_run: bool,
+    /// Act even if the target looks active or managed.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args, Clone)]
+struct ActionsArgs {
+    /// Entries to print from the end of the log.
+    #[arg(short = 'n', long, default_value_t = 20)]
+    lines: usize,
 }
 
 #[derive(Args, Clone)]
@@ -254,7 +280,103 @@ fn run_daemon(args: &DaemonArgs, cfg: &Config) -> Result<()> {
         once: args.once,
         notify: cfg.notify && !args.no_notify,
         remind_every: Duration::from_secs((remind * 3600.0).max(60.0) as u64),
+        auto: daemon::AutoConfig {
+            close_sessions: cfg.auto_close_sessions,
+            stop_servers: cfg.auto_stop_servers,
+            grace: Duration::from_secs(cfg.auto_grace_minutes * 60),
+            dry_run: cfg.auto_dry_run,
+            hosts: cfg.auto_hosts.clone(),
+        },
     })
+}
+
+fn close(args: &TargetArgs, cfg: &Config) -> Result<()> {
+    let mut sys = System::new();
+    let snap = take_snapshot(
+        &mut sys,
+        Some(Duration::from_millis(1000)),
+        &cfg.thresholds(),
+    );
+    let Some(s) = snap.sessions.iter().find(|s| s.pid == args.pid) else {
+        anyhow::bail!(
+            "pid {} is not a detected agent session; see `autotrim scan`",
+            args.pid
+        );
+    };
+    if s.is_self {
+        anyhow::bail!("pid {} is the session running this command", args.pid);
+    }
+    if s.state == agents::SessionState::Active && !args.force {
+        anyhow::bail!(
+            "pid {} looks active ({:.0}% CPU); pass --force to close it anyway",
+            args.pid,
+            s.cpu
+        );
+    }
+    println!(
+        "closing {} · {} · {} · {} · {}",
+        s.kind.label(),
+        s.host,
+        s.session_name
+            .as_deref()
+            .or(s.project.as_deref())
+            .unwrap_or("?"),
+        match s.idle_secs {
+            Some(i) => format!("idle {}", fmt::dur(i)),
+            None => format!("age {}", fmt::dur(s.age_secs)),
+        },
+        fmt::bytes(s.rss)
+    );
+    let rec = actions::close_session(s, "manual", args.dry_run);
+    actions::log(&rec)?;
+    println!("{}", actions::describe(&rec));
+    Ok(())
+}
+
+fn stop(args: &TargetArgs, cfg: &Config) -> Result<()> {
+    let mut sys = System::new();
+    let snap = take_snapshot(
+        &mut sys,
+        Some(Duration::from_millis(1000)),
+        &cfg.thresholds(),
+    );
+    let Some(p) = snap.ports.iter().find(|p| p.pid == args.pid) else {
+        anyhow::bail!(
+            "pid {} is not listening on anything; see `autotrim scan`",
+            args.pid
+        );
+    };
+    if p.owner_managed && !args.force {
+        anyhow::bail!(
+            "pid {} ({}) belongs to {}, which manages its own lifecycle; pass --force to stop it anyway",
+            args.pid,
+            p.process,
+            p.owner
+        );
+    }
+    println!(
+        "stopping {} · {}:{} · open {} · {}",
+        p.process,
+        p.addr,
+        p.port,
+        fmt::dur(p.open_for_secs),
+        fmt::bytes(p.owner_rss)
+    );
+    let rec = actions::stop_server(p, "manual", args.dry_run);
+    actions::log(&rec)?;
+    println!("{}", actions::describe(&rec));
+    Ok(())
+}
+
+fn print_actions(n: usize) -> Result<()> {
+    let recs = actions::read_log(n)?;
+    if recs.is_empty() {
+        println!("no actions yet");
+    }
+    for r in recs {
+        println!("{}", actions::describe(&r));
+    }
+    Ok(())
 }
 
 fn status(args: &StatusArgs) -> Result<()> {
@@ -321,6 +443,9 @@ fn main() -> Result<()> {
             cfg.thresholds(),
         ),
         Cmd::Log(args) => watch::print_log(args.lines, args.follow),
+        Cmd::Close(args) => close(&args, &cfg),
+        Cmd::Stop(args) => stop(&args, &cfg),
+        Cmd::Actions(args) => print_actions(args.lines),
         Cmd::Config { action } => match action {
             None => show_config(&cfg, cfg_path.as_deref()),
             Some(ConfigCmd::Init { force }) => init_config(force),

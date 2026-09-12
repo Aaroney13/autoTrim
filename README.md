@@ -149,6 +149,27 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   macOS that starts the daemon now and at every login, logging to
   `daemon.log` in the data directory.
 
+- `autotrim close <pid>` and `autotrim stop <pid>`: the reclaim verbs. `close`
+  takes a fresh snapshot, refuses anything that is not a detected agent
+  session, refuses the session running the command, refuses an active one
+  without `--force`, prints the resume command, sends the polite signal,
+  waits up to ten seconds, and only then kills. `stop` does the same for a
+  listening process and refuses one that belongs to an app, a system
+  process, or an agent session without `--force`. Both take `--dry-run`.
+  Every action is appended to `actions.jsonl` in the data directory with
+  what it was, what it held, and how to get it back; `autotrim actions`
+  prints that log.
+- **Auto mode**, off by default, in the config file. When on, the daemon
+  warns first ("closing N idle targets in 10 minutes", one notification),
+  waits the grace period, and acts only on targets that are still idle
+  then. Its bar is higher than the advice's: a session needs transcript
+  evidence of idleness, a warm quiet window agreeing, a host on the
+  `auto_hosts` allowlist, and it always spares the most recently active
+  session in each project so you keep your place. Servers are only stopped
+  when the owner is a known dev runtime (node, python, ruby, and friends);
+  a VM manager or database left running is reported, never killed.
+  `auto_dry_run = true` logs and notifies what it would have done, and
+  does nothing, which is how to try it for a week.
 - `autotrim config`: print the effective settings and where they came from.
   `autotrim config init` writes `config.toml` in the data directory with
   every setting, its default, and a comment. Flags override the file, the
@@ -209,9 +230,11 @@ Known gaps, in the order they should be fixed:
 - **Notifications carry no buttons.** A bare binary cannot register
   actionable notifications on macOS; that needs an app bundle, which comes
   with the tray.
-- **No reclaim actions yet.** The advice tells you what to close; the close
-  verbs (agent session with its resume command logged, old local server,
-  browser tab discard) are the next feature, and auto mode sits behind them.
+- **No browser action.** Chrome exposes no way to discard a tab from
+  outside short of the DevTools protocol, so browser advice stays advice.
+- **Codex sessions cannot be closed usefully.** The Codex process is a
+  server owned by the ChatGPT app or VS Code, which restarts it. Auto mode
+  never targets it; `close` will, with `--force`, and it will come back.
 - **No quiet hours** for notifications yet; the config file is where they
   will go.
 - **macOS only** for the service, the memory counters beyond swap, and
@@ -250,6 +273,12 @@ Rebuilt the binary? `autotrim service restart` picks up the new one.
 ## Decisions
 
 Things that came up and where they landed.
+
+- **Closing a Claude Code session is clean.** Tested on a VS Code-hosted
+  session that had been idle for 54 days: the polite signal was enough, the
+  process exited within a second, Claude Code removed its own session file,
+  the transcript stayed on disk, and VS Code did not respawn it. The resume
+  command in the action log brings it back.
 
 - **Emergencies stay deterministic.** When memory is critical the wrong move
   is to start a model that needs memory to think, and a wedged machine cannot

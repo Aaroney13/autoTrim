@@ -4,8 +4,9 @@
 //!
 //! No model calls, no arbitrary actions. Everything here is a rule you can read.
 
-use crate::agents::AgentSession;
-use crate::fmt::{bytes, date_utc, stamp_utc};
+use crate::actions;
+use crate::agents::{AgentSession, SessionState};
+use crate::fmt::{bytes, date_utc, dur, stamp_utc};
 use crate::notify;
 use crate::paths;
 use crate::rules::{self, Advice, Thresholds};
@@ -30,6 +31,16 @@ pub struct DaemonConfig {
     pub notify: bool,
     /// How long before the same advice is notified again while it persists.
     pub remind_every: Duration,
+    pub auto: AutoConfig,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AutoConfig {
+    pub close_sessions: bool,
+    pub stop_servers: bool,
+    pub grace: Duration,
+    pub dry_run: bool,
+    pub hosts: Vec<String>,
 }
 
 /// Rolling observations for one session, keyed by pid and start time so a
@@ -55,6 +66,9 @@ struct Tracker {
     /// its process, which makes restarts and first runs honest.
     #[serde(default)]
     ports: HashMap<String, u64>,
+    /// Auto-mode candidates and when they were first warned about.
+    #[serde(default)]
+    pending: HashMap<String, u64>,
 }
 
 fn key(s: &AgentSession) -> String {
@@ -246,6 +260,172 @@ fn now_epoch() -> u64 {
         .unwrap_or(0)
 }
 
+/// Sessions auto mode may close this tick. Stricter than the advice: it
+/// needs transcript evidence of idleness, a warm quiet window agreeing,
+/// an allowed host, and it spares the most recently active session in each
+/// project so a person always keeps their place.
+fn auto_session_candidates<'a>(
+    snap: &'a Snapshot,
+    auto: &AutoConfig,
+    t: &Thresholds,
+) -> Vec<&'a AgentSession> {
+    let mut newest: HashMap<&str, u64> = HashMap::new();
+    for s in &snap.sessions {
+        if let (Some(p), Some(la)) = (s.project.as_deref(), s.last_activity) {
+            let e = newest.entry(p).or_insert(0);
+            if la > *e {
+                *e = la;
+            }
+        }
+    }
+    snap.sessions
+        .iter()
+        .filter(|s| s.state == SessionState::Stale && !s.is_self)
+        .filter(|s| s.idle_secs.is_some_and(|i| i >= t.stale_after_secs))
+        .filter(|s| s.quiet_for_secs.is_some_and(|q| q >= t.min_quiet_secs))
+        .filter(|s| auto.hosts.iter().any(|h| h == &s.host))
+        .filter(|s| {
+            let path = s.cwd.as_deref().or(s.project.as_deref()).unwrap_or("");
+            !t.ignore_projects
+                .iter()
+                .any(|p| !p.is_empty() && path.contains(p.as_str()))
+        })
+        .filter(|s| match (s.project.as_deref(), s.last_activity) {
+            (Some(p), Some(la)) => newest.get(p).is_none_or(|n| la < *n),
+            _ => true,
+        })
+        .collect()
+}
+
+/// Servers auto mode may stop: the old-servers rule's targets, narrowed to
+/// known dev runtimes. Anything else old and unmanaged is only reported.
+fn auto_server_candidates<'a>(
+    snap: &'a Snapshot,
+    t: &Thresholds,
+) -> Vec<&'a crate::ports::PortInfo> {
+    let mut seen = BTreeSet::new();
+    snap.ports
+        .iter()
+        .filter(|p| !p.owner_managed && p.dev_runtime)
+        .filter(|p| !t.ignore_ports.contains(&p.port))
+        .filter(|p| p.open_for_secs >= t.port_stale_after_secs)
+        .filter(|p| p.owner_cpu < t.quiet_cpu)
+        .filter(|p| seen.insert(p.pid))
+        .collect()
+}
+
+/// One pass of auto mode: warn about new candidates, act on ones whose
+/// grace has run out, forget ones that went away or woke up.
+fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64) {
+    let auto = &cfg.auto;
+    if !auto.close_sessions && !auto.stop_servers {
+        return;
+    }
+    let grace = auto.grace.as_secs();
+    let mode = if auto.dry_run { "dry-run" } else { "auto" };
+    let mut live = std::collections::HashSet::new();
+    let mut warned: Vec<String> = Vec::new();
+    let mut acted: Vec<actions::ActionRecord> = Vec::new();
+
+    if auto.close_sessions {
+        for s in auto_session_candidates(snap, auto, &cfg.thresholds) {
+            let k = format!("s:{}:{}", s.pid, s.start_time);
+            live.insert(k.clone());
+            let first = *tracker.pending.entry(k).or_insert_with(|| {
+                warned.push(format!(
+                    "{} · {} (idle {})",
+                    s.kind.label(),
+                    s.session_name
+                        .as_deref()
+                        .or(s.project.as_deref())
+                        .unwrap_or("?"),
+                    dur(s.idle_secs.unwrap_or(0))
+                ));
+                now
+            });
+            if now.saturating_sub(first) >= grace {
+                acted.push(actions::close_session(s, mode, auto.dry_run));
+            }
+        }
+    }
+    if auto.stop_servers {
+        for p in auto_server_candidates(snap, &cfg.thresholds) {
+            let k = format!("p:{}:{}", p.pid, p.port);
+            live.insert(k.clone());
+            let first = *tracker.pending.entry(k).or_insert_with(|| {
+                warned.push(format!(
+                    "{} on {}:{} (open {})",
+                    p.process,
+                    p.addr,
+                    p.port,
+                    dur(p.open_for_secs)
+                ));
+                now
+            });
+            if now.saturating_sub(first) >= grace {
+                acted.push(actions::stop_server(p, mode, auto.dry_run));
+            }
+        }
+    }
+    tracker.pending.retain(|k, _| live.contains(k));
+
+    if !warned.is_empty() {
+        let title = format!(
+            "{} {} in {}",
+            if auto.dry_run {
+                "Would close"
+            } else {
+                "Closing"
+            },
+            if warned.len() == 1 {
+                "1 idle target".to_string()
+            } else {
+                format!("{} idle targets", warned.len())
+            },
+            dur(grace)
+        );
+        let body = warned.join("\n");
+        println!("{} ~ {}: {}", stamp_utc(now), title, warned.join(" · "));
+        if cfg.notify {
+            let _ = notify::send(
+                &title,
+                "Use one to keep it. Everything closed can be resumed.",
+                &body,
+            );
+        }
+    }
+    for rec in acted {
+        for k in tracker.pending.keys().cloned().collect::<Vec<_>>() {
+            if k.ends_with(&format!(":{}", rec.pid)) || k.contains(&format!(":{}:", rec.pid)) {
+                tracker.pending.remove(&k);
+            }
+        }
+        if let Err(e) = actions::log(&rec) {
+            eprintln!("{} could not write action log: {e}", stamp_utc(now));
+        }
+        println!(
+            "{} {}",
+            stamp_utc(now),
+            actions::describe(&rec)
+                .trim_start_matches(|c: char| c != '[')
+                .trim_start()
+        );
+        if cfg.notify {
+            let title = format!(
+                "{} {}",
+                if auto.dry_run {
+                    "Would have closed"
+                } else {
+                    "Closed"
+                },
+                rec.target
+            );
+            let body = rec.resume.clone().unwrap_or_else(|| rec.result.clone());
+            let _ = notify::send(&title, &format!("freed about {}", bytes(rec.rss)), &body);
+        }
+    }
+}
+
 pub fn run(cfg: DaemonConfig) -> Result<()> {
     let dir = paths::data_dir().context("no data directory for this platform")?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -302,6 +482,8 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
             println!("{} · nothing to do", stamp_utc(now));
         }
         prev_ids = ids;
+
+        run_auto(&mut tracker, &snap, &cfg, now);
 
         if cfg.notify {
             for a in tracker.due_for_notification(now, cfg.remind_every.as_secs(), &snap.advice) {

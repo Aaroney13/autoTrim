@@ -34,7 +34,41 @@ pub struct PortInfo {
     /// ticks; a one-shot scan uses the owner's age, which is an upper bound.
     #[serde(default)]
     pub open_for_secs: u64,
+    /// The owner is a language runtime or dev server: the kind of thing
+    /// started from a terminal and forgotten. Auto mode only ever stops
+    /// these; a VM manager or database left running is reported, not killed.
+    #[serde(default)]
+    pub dev_runtime: bool,
 }
+
+const DEV_RUNTIMES: &[&str] = &[
+    "node",
+    "bun",
+    "deno",
+    "python",
+    "python3",
+    "ruby",
+    "php",
+    "java",
+    "uvicorn",
+    "gunicorn",
+    "flask",
+    "rails",
+    "puma",
+    "next-server",
+    "vite",
+    "webpack",
+    "esbuild",
+    "cargo",
+    "dotnet",
+    "php-fpm",
+    "hugo",
+    "jekyll",
+    "mkdocs",
+    "http-server",
+    "serve",
+    "live-server",
+];
 
 const SYSTEM_PREFIXES: &[&str] = &[
     "/System/",
@@ -114,6 +148,12 @@ pub fn listening(table: &ProcTable, det: &Detection, groups: &[AppGroup]) -> Vec
         let owner_managed =
             in_session || system || group.map(|g| g.kind == GroupKind::App).unwrap_or(false);
         let owner_age_secs = proc_.map(|p| p.run_time).unwrap_or(0);
+        let dev_runtime = {
+            let n = process.to_ascii_lowercase();
+            DEV_RUNTIMES
+                .iter()
+                .any(|r| n == *r || n.starts_with("python3."))
+        };
         out.push(PortInfo {
             port,
             protocol,
@@ -127,6 +167,7 @@ pub fn listening(table: &ProcTable, det: &Detection, groups: &[AppGroup]) -> Vec
             owner_cpu: proc_.map(|p| p.cpu).unwrap_or(0.0),
             owner_age_secs,
             open_for_secs: owner_age_secs,
+            dev_runtime,
         });
     }
     out.sort_by_key(|p| (p.port, p.protocol.clone(), p.pid));
