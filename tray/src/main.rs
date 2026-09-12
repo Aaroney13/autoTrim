@@ -132,16 +132,16 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
     };
     menu.append(&MenuItem::with_id(
         app,
-        "close_stale",
-        label,
-        !stale.is_empty(),
+        "open",
+        "Open autoTrim…",
+        true,
         None::<&str>,
     )?)?;
     menu.append(&MenuItem::with_id(
         app,
-        "open",
-        "Open autoTrim…",
-        true,
+        "close_stale",
+        label,
+        !stale.is_empty(),
         None::<&str>,
     )?)?;
     menu.append(&MenuItem::with_id(
@@ -298,6 +298,9 @@ fn main() {
                 .build(app)?;
 
             refresh(&handle);
+            // Show the window on launch so the app is not just a small icon
+            // among many. Closing it leaves the tray running.
+            show_window(&handle);
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(REFRESH);
