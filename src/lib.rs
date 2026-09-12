@@ -20,6 +20,7 @@ pub mod rules;
 pub mod service;
 pub mod system;
 pub mod transcripts;
+pub mod trends;
 pub mod watch;
 
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,10 @@ pub struct Snapshot {
     pub browsers: Vec<browser::BrowserInfo>,
     #[serde(default)]
     pub ports: Vec<ports::PortInfo>,
+    /// Growth and sustained-CPU readings from the daemon's rolling series.
+    /// Empty for a one-shot scan.
+    #[serde(default)]
+    pub trends: Vec<trends::Trend>,
     pub advice: Vec<rules::Advice>,
 }
 
@@ -72,6 +77,8 @@ pub fn take_snapshot(
         &det.sessions,
         &browsers,
         &ports,
+        &[],
+        None,
         thresholds,
     );
     Snapshot {
@@ -85,6 +92,7 @@ pub fn take_snapshot(
         sessions: det.sessions,
         browsers,
         ports,
+        trends: Vec::new(),
         advice,
     }
 }

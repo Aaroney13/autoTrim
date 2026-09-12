@@ -54,6 +54,7 @@
   <section><h2>Advice</h2><div class="cards" id="advice"></div></section>
   <section><h2>Agent sessions</h2><div class="wrap"><table id="sessions"></table></div></section>
   <section><h2>Listening ports</h2><div class="wrap"><table id="ports"></table></div></section>
+  <section><h2>Trends</h2><div class="wrap"><table id="trends"></table></div></section>
   <section><h2>Top holders</h2><div class="wrap"><table id="groups"></table></div></section>
   <section><h2>Actions</h2><div class="log" id="log"><span class="muted">nothing yet</span></div></section>
 </main>
@@ -110,6 +111,12 @@ function render(s, src) {
 
   document.getElementById("ports").innerHTML = `<tr><th class="num">Port</th><th>Proto</th><th>Addr</th><th class="num">Open</th><th>Owner</th><th>Process</th><th></th></tr>` +
     s.ports.map(p => `<tr><td class="num">${p.port}</td><td>${p.protocol}</td><td>${esc(p.addr)}</td><td class="num">${dur(p.open_for_secs)}</td><td>${esc(p.owner)}</td><td>${esc(p.process)} <span class="muted">(${p.pid})</span></td><td class="num"><button ${p.owner_managed ? "disabled" : ""} data-stop="${p.pid}" title="${p.owner_managed ? "managed by its app or the system" : "stop this process"}">Stop</button></td></tr>`).join("");
+
+  const trends = (s.trends || []).filter(t => t.span_secs >= 600).slice(0, 10);
+  document.getElementById("trends").innerHTML = trends.length
+    ? `<tr><th>Name</th><th class="num">Now</th><th class="num">Change</th><th class="num">Rate / h</th><th class="num">CPU</th><th class="num">Steady</th><th class="num">Over</th></tr>` +
+      trends.map(t => { const sg = t.growth >= 0 ? "+" : "−"; return `<tr><td>${esc(t.name)}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">${sg}${bytes(Math.abs(t.growth))}</td><td class="num">${sg}${bytes(Math.abs(t.bytes_per_hour))}</td><td class="num">${t.cpu_mean.toFixed(0)}%</td><td class="num">${Math.round(t.rising_frac * 100)}%</td><td class="num">${dur(t.span_secs)}</td></tr>`; }).join("")
+    : `<tr><td class="muted">The daemon needs about ten minutes of history before trends show.</td></tr>`;
 
   document.getElementById("groups").innerHTML = `<tr><th>App</th><th class="num">Memory</th><th class="num">CPU</th><th class="num">Processes</th></tr>` +
     s.groups.slice(0, 14).map(g => `<tr><td>${esc(g.name)}</td><td class="num">${bytes(g.rss)}</td><td class="num">${g.cpu.toFixed(1)}%</td><td class="num">${g.procs}</td></tr>`).join("");

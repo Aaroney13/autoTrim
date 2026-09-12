@@ -10,6 +10,7 @@ use crate::fmt::{bytes, date_utc, dur, stamp_utc};
 use crate::notify;
 use crate::paths;
 use crate::rules::{self, Advice, Thresholds};
+use crate::trends::History;
 use crate::{Snapshot, take_snapshot};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,9 @@ struct Tracker {
     /// Auto-mode candidates and when they were first warned about.
     #[serde(default)]
     pending: HashMap<String, u64>,
+    /// Rolling series per app and session, for growth and CPU trends.
+    #[serde(default)]
+    history: History,
 }
 
 fn key(s: &AgentSession) -> String {
@@ -172,8 +176,16 @@ struct HistoryRecord {
     free_pct: Option<u8>,
     uptime: u64,
     sessions: Vec<SessionRecord>,
-    top: Vec<(String, u64)>,
+    top: Vec<TopRecord>,
     advice: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TopRecord {
+    name: String,
+    kind: String,
+    rss: u64,
+    cpu: f32,
 }
 
 #[derive(Serialize)]
@@ -212,8 +224,13 @@ fn record(snap: &Snapshot) -> HistoryRecord {
         top: snap
             .groups
             .iter()
-            .take(10)
-            .map(|g| (g.name.clone(), g.rss))
+            .take(40)
+            .map(|g| TopRecord {
+                name: g.name.clone(),
+                kind: format!("{:?}", g.kind).to_lowercase(),
+                rss: g.rss,
+                cpu: g.cpu,
+            })
             .collect(),
         advice: snap.advice.iter().map(|a| a.id.clone()).collect(),
     }
@@ -258,6 +275,125 @@ fn now_epoch() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Feed this tick into the rolling series. Groups are capped to the
+/// heaviest forty so a machine with hundreds of tiny helpers does not bloat
+/// the state file; every session is kept.
+fn observe_trends(h: &mut History, snap: &Snapshot, now: u64, t: &Thresholds) {
+    let w = t.trend_window_secs;
+    for g in snap.groups.iter().take(40) {
+        let kind = format!("{:?}", g.kind).to_lowercase();
+        h.observe(
+            format!("g:{}", g.name),
+            &g.name,
+            &kind,
+            (now, g.rss, g.cpu),
+            w,
+        );
+    }
+    for s in &snap.sessions {
+        let name = format!(
+            "{} · {}",
+            s.kind.label(),
+            s.session_name
+                .as_deref()
+                .or(s.project.as_deref())
+                .unwrap_or("?")
+        );
+        h.observe(
+            format!("s:{}:{}", s.pid, s.start_time),
+            &name,
+            "session",
+            (now, s.rss, s.cpu),
+            w,
+        );
+    }
+    h.push_system(
+        now,
+        snap.system.used_swap,
+        snap.system.compressed.unwrap_or(0),
+        snap.system.used_mem,
+        w,
+    );
+    h.prune(now, w);
+}
+
+/// Rebuild the rolling series from the history files on disk, so a restart
+/// does not forget the last two hours. Tolerates the older record shape.
+fn warm_start(h: &mut History, dir: &Path, now: u64, window: u64) -> usize {
+    let mut count = 0;
+    let days = [date_utc(now.saturating_sub(86_400)), date_utc(now)];
+    for day in days {
+        let path = dir.join(format!("history-{day}.jsonl"));
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(ts) = v.get("ts").and_then(|t| t.as_u64()) else {
+                continue;
+            };
+            if now.saturating_sub(ts) > window {
+                continue;
+            }
+            count += 1;
+            if let Some(top) = v.get("top").and_then(|t| t.as_array()) {
+                for e in top {
+                    let (name, kind, rss, cpu) = if let Some(arr) = e.as_array() {
+                        (
+                            arr.first()
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            "app".to_string(),
+                            arr.get(1).and_then(|x| x.as_u64()).unwrap_or(0),
+                            0.0f32,
+                        )
+                    } else {
+                        (
+                            e.get("name")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            e.get("kind")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("app")
+                                .to_string(),
+                            e.get("rss").and_then(|x| x.as_u64()).unwrap_or(0),
+                            e.get("cpu").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                        )
+                    };
+                    if !name.is_empty() {
+                        h.observe(format!("g:{name}"), &name, &kind, (ts, rss, cpu), window);
+                    }
+                }
+            }
+            if let Some(sessions) = v.get("sessions").and_then(|t| t.as_array()) {
+                for e in sessions {
+                    let key = e.get("key").and_then(|x| x.as_str()).unwrap_or("");
+                    if key.is_empty() {
+                        continue;
+                    }
+                    let name = format!(
+                        "{} · {}",
+                        e.get("kind").and_then(|x| x.as_str()).unwrap_or("?"),
+                        e.get("project").and_then(|x| x.as_str()).unwrap_or("?")
+                    );
+                    let rss = e.get("rss").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let cpu = e.get("cpu").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+                    h.observe(format!("s:{key}"), &name, "session", (ts, rss, cpu), window);
+                }
+            }
+            let swap = v.get("used_swap").and_then(|x| x.as_u64()).unwrap_or(0);
+            let comp = v.get("compressed").and_then(|x| x.as_u64()).unwrap_or(0);
+            let used = v.get("used_mem").and_then(|x| x.as_u64()).unwrap_or(0);
+            h.push_system(ts, swap, comp, used, window);
+        }
+    }
+    count
 }
 
 /// Sessions auto mode may close this tick. Stricter than the advice: it
@@ -433,6 +569,17 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
     let latest_path = dir.join("latest.json");
 
     let mut tracker = Tracker::load(&state_path);
+    if tracker.history.series.is_empty() {
+        let n = warm_start(
+            &mut tracker.history,
+            &dir,
+            now_epoch(),
+            cfg.thresholds.trend_window_secs,
+        );
+        if n > 0 {
+            eprintln!("warmed trends from {n} history records");
+        }
+    }
     let mut sys = System::new();
     let mut prev_ids: BTreeSet<String> = BTreeSet::new();
     let window = cfg.window.as_secs();
@@ -462,12 +609,17 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
         for s in &mut snap.sessions {
             s.state = rules::session_state(s, &cfg.thresholds);
         }
+        observe_trends(&mut tracker.history, &snap, now, &cfg.thresholds);
+        snap.trends = tracker.history.trends(cfg.thresholds.cpu_hog_secs);
+        let swap_growth = tracker.history.swap_growth(3600);
         snap.advice = rules::evaluate(
             &snap.system,
             &snap.groups,
             &snap.sessions,
             &snap.browsers,
             &snap.ports,
+            &snap.trends,
+            swap_growth,
             &cfg.thresholds,
         );
 

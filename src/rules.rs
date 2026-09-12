@@ -6,6 +6,7 @@ use crate::fmt;
 use crate::groups::{AppGroup, GroupKind};
 use crate::ports::PortInfo;
 use crate::system::SystemInfo;
+use crate::trends::Trend;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -45,6 +46,12 @@ pub struct Thresholds {
     pub min_quiet_secs: u64,
     /// A quiet, unmanaged local server open longer than this is reported.
     pub port_stale_after_secs: u64,
+    pub trend_window_secs: u64,
+    pub growth_bytes_per_hour: u64,
+    pub growth_min_bytes: u64,
+    pub cpu_hog_pct: f32,
+    pub cpu_hog_secs: u64,
+    pub pressure_rise_bytes_per_hour: u64,
     pub ignore_ports: Vec<u16>,
     pub ignore_apps: Vec<String>,
     pub ignore_projects: Vec<String>,
@@ -63,6 +70,12 @@ impl Default for Thresholds {
             quiet_cpu: 2.0,
             min_quiet_secs: 15 * 60,
             port_stale_after_secs: 24 * 3_600,
+            trend_window_secs: 2 * 3_600,
+            growth_bytes_per_hour: 200 * 1024 * 1024,
+            growth_min_bytes: 150 * 1024 * 1024,
+            cpu_hog_pct: 90.0,
+            cpu_hog_secs: 10 * 60,
+            pressure_rise_bytes_per_hour: 1024 * 1024 * 1024,
             ignore_ports: Vec::new(),
             ignore_apps: Vec::new(),
             ignore_projects: Vec::new(),
@@ -111,12 +124,16 @@ pub fn session_state(s: &AgentSession, t: &Thresholds) -> SessionState {
     }
 }
 
+// Every input is a distinct kind of evidence; a struct would only rename them.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate(
     sys: &SystemInfo,
     groups: &[AppGroup],
     sessions: &[AgentSession],
     browsers: &[BrowserInfo],
     ports: &[PortInfo],
+    trends: &[Trend],
+    swap_growth: Option<(i64, u64)>,
     t: &Thresholds,
 ) -> Vec<Advice> {
     let mut out = Vec::new();
@@ -321,6 +338,107 @@ pub fn evaluate(
             action: "Stop them if nothing needs them. They were started from a terminal or script, not an app, and will not come back on their own.".to_string(),
             recovery: Some(total),
         });
+    }
+
+    // 6. Leak-like growth: steady, fast, and substantial.
+    let min_span = (t.trend_window_secs / 4).max(20 * 60);
+    let growers: Vec<&Trend> = trends
+        .iter()
+        .filter(|tr| tr.span_secs >= min_span && tr.samples >= 8)
+        .filter(|tr| tr.growth >= t.growth_min_bytes as i64)
+        .filter(|tr| tr.bytes_per_hour >= t.growth_bytes_per_hour as f64)
+        .filter(|tr| tr.rising_frac >= 0.6 && tr.r2 >= 0.7)
+        .filter(|tr| !ignored_app(&tr.name))
+        .collect();
+    for tr in growers.iter().take(3) {
+        let severity = if tr.bytes_per_hour >= 1024.0 * 1024.0 * 1024.0 {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        out.push(Advice {
+            id: format!("growth:{}", tr.key),
+            severity,
+            title: format!(
+                "{} grew {} in {} ({}/h)",
+                tr.name,
+                fmt::bytes(tr.growth.max(0) as u64),
+                fmt::dur(tr.span_secs),
+                fmt::bytes(tr.bytes_per_hour.max(0.0) as u64)
+            ),
+            evidence: vec![
+                format!("now {} · was {}", fmt::bytes(tr.rss_now), fmt::bytes(tr.rss_start)),
+                format!(
+                    "rose in {:.0}% of samples · fit {:.2}",
+                    tr.rising_frac * 100.0,
+                    tr.r2
+                ),
+            ],
+            action: "Steady growth that never comes back down is a leak. If you are not actively using it, quit and reopen it.".to_string(),
+            recovery: Some(tr.growth.max(0) as u64),
+        });
+    }
+
+    // 7. Sustained CPU.
+    let hogs: Vec<&Trend> = trends
+        .iter()
+        .filter(|tr| tr.cpu_span_secs >= t.cpu_hog_secs * 8 / 10)
+        .filter(|tr| tr.cpu_mean >= t.cpu_hog_pct && tr.cpu_min >= t.cpu_hog_pct / 2.0)
+        .filter(|tr| !ignored_app(&tr.name))
+        .collect();
+    for tr in hogs.iter().take(3) {
+        out.push(Advice {
+            id: format!("cpu:{}", tr.key),
+            severity: Severity::Low,
+            title: format!(
+                "{} has used {:.1} cores for {}",
+                tr.name,
+                tr.cpu_mean / 100.0,
+                fmt::dur(tr.cpu_span_secs)
+            ),
+            evidence: vec![format!(
+                "mean {:.0}% · never below {:.0}% in that time",
+                tr.cpu_mean, tr.cpu_min
+            )],
+            action: "Check what it is doing. A build or an agent working is normal; something spinning with nothing to show is not.".to_string(),
+            recovery: None,
+        });
+    }
+
+    // 8. Pressure rising: swap climbing fast, with the likely causes named.
+    if let Some((delta, span)) = swap_growth
+        && span >= 15 * 60
+    {
+        let per_hour = delta as f64 * 3600.0 / span as f64;
+        if per_hour >= t.pressure_rise_bytes_per_hour as f64 {
+            let mut evidence = vec![format!(
+                "swap +{} in {} · now {} of {}",
+                fmt::bytes(delta.max(0) as u64),
+                fmt::dur(span),
+                fmt::bytes(sys.used_swap),
+                fmt::bytes(sys.total_swap)
+            )];
+            for tr in trends.iter().filter(|tr| tr.growth > 0).take(3) {
+                evidence.push(format!(
+                    "{} +{} ({}/h)",
+                    tr.name,
+                    fmt::bytes(tr.growth as u64),
+                    fmt::bytes(tr.bytes_per_hour.max(0.0) as u64)
+                ));
+            }
+            out.push(Advice {
+                id: "pressure_rising".to_string(),
+                severity: Severity::High,
+                title: format!(
+                    "Memory pressure rising: swap +{} in {}",
+                    fmt::bytes(delta.max(0) as u64),
+                    fmt::dur(span)
+                ),
+                evidence,
+                action: "The fastest-growing apps above are the likely cause. Close what you can spare before the machine starts to crawl.".to_string(),
+                recovery: None,
+            });
+        }
     }
 
     out.sort_by_key(|a| a.severity);

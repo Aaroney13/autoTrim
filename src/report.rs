@@ -140,6 +140,35 @@ pub fn render(s: &Snapshot) -> String {
         }
     }
 
+    let shown: Vec<&crate::trends::Trend> = s
+        .trends
+        .iter()
+        .filter(|t| t.span_secs >= 10 * 60)
+        .take(8)
+        .collect();
+    if !shown.is_empty() {
+        let span = shown.iter().map(|t| t.span_secs).max().unwrap_or(0);
+        let _ = writeln!(o, "\nTrends (last {})", dur(span));
+        let _ = writeln!(
+            o,
+            "  {:<36} {:>8} {:>9} {:>10} {:>7}  STEADY",
+            "NAME", "NOW", "CHANGE", "RATE/H", "CPU"
+        );
+        for t in shown {
+            let sign = if t.growth >= 0 { "+" } else { "-" };
+            let _ = writeln!(
+                o,
+                "  {:<36} {:>8} {:>9} {:>10} {:>6.0}%  {:.0}%",
+                fit_right(&t.name, 36),
+                bytes(t.rss_now),
+                format!("{sign}{}", bytes(t.growth.unsigned_abs())),
+                format!("{sign}{}", bytes(t.bytes_per_hour.abs() as u64)),
+                t.cpu_mean,
+                t.rising_frac * 100.0
+            );
+        }
+    }
+
     let _ = writeln!(o, "\nAdvice");
     if s.advice.is_empty() {
         let _ = writeln!(o, "  nothing to do");

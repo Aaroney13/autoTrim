@@ -108,7 +108,8 @@ src/
   browser.rs      Chrome/Chromium breakdown
   ports.rs        listening ports and their owners
   rules.rs        deterministic advice and the session-state decision
-  daemon.rs       sampling loop, rolling windows, history, notifications
+  daemon.rs       sampling loop, rolling windows, history, notifications, auto mode
+  trends.rs       rolling series, linear fit, growth and CPU readings
   notify.rs       native notification delivery
   service.rs      launchd install/uninstall/restart/status
   watch.rs        live terminal view and log printing
@@ -180,6 +181,20 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   a VM manager or database left running is reported, never killed.
   `auto_dry_run = true` logs and notifies what it would have done, and
   does nothing, which is how to try it for a week.
+- **Trends.** The daemon keeps a rolling series per app and per session
+  (two hours by default, warmed from the history files on restart, so a
+  restart forgets nothing) and fits a line through each. Three rules read
+  them. *Leak-like growth*: memory rising steadily, meaning a slope above
+  200 MB/h, at least 150 MB gained, most samples rising, and a good linear
+  fit, so a build or a page load does not trigger it. *Sustained CPU*: mean
+  above 90% of a core for ten minutes with the minimum never far below,
+  so bursts do not count. *Pressure rising*: swap climbing faster than a
+  gigabyte an hour, with the fastest-growing apps named as the likely
+  cause. Growth is advice, never an action; a leak and a legitimately busy
+  program look the same from outside. `scan`, `status`, and the window
+  show a Trends table once the daemon has ten minutes of history. This is
+  the part macOS does not do at all: Activity Monitor shows an instant,
+  never a direction, and never says what changed.
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
   menu bar item showing free memory, with a menu that carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".

@@ -47,6 +47,18 @@ pub struct Config {
     /// while quiet is reported as an old server.
     pub port_stale_after_hours: f64,
 
+    /// Minutes of history the daemon keeps per app and session for trends.
+    pub trend_window_minutes: u64,
+    /// Steady growth faster than this is reported as leak-like.
+    pub growth_mb_per_hour: u64,
+    /// And it must have grown at least this much in the window.
+    pub growth_min_mb: u64,
+    /// Sustained CPU (100 = one core) over `cpu_hog_minutes` is reported.
+    pub cpu_hog_pct: f32,
+    pub cpu_hog_minutes: u64,
+    /// Swap growing by more than this in an hour is "pressure rising".
+    pub pressure_rise_mb_per_hour: u64,
+
     /// Close stale agent sessions on a timer. Off by default.
     pub auto_close_sessions: bool,
     /// Stop old local servers on a timer. Off by default.
@@ -86,6 +98,12 @@ impl Default for Config {
             browser_profiles: 2,
             heavy_app_mb: 600,
             port_stale_after_hours: 24.0,
+            trend_window_minutes: 120,
+            growth_mb_per_hour: 200,
+            growth_min_mb: 150,
+            cpu_hog_pct: 90.0,
+            cpu_hog_minutes: 10,
+            pressure_rise_mb_per_hour: 1024,
             auto_close_sessions: false,
             auto_stop_servers: false,
             auto_grace_minutes: 10,
@@ -134,6 +152,12 @@ impl Config {
             quiet_cpu: self.quiet_cpu,
             min_quiet_secs: self.min_quiet_minutes * 60,
             port_stale_after_secs: (self.port_stale_after_hours * 3_600.0) as u64,
+            trend_window_secs: self.trend_window_minutes * 60,
+            growth_bytes_per_hour: self.growth_mb_per_hour * 1024 * 1024,
+            growth_min_bytes: self.growth_min_mb * 1024 * 1024,
+            cpu_hog_pct: self.cpu_hog_pct,
+            cpu_hog_secs: self.cpu_hog_minutes * 60,
+            pressure_rise_bytes_per_hour: self.pressure_rise_mb_per_hour * 1024 * 1024,
             ignore_ports: self.ignore_ports.clone(),
             ignore_apps: self.ignore_apps.clone(),
             ignore_projects: self.ignore_projects.clone(),
@@ -174,6 +198,14 @@ heavy_app_mb = {heavy_app_mb}
 # Local servers
 port_stale_after_hours = {port_stale_after_hours:.1}   # a quiet non-app listener older than this is reported
 
+# Trends (daemon only)
+trend_window_minutes = {trend_window_minutes}       # history kept per app and session
+growth_mb_per_hour = {growth_mb_per_hour}         # steady growth above this looks like a leak
+growth_min_mb = {growth_min_mb}              # and must have grown at least this much
+cpu_hog_pct = {cpu_hog_pct:.0}                 # sustained CPU, 100 = one full core
+cpu_hog_minutes = {cpu_hog_minutes}
+pressure_rise_mb_per_hour = {pressure_rise_mb_per_hour}   # swap growing faster than this names the culprits
+
 # Auto mode. Off by default. Try auto_dry_run = true first: it logs and
 # notifies what it would have closed, and closes nothing.
 auto_close_sessions = {auto_close_sessions}
@@ -202,6 +234,12 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             browser_profiles = d.browser_profiles,
             heavy_app_mb = d.heavy_app_mb,
             port_stale_after_hours = d.port_stale_after_hours,
+            trend_window_minutes = d.trend_window_minutes,
+            growth_mb_per_hour = d.growth_mb_per_hour,
+            growth_min_mb = d.growth_min_mb,
+            cpu_hog_pct = d.cpu_hog_pct,
+            cpu_hog_minutes = d.cpu_hog_minutes,
+            pressure_rise_mb_per_hour = d.pressure_rise_mb_per_hour,
             auto_close_sessions = d.auto_close_sessions,
             auto_stop_servers = d.auto_stop_servers,
             auto_grace_minutes = d.auto_grace_minutes,
