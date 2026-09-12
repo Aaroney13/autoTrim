@@ -1,0 +1,15 @@
+[package]
+name = "autotrim-tray"
+version = "0.1.0"
+edition = "2024"
+description = "Menu bar companion for autoTrim"
+
+[dependencies]
+autotrim = { path = ".." }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+
+[build-dependencies]
+tauri-build = "2.6.3"

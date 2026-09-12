@@ -1,29 +1,10 @@
-//! autotrim: notice what is holding your memory, and reclaim it safely.
-
-mod actions;
-mod agents;
-mod browser;
-mod config;
-mod daemon;
-mod fmt;
-mod groups;
-mod notify;
-mod openfiles;
-mod paths;
-mod ports;
-mod procs;
-mod report;
-mod rules;
-mod service;
-mod system;
-mod transcripts;
-mod watch;
+//! Command-line entry point. All the logic lives in the library.
 
 use anyhow::Result;
+use autotrim::config::Config;
+use autotrim::{actions, daemon, fmt, report, service, take_snapshot, watch};
 use clap::{Args, Parser, Subcommand};
-use config::Config;
-use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use sysinfo::System;
 
 #[derive(Parser)]
@@ -179,69 +160,6 @@ struct StatusArgs {
     json: bool,
 }
 
-/// Everything a scan knows. The daemon, the tray, and the MCP server all
-/// consume this same shape.
-#[derive(Serialize, Deserialize)]
-pub struct Snapshot {
-    pub taken_at: u64,
-    pub scanner_pid: u32,
-    pub system: system::SystemInfo,
-    pub groups: Vec<groups::AppGroup>,
-    pub sessions: Vec<agents::AgentSession>,
-    pub browsers: Vec<browser::BrowserInfo>,
-    #[serde(default)]
-    pub ports: Vec<ports::PortInfo>,
-    pub advice: Vec<rules::Advice>,
-}
-
-/// Observe everything once. `sample` is how a fresh `System` gets a CPU
-/// reading; pass `None` when `sys` was refreshed on a previous tick.
-pub fn take_snapshot(
-    sys: &mut System,
-    sample: Option<Duration>,
-    thresholds: &rules::Thresholds,
-) -> Snapshot {
-    let table = procs::ProcTable::collect(sys, sample);
-    let system = system::collect(sys);
-    let mut det = agents::detect(&table, thresholds.stale_after_secs);
-    for s in &mut det.sessions {
-        s.state = rules::session_state(s, thresholds);
-    }
-    let groups = groups::group(&table, &det);
-    let browsers = browser::detect(&table, &groups);
-    let ports = ports::listening(&table, &det, &groups);
-    for s in &mut det.sessions {
-        s.ports = ports
-            .iter()
-            .filter(|p| s.pids.contains(&p.pid))
-            .map(|p| p.port)
-            .collect();
-        s.ports.sort_unstable();
-        s.ports.dedup();
-    }
-    let advice = rules::evaluate(
-        &system,
-        &groups,
-        &det.sessions,
-        &browsers,
-        &ports,
-        thresholds,
-    );
-    Snapshot {
-        taken_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-        scanner_pid: std::process::id(),
-        system,
-        groups,
-        sessions: det.sessions,
-        browsers,
-        ports,
-        advice,
-    }
-}
-
 fn scan(args: &ScanArgs, cfg: &Config) -> Result<()> {
     let mut thresholds = cfg.thresholds();
     if let Some(h) = args.stale_after_hours {
@@ -291,79 +209,25 @@ fn run_daemon(args: &DaemonArgs, cfg: &Config) -> Result<()> {
 }
 
 fn close(args: &TargetArgs, cfg: &Config) -> Result<()> {
-    let mut sys = System::new();
-    let snap = take_snapshot(
-        &mut sys,
-        Some(Duration::from_millis(1000)),
+    let rec = actions::close_by_pid(
+        args.pid,
         &cfg.thresholds(),
-    );
-    let Some(s) = snap.sessions.iter().find(|s| s.pid == args.pid) else {
-        anyhow::bail!(
-            "pid {} is not a detected agent session; see `autotrim scan`",
-            args.pid
-        );
-    };
-    if s.is_self {
-        anyhow::bail!("pid {} is the session running this command", args.pid);
-    }
-    if s.state == agents::SessionState::Active && !args.force {
-        anyhow::bail!(
-            "pid {} looks active ({:.0}% CPU); pass --force to close it anyway",
-            args.pid,
-            s.cpu
-        );
-    }
-    println!(
-        "closing {} · {} · {} · {} · {}",
-        s.kind.label(),
-        s.host,
-        s.session_name
-            .as_deref()
-            .or(s.project.as_deref())
-            .unwrap_or("?"),
-        match s.idle_secs {
-            Some(i) => format!("idle {}", fmt::dur(i)),
-            None => format!("age {}", fmt::dur(s.age_secs)),
-        },
-        fmt::bytes(s.rss)
-    );
-    let rec = actions::close_session(s, "manual", args.dry_run);
-    actions::log(&rec)?;
+        args.dry_run,
+        args.force,
+        "manual",
+    )?;
     println!("{}", actions::describe(&rec));
     Ok(())
 }
 
 fn stop(args: &TargetArgs, cfg: &Config) -> Result<()> {
-    let mut sys = System::new();
-    let snap = take_snapshot(
-        &mut sys,
-        Some(Duration::from_millis(1000)),
+    let rec = actions::stop_by_pid(
+        args.pid,
         &cfg.thresholds(),
-    );
-    let Some(p) = snap.ports.iter().find(|p| p.pid == args.pid) else {
-        anyhow::bail!(
-            "pid {} is not listening on anything; see `autotrim scan`",
-            args.pid
-        );
-    };
-    if p.owner_managed && !args.force {
-        anyhow::bail!(
-            "pid {} ({}) belongs to {}, which manages its own lifecycle; pass --force to stop it anyway",
-            args.pid,
-            p.process,
-            p.owner
-        );
-    }
-    println!(
-        "stopping {} · {}:{} · open {} · {}",
-        p.process,
-        p.addr,
-        p.port,
-        fmt::dur(p.open_for_secs),
-        fmt::bytes(p.owner_rss)
-    );
-    let rec = actions::stop_server(p, "manual", args.dry_run);
-    actions::log(&rec)?;
+        args.dry_run,
+        args.force,
+        "manual",
+    )?;
     println!("{}", actions::describe(&rec));
     Ok(())
 }

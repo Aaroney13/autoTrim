@@ -3,6 +3,9 @@ name = "autotrim"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["tray"]
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }

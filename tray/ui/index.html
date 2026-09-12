@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>autoTrim</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f4; --fg: #1a1a1a; --muted: #6b6b6b; --line: #e3e3df; --card: #ffffff;
+    --high: #c0392b; --med: #b7791f; --low: #4a6fa5; --accent: #2d6a4f; --danger: #b03a2e;
+    font: 13px/1.45 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1c1e; --fg: #ececec; --muted: #9a9a9a; --line: #2e2e31; --card: #26262a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); }
+  header { padding: 14px 20px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 18px; flex-wrap: wrap; align-items: baseline; }
+  header .stat b { font-size: 15px; font-variant-numeric: tabular-nums; }
+  header .stat span { color: var(--muted); margin-left: 4px; }
+  header .src { margin-left: auto; color: var(--muted); }
+  main { padding: 12px 20px 30px; display: grid; gap: 18px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  .cards { display: grid; gap: 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .card .t { font-weight: 600; }
+  .card .t::before { content: "●"; margin-right: 8px; }
+  .card.high .t::before { color: var(--high); } .card.medium .t::before { color: var(--med); } .card.low .t::before { color: var(--low); }
+  .card .e { color: var(--muted); margin: 4px 0 0 20px; white-space: pre-line; }
+  .card .a { margin: 6px 0 0 20px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.path { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .state { white-space: nowrap; }
+  .state.stale { color: var(--high); } .state.active { color: var(--accent); } .state.idle { color: var(--muted); }
+  button { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.confirm { border-color: var(--danger); color: var(--danger); }
+  button[disabled] { opacity: .45; cursor: default; }
+  .wrap { overflow-x: auto; }
+  .muted { color: var(--muted); }
+  .log div { padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .log code { font-size: 12px; }
+  .toast { position: fixed; right: 16px; bottom: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; max-width: 520px; box-shadow: 0 6px 24px rgba(0,0,0,.18); display: none; }
+</style>
+</head>
+<body>
+<header id="head"><span class="muted">loading…</span></header>
+<main>
+  <section><h2>Advice</h2><div class="cards" id="advice"></div></section>
+  <section><h2>Agent sessions</h2><div class="wrap"><table id="sessions"></table></div></section>
+  <section><h2>Listening ports</h2><div class="wrap"><table id="ports"></table></div></section>
+  <section><h2>Top holders</h2><div class="wrap"><table id="groups"></table></div></section>
+  <section><h2>Actions</h2><div class="log" id="log"><span class="muted">nothing yet</span></div></section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const invoke = (...a) => window.__TAURI__.core.invoke(...a);
+const GB = 1024 ** 3, MB = 1024 ** 2;
+const bytes = b => b >= GB ? (b / GB).toFixed(1) + " GB" : b >= MB ? Math.round(b / MB) + " MB" : Math.round(b / 1024) + " KB";
+const dur = s => { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s`; };
+const pct = (n, d) => d ? Math.round(n * 100 / d) + "%" : "n/a";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
+let armed = {};   // pid -> timestamp of first click, for two-step buttons
+
+function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 6000); }
+
+function stateLabel(s) {
+  const since = s.idle_secs != null ? `idle ${dur(s.idle_secs)}` : (s.quiet_for_secs ? `quiet ${dur(s.quiet_for_secs)}` : "");
+  if (s.state === "active") return "active";
+  if (s.state === "idle") return since || "idle";
+  return since ? `stale · ${since}` : "stale";
+}
+
+async function act(kind, pid, btn) {
+  const now = Date.now();
+  if (!armed[pid] || now - armed[pid] > 5000) { armed[pid] = now; btn.textContent = "Confirm"; btn.classList.add("confirm"); setTimeout(() => { if (armed[pid] === now) { btn.textContent = kind === "close" ? "Close" : "Stop"; btn.classList.remove("confirm"); delete armed[pid]; } }, 5000); return; }
+  delete armed[pid]; btn.disabled = true; btn.textContent = "…";
+  try {
+    const rec = await invoke(kind === "close" ? "close_session" : "stop_server", { pid, force: false });
+    toast(`${rec.action.replace("_", " ")} · ${rec.target} · ${rec.result}` + (rec.resume ? `\nresume: ${rec.resume}` : ""));
+  } catch (e) { toast(String(e)); }
+  refresh();
+}
+
+function render(s, src) {
+  const sys = s.system;
+  const head = [stat(bytes(sys.total_mem), "RAM"), stat(bytes(sys.used_mem), "used"), stat(`${bytes(sys.used_swap)} / ${bytes(sys.total_swap)}`, `swap ${pct(sys.used_swap, sys.total_swap)}`)];
+  if (sys.compressed != null) head.push(stat(bytes(sys.compressed), "compressed"));
+  if (sys.free_pct != null) head.push(stat(sys.free_pct + "%", "free"));
+  head.push(stat(Math.round(sys.cpu_pct) + "%", `cpu · load ${sys.load_one.toFixed(1)}`), stat(dur(sys.uptime_secs), "up"));
+  head.push(`<div class="src">${src.daemon_running ? `daemon · snapshot ${dur(src.snapshot_age_secs)} ago` : "daemon not running · live scan"}</div>`);
+  document.getElementById("head").innerHTML = head.join("");
+
+  document.getElementById("advice").innerHTML = s.advice.length ? s.advice.map(a =>
+    `<div class="card ${a.severity}"><div class="t">${esc(a.title)}</div><div class="e">${esc(a.evidence.join("\n"))}</div><div class="a">→ ${esc(a.action)}</div></div>`).join("")
+    : `<div class="card"><div class="muted">Nothing to do.</div></div>`;
+
+  document.getElementById("sessions").innerHTML = `<tr><th>Agent</th><th>Host</th><th>Project</th><th class="num">Age</th><th class="num">CPU</th><th class="num">Memory</th><th>Ports</th><th>State</th><th></th></tr>` +
+    s.sessions.map(x => {
+      const cpu = (x.cpu_window_mean ?? x.cpu).toFixed(1) + "%";
+      const can = !x.is_self && x.state !== "active";
+      return `<tr><td>${esc(x.kind.replace("_", " "))}</td><td>${esc(x.host)}</td><td class="path" title="${esc(x.project)}">${esc(x.session_name ? x.session_name + " · " : "")}${esc(x.project ?? "?")}</td><td class="num">${dur(x.age_secs)}</td><td class="num">${cpu}</td><td class="num">${bytes(x.rss)}</td><td>${x.ports.join(", ") || "–"}</td><td class="state ${x.state}">${esc(stateLabel(x))}${x.is_self ? " (this app)" : ""}</td><td class="num"><button ${can ? "" : "disabled"} data-close="${x.pid}">Close</button></td></tr>`;
+    }).join("");
+
+  document.getElementById("ports").innerHTML = `<tr><th class="num">Port</th><th>Proto</th><th>Addr</th><th class="num">Open</th><th>Owner</th><th>Process</th><th></th></tr>` +
+    s.ports.map(p => `<tr><td class="num">${p.port}</td><td>${p.protocol}</td><td>${esc(p.addr)}</td><td class="num">${dur(p.open_for_secs)}</td><td>${esc(p.owner)}</td><td>${esc(p.process)} <span class="muted">(${p.pid})</span></td><td class="num"><button ${p.owner_managed ? "disabled" : ""} data-stop="${p.pid}" title="${p.owner_managed ? "managed by its app or the system" : "stop this process"}">Stop</button></td></tr>`).join("");
+
+  document.getElementById("groups").innerHTML = `<tr><th>App</th><th class="num">Memory</th><th class="num">CPU</th><th class="num">Processes</th></tr>` +
+    s.groups.slice(0, 14).map(g => `<tr><td>${esc(g.name)}</td><td class="num">${bytes(g.rss)}</td><td class="num">${g.cpu.toFixed(1)}%</td><td class="num">${g.procs}</td></tr>`).join("");
+
+  document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => act("close", +b.dataset.close, b));
+  document.querySelectorAll("[data-stop]").forEach(b => b.onclick = () => act("stop", +b.dataset.stop, b));
+}
+
+async function renderLog() {
+  try {
+    const log = await invoke("action_log");
+    const el = document.getElementById("log");
+    el.innerHTML = log.length ? log.slice().reverse().map(r => `<div><span class="muted">${new Date(r.ts * 1000).toLocaleString()}</span> [${esc(r.mode)}] ${esc(r.action.replace("_", " "))} · ${esc(r.target)} · ${esc(r.result)}${r.resume ? `<br><code>${esc(r.resume)}</code>` : ""}</div>`).join("") : `<span class="muted">nothing yet</span>`;
+  } catch (e) { /* leave as is */ }
+}
+
+async function refresh() {
+  try {
+    const [s, src] = await Promise.all([invoke("snapshot"), invoke("source_info")]);
+    render(s, src);
+    renderLog();
+  } catch (e) { document.getElementById("head").innerHTML = `<span class="muted">${esc(String(e))}</span>`; }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -115,7 +115,17 @@ src/
   paths.rs        data directory per platform
   report.rs       text rendering
   fmt.rs          bytes, durations, dates
+  lib.rs          the Snapshot type and take_snapshot; everything above is a module
+tray/
+  src/main.rs     Tauri menu bar app: tray menu, window, commands
+  ui/index.html   the window, plain HTML and JS, no bundler
+  tauri.conf.json window and bundle settings
 ```
+
+The root package is both the `autotrim` library and the `autotrim` binary;
+`tray/` is a second package in the same workspace that depends on the
+library. `cargo build --release` at the root builds the CLI; the tray is
+`cargo build -p autotrim-tray --release`.
 
 Everything upstream of `rules.rs` produces one `Snapshot` struct, serialized
 to JSON. The daemon, the tray, the MCP server, and the `scan` command all
@@ -170,6 +180,20 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   a VM manager or database left running is reported, never killed.
   `auto_dry_run = true` logs and notifies what it would have done, and
   does nothing, which is how to try it for a week.
+- **The tray app** (`tray/`, a separate binary in the same workspace): a
+  menu bar item showing free memory, with a menu that carries the summary
+  line, the current advice, "Close N stale sessions", and "Open autoTrim…".
+  The window shows everything the report shows, with a Close button on each
+  session and a Stop button on each unmanaged port. Buttons are two-step:
+  first click arms, second click acts, and the result with its resume
+  command appears in a toast and in the Actions list. The tray reads the
+  daemon's snapshot every five seconds and only scans on its own when no
+  daemon is running. No Dock icon. The window is created when you open it
+  and destroyed when you close it, so an idle tray is only the menu item.
+  Built with Tauri on the system web view: measured at about 60 MB resident
+  idle on macOS, which is the runtime's price, against the daemon's 7 MB.
+  A future pure-tray build without a web view could get that under 15 MB;
+  the dashboard would then open in the browser instead.
 - `autotrim config`: print the effective settings and where they came from.
   `autotrim config init` writes `config.toml` in the data directory with
   every setting, its default, and a comment. Flags override the file, the
@@ -270,6 +294,15 @@ Then, in another terminal, watch it work:
 the daemon log, and `autotrim service uninstall` removes the login service.
 Rebuilt the binary? `autotrim service restart` picks up the new one.
 
+The menu bar app:
+
+```bash
+cargo run -p autotrim-tray --release
+```
+
+It runs until you pick Quit from its menu. Making it start at login and
+packaging it as a signed `.app` is still to do.
+
 ## Decisions
 
 Things that came up and where they landed.
@@ -290,9 +323,9 @@ Things that came up and where they landed.
   full context. It runs when you ask for it. An opt-in flag may later fire it
   after an emergency has been handled, off by default. The daemon itself
   never calls a model.
-- **UI comes as a Tauri tray app** once the daemon and its actions are
-  stable: a menu bar item with pressure and the current advice, a window with
-  the sessions, ports, and history, one-click actions that talk to the
-  daemon over a local socket. The terminal `watch` view is the interface
-  until then, and stays afterwards for people who live in a terminal.
+- **The UI is a Tauri tray app** that reads the daemon's files rather than
+  talking to it over a socket. The daemon writes `latest.json` every tick
+  and the action log is append-only, so a file is the simplest possible
+  interface and the tray never needs the daemon to answer. The terminal
+  `watch` view stays for people who live in a terminal.
 

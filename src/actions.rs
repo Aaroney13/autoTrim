@@ -1,10 +1,12 @@
 //! The reclaim verbs. Narrow on purpose: close an agent session, stop an
 //! unmanaged local server. Every action is logged with how to undo it.
 
-use crate::agents::{AgentKind, AgentSession};
-use crate::fmt::stamp_utc;
+use crate::agents::{AgentKind, AgentSession, SessionState};
+use crate::fmt::{self, stamp_utc};
 use crate::paths;
 use crate::ports::PortInfo;
+use crate::rules::Thresholds;
+use crate::take_snapshot;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -224,4 +226,76 @@ pub fn describe(rec: &ActionRecord) -> String {
         s.push_str(r);
     }
     s
+}
+
+/// Close a session by pid with the safety checks every interface shares:
+/// a fresh snapshot, only detected sessions, never the session running
+/// this, never an active one without `force`. Logs the action.
+pub fn close_by_pid(
+    pid: u32,
+    t: &Thresholds,
+    dry_run: bool,
+    force: bool,
+    mode: &str,
+) -> Result<ActionRecord> {
+    let mut sys = System::new();
+    let snap = take_snapshot(&mut sys, Some(Duration::from_millis(1000)), t);
+    let Some(s) = snap.sessions.iter().find(|s| s.pid == pid) else {
+        anyhow::bail!("pid {pid} is not a detected agent session");
+    };
+    if s.is_self {
+        anyhow::bail!("pid {pid} is the session running this command");
+    }
+    if s.state == SessionState::Active && !force {
+        anyhow::bail!(
+            "pid {pid} looks active ({:.0}% CPU); use force to close it anyway",
+            s.cpu
+        );
+    }
+    let rec = close_session(s, mode, dry_run);
+    log(&rec)?;
+    Ok(rec)
+}
+
+/// Stop a listening process by pid: only unmanaged ones without `force`.
+pub fn stop_by_pid(
+    pid: u32,
+    t: &Thresholds,
+    dry_run: bool,
+    force: bool,
+    mode: &str,
+) -> Result<ActionRecord> {
+    let mut sys = System::new();
+    let snap = take_snapshot(&mut sys, Some(Duration::from_millis(1000)), t);
+    let Some(p) = snap.ports.iter().find(|p| p.pid == pid) else {
+        anyhow::bail!("pid {pid} is not listening on anything");
+    };
+    if p.owner_managed && !force {
+        anyhow::bail!(
+            "pid {pid} ({}) belongs to {}, which manages its own lifecycle; use force to stop it anyway",
+            p.process,
+            p.owner
+        );
+    }
+    let rec = stop_server(p, mode, dry_run);
+    log(&rec)?;
+    Ok(rec)
+}
+
+/// One line describing a session for a confirmation or a log.
+pub fn session_line(s: &AgentSession) -> String {
+    format!(
+        "{} · {} · {} · {} · {}",
+        s.kind.label(),
+        s.host,
+        s.session_name
+            .as_deref()
+            .or(s.project.as_deref())
+            .unwrap_or("?"),
+        match s.idle_secs {
+            Some(i) => format!("idle {}", fmt::dur(i)),
+            None => format!("age {}", fmt::dur(s.age_secs)),
+        },
+        fmt::bytes(s.rss)
+    )
 }

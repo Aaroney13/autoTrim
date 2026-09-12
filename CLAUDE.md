@@ -15,6 +15,12 @@ orchestrator and the daemon never calls a model.
   `AUTOTRIM_DATA_DIR=/some/scratch ./target/debug/autotrim daemon --once`.
 - One `Snapshot` struct (src/main.rs) feeds every consumer. Add fields there
   and keep them serde round-trippable; `status` deserializes `latest.json`.
-- Platform-specific code stays behind `cfg` in system.rs, browser.rs, paths.rs.
+- Platform-specific code stays behind `cfg` in system.rs, browser.rs, paths.rs,
+  openfiles.rs, service.rs.
+- The workspace has two packages: the root (`autotrim`, library + CLI) and
+  `tray/` (`autotrim-tray`, Tauri). Lint with `cargo clippy --workspace`.
+  The tray never depends on sysinfo directly; it goes through the library.
+- Any interface that acts goes through `actions::close_by_pid` and
+  `actions::stop_by_pid` so the safety checks and the action log are shared.
 - The daemon's footprint is a public promise (under 20 MB resident). Check it
   when adding dependencies.
