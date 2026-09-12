@@ -4,6 +4,7 @@ use crate::agents::{AgentSession, SessionState};
 use crate::browser::BrowserInfo;
 use crate::fmt;
 use crate::groups::{AppGroup, GroupKind};
+use crate::ports::PortInfo;
 use crate::system::SystemInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -42,6 +43,11 @@ pub struct Thresholds {
     /// called stale, however old it is. Keeps a freshly started daemon from
     /// judging anything in its first minutes.
     pub min_quiet_secs: u64,
+    /// A quiet, unmanaged local server open longer than this is reported.
+    pub port_stale_after_secs: u64,
+    pub ignore_ports: Vec<u16>,
+    pub ignore_apps: Vec<String>,
+    pub ignore_projects: Vec<String>,
 }
 
 impl Default for Thresholds {
@@ -56,6 +62,10 @@ impl Default for Thresholds {
             pressure_swap_frac: 0.5,
             quiet_cpu: 2.0,
             min_quiet_secs: 15 * 60,
+            port_stale_after_secs: 24 * 3_600,
+            ignore_ports: Vec::new(),
+            ignore_apps: Vec::new(),
+            ignore_projects: Vec::new(),
         }
     }
 }
@@ -106,10 +116,18 @@ pub fn evaluate(
     groups: &[AppGroup],
     sessions: &[AgentSession],
     browsers: &[BrowserInfo],
+    ports: &[PortInfo],
     t: &Thresholds,
 ) -> Vec<Advice> {
     let mut out = Vec::new();
     let under_pressure = sys.swap_frac() >= t.pressure_swap_frac;
+    let ignored_project = |s: &AgentSession| {
+        let path = s.cwd.as_deref().or(s.project.as_deref()).unwrap_or("");
+        t.ignore_projects
+            .iter()
+            .any(|p| !p.is_empty() && path.contains(p.as_str()))
+    };
+    let ignored_app = |name: &str| t.ignore_apps.iter().any(|a| a == name);
 
     // 1. Long uptime with swap full: the machine needs a restart.
     if sys.uptime_secs >= t.restart_uptime_secs && sys.swap_frac() >= t.restart_swap_frac {
@@ -141,7 +159,7 @@ pub fn evaluate(
     // 2. Stale agent sessions.
     let stale: Vec<&AgentSession> = sessions
         .iter()
-        .filter(|s| s.state == SessionState::Stale && !s.is_self)
+        .filter(|s| s.state == SessionState::Stale && !s.is_self && !ignored_project(s))
         .collect();
     if !stale.is_empty() {
         let total: u64 = stale.iter().map(|s| s.rss).sum();
@@ -188,7 +206,7 @@ pub fn evaluate(
     }
 
     // 3. Browser sprawl.
-    for b in browsers {
+    for b in browsers.iter().filter(|b| !ignored_app(&b.name)) {
         let many_tabs = b.renderers >= t.browser_renderers;
         let many_profiles = b.profiles.map(|n| n > t.browser_profiles).unwrap_or(false);
         if !(many_tabs || many_profiles) {
@@ -235,6 +253,7 @@ pub fn evaluate(
             .filter(|g| g.kind == GroupKind::App)
             .filter(|g| browsers.iter().all(|b| b.name != g.name))
             .filter(|g| !hosting.contains(g.name.as_str()))
+            .filter(|g| !ignored_app(&g.name))
             .find(|g| g.rss >= t.heavy_app_bytes)
         {
             out.push(Advice {
@@ -249,6 +268,59 @@ pub fn evaluate(
                 recovery: Some(g.rss),
             });
         }
+    }
+
+    // 5. Old local servers: a quiet, unmanaged listener that has been open
+    //    for a long time. One entry per owning process.
+    let mut seen_pid = HashSet::new();
+    let old: Vec<&PortInfo> = ports
+        .iter()
+        .filter(|p| !p.owner_managed)
+        .filter(|p| !t.ignore_ports.contains(&p.port))
+        .filter(|p| p.open_for_secs >= t.port_stale_after_secs)
+        .filter(|p| p.owner_cpu < t.quiet_cpu)
+        .filter(|p| seen_pid.insert(p.pid))
+        .collect();
+    if !old.is_empty() {
+        let total: u64 = old.iter().map(|p| p.owner_rss).sum();
+        let mut evidence: Vec<String> = old
+            .iter()
+            .take(5)
+            .map(|p| {
+                let all_ports: Vec<String> = ports
+                    .iter()
+                    .filter(|q| q.pid == p.pid)
+                    .map(|q| format!("{}:{}", q.addr, q.port))
+                    .collect();
+                format!(
+                    "{} · {} · open {} · {}",
+                    p.process,
+                    all_ports.join(", "),
+                    fmt::dur(p.open_for_secs),
+                    fmt::bytes(p.owner_rss)
+                )
+            })
+            .collect();
+        if old.len() > 5 {
+            evidence.push(format!("and {} more", old.len() - 5));
+        }
+        out.push(Advice {
+            id: "old_servers".to_string(),
+            severity: if total >= 300 * 1024 * 1024 {
+                Severity::Medium
+            } else {
+                Severity::Low
+            },
+            title: format!(
+                "Stop {} old local server{} holding {}",
+                old.len(),
+                if old.len() == 1 { "" } else { "s" },
+                fmt::bytes(total)
+            ),
+            evidence,
+            action: "Stop them if nothing needs them. They were started from a terminal or script, not an app, and will not come back on their own.".to_string(),
+            recovery: Some(total),
+        });
     }
 
     out.sort_by_key(|a| a.severity);

@@ -50,6 +50,11 @@ struct Tracker {
     /// does not repeat what the user was just told.
     #[serde(default)]
     notified: HashMap<String, u64>,
+    /// "pid:port:proto" to when the daemon first saw it listening. On first
+    /// sight the owner's start time is used, since a port cannot predate
+    /// its process, which makes restarts and first runs honest.
+    #[serde(default)]
+    ports: HashMap<String, u64>,
 }
 
 fn key(s: &AgentSession) -> String {
@@ -100,6 +105,21 @@ impl Tracker {
         // Forget sessions that have been gone for a full window.
         self.sessions
             .retain(|_, t| now.saturating_sub(t.last_seen) <= window);
+    }
+
+    /// Stamp each listening port with how long it has been open.
+    fn observe_ports(&mut self, now: u64, ports: &mut [crate::ports::PortInfo]) {
+        let mut live = std::collections::HashSet::new();
+        for p in ports.iter_mut() {
+            let key = format!("{}:{}:{}", p.pid, p.port, p.protocol);
+            let first = *self
+                .ports
+                .entry(key.clone())
+                .or_insert_with(|| now.saturating_sub(p.owner_age_secs));
+            p.open_for_secs = now.saturating_sub(first);
+            live.insert(key);
+        }
+        self.ports.retain(|k, _| live.contains(k));
     }
 
     /// Advice worth notifying now: never seen, or seen longer ago than the
@@ -258,6 +278,7 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
 
         let mut snap = take_snapshot(&mut sys, sample, &cfg.thresholds);
         tracker.observe(now, window, cfg.thresholds.quiet_cpu, &mut snap.sessions);
+        tracker.observe_ports(now, &mut snap.ports);
         for s in &mut snap.sessions {
             s.state = rules::session_state(s, &cfg.thresholds);
         }
@@ -266,6 +287,7 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
             &snap.groups,
             &snap.sessions,
             &snap.browsers,
+            &snap.ports,
             &cfg.thresholds,
         );
 

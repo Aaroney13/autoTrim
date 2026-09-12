@@ -7,6 +7,7 @@
 //! entry type and timestamp.
 
 use crate::fmt::days_from_civil;
+use crate::openfiles::open_files;
 use crate::system::home;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -76,11 +77,90 @@ fn find_transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
     None
 }
 
+#[derive(Debug, Clone)]
+pub struct CodexSession {
+    /// Rollout files the process currently holds open: its live threads.
+    pub threads: usize,
+    /// The most recently active of those rollouts.
+    pub transcript: Option<PathBuf>,
+    /// Working directory recorded in that rollout's metadata.
+    pub cwd: Option<String>,
+    /// Newest response or event timestamp across the open rollouts.
+    pub last_activity: Option<u64>,
+}
+
+/// Codex keeps one rollout file per thread under `~/.codex/sessions` and
+/// holds the live ones open, so the process's own file table is the map.
+/// Returns None when the process has no rollout open; the caller falls back
+/// to CPU evidence.
+pub fn codex_session(pid: u32) -> Option<CodexSession> {
+    let rollouts: Vec<PathBuf> = open_files(pid)
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .map(|f| {
+                    let f = f.to_string_lossy();
+                    f.starts_with("rollout-") && f.ends_with(".jsonl")
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    if rollouts.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u64, PathBuf)> = None;
+    for r in &rollouts {
+        if let Some(ts) = last_activity_with(r, codex_activity_timestamp)
+            && best.as_ref().is_none_or(|(b, _)| ts > *b)
+        {
+            best = Some((ts, r.clone()));
+        }
+    }
+    let transcript = best
+        .as_ref()
+        .map(|(_, p)| p.clone())
+        .or_else(|| rollouts.first().cloned());
+    let cwd = transcript.as_deref().and_then(codex_meta_cwd);
+    Some(CodexSession {
+        threads: rollouts.len(),
+        transcript,
+        cwd,
+        last_activity: best.map(|(ts, _)| ts),
+    })
+}
+
+/// The `cwd` field of a rollout's first line, its session metadata.
+fn codex_meta_cwd(path: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let f = fs::File::open(path).ok()?;
+    let first = std::io::BufReader::new(f).lines().next()?.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&first).ok()?;
+    v.get("payload")?.get("cwd")?.as_str().map(str::to_string)
+}
+
+fn codex_activity_timestamp(line: &str) -> Option<u64> {
+    if !(line.contains("\"type\":\"response_item\"") || line.contains("\"type\":\"event_msg\"")) {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("response_item") | Some("event_msg") => {}
+        _ => return None,
+    }
+    v.get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(parse_iso8601)
+}
+
 /// Last user/assistant timestamp in a transcript, reading from the tail so a
 /// multi-megabyte file costs a few hundred kilobytes at most. Entries with
 /// other types (bookkeeping the host app writes) are ignored, which is the
 /// whole point: the file's modification time is not an activity signal.
 pub fn last_activity_in(path: &Path) -> Option<u64> {
+    last_activity_with(path, activity_timestamp)
+}
+
+fn last_activity_with(path: &Path, pick: fn(&str) -> Option<u64>) -> Option<u64> {
     let mut f = fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
     for chunk in [256 * 1024u64, 4 * 1024 * 1024, u64::MAX] {
@@ -94,7 +174,7 @@ pub fn last_activity_in(path: &Path) -> Option<u64> {
             lines.remove(0); // partial line
         }
         for line in lines.iter().rev() {
-            if let Some(ts) = activity_timestamp(line) {
+            if let Some(ts) = pick(line) {
                 return Some(ts);
             }
         }
@@ -163,6 +243,22 @@ mod tests {
         assert_eq!(
             encode_cwd("/Users/a/Library/Application Support/x.y"),
             "-Users-a-Library-Application-Support-x-y"
+        );
+    }
+
+    #[test]
+    fn codex_entries() {
+        assert!(
+            codex_activity_timestamp(
+                r#"{"type":"session_meta","timestamp":"1970-01-02T00:00:00Z"}"#
+            )
+            .is_none()
+        );
+        assert_eq!(
+            codex_activity_timestamp(
+                r#"{"type":"response_item","timestamp":"1970-01-02T00:00:00Z","payload":{}}"#
+            ),
+            Some(86_400)
         );
     }
 

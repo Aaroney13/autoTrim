@@ -19,6 +19,9 @@ pub struct AppGroup {
     pub name: String,
     pub kind: GroupKind,
     pub rss: u64,
+    /// CPU percent summed over the group's processes.
+    #[serde(default)]
+    pub cpu: f32,
     pub procs: usize,
     pub pids: Vec<u32>,
 }
@@ -80,10 +83,12 @@ pub fn group(table: &ProcTable, det: &Detection) -> Vec<AppGroup> {
             name,
             kind,
             rss: 0,
+            cpu: 0.0,
             procs: 0,
             pids: Vec::new(),
         });
         g.rss += p.rss;
+        g.cpu += p.cpu;
         g.procs += 1;
         g.pids.push(p.pid);
     }
@@ -94,10 +99,12 @@ pub fn group(table: &ProcTable, det: &Detection) -> Vec<AppGroup> {
             name: format!("{} sessions", s.kind.label()),
             kind: GroupKind::Agent,
             rss: 0,
+            cpu: 0.0,
             procs: 0,
             pids: Vec::new(),
         });
         g.rss += s.rss;
+        g.cpu += s.cpu;
         g.procs += 1;
         g.pids.push(s.pid);
     }

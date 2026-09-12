@@ -32,6 +32,11 @@ pub fn render(s: &Snapshot) -> String {
     }
     head.push(format!("up {}", dur(sys.uptime_secs)));
     let _ = writeln!(o, "  {}", head.join(" · "));
+    let _ = writeln!(
+        o,
+        "  cpu {:.0}% · load {:.1} {:.1} {:.1}",
+        sys.cpu_pct, sys.load_one, sys.load_five, sys.load_fifteen
+    );
 
     let _ = writeln!(o, "\nTop holders");
     for g in s.groups.iter().take(12) {
@@ -41,8 +46,9 @@ pub fn render(s: &Snapshot) -> String {
         };
         let _ = writeln!(
             o,
-            "  {:>8}  {:<28} {:>4} {}",
+            "  {:>8} {:>5.1}%  {:<28} {:>4} {}",
             bytes(g.rss),
+            g.cpu,
             fit_right(&g.name, 28),
             g.procs,
             unit
@@ -70,8 +76,8 @@ pub fn render(s: &Snapshot) -> String {
     } else {
         let _ = writeln!(
             o,
-            "  {:<12} {:<12} {:<32} {:>8} {:>6} {:>8}  STATE",
-            "AGENT", "HOST", "PROJECT", "AGE", "CPU", "MEM"
+            "  {:<12} {:<12} {:<32} {:>8} {:>6} {:>8} {:<11} STATE",
+            "AGENT", "HOST", "PROJECT", "AGE", "CPU", "MEM", "PORTS"
         );
         for x in &s.sessions {
             let tag = if x.is_self { " (this scan)" } else { "" };
@@ -87,19 +93,49 @@ pub fn render(s: &Snapshot) -> String {
                 (SessionState::Stale, Some(s)) => format!("stale · {s}"),
                 (SessionState::Stale, None) => "stale".to_string(),
             };
-            let quiet = String::new();
+            let ports = if x.ports.is_empty() {
+                "-".to_string()
+            } else {
+                x.ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
             let _ = writeln!(
                 o,
-                "  {:<12} {:<12} {:<32} {:>8} {:>5.1}% {:>8}  {}{}{}",
+                "  {:<12} {:<12} {:<32} {:>8} {:>5.1}% {:>8} {:<11} {}{}",
                 fit_right(x.kind.label(), 12),
                 fit_right(&x.host, 12),
                 fit_left(x.project.as_deref().unwrap_or("?"), 32),
                 dur(x.age_secs),
                 x.cpu_window_mean.unwrap_or(x.cpu),
                 bytes(x.rss),
+                fit_right(&ports, 11),
                 state,
-                quiet,
                 tag
+            );
+        }
+    }
+
+    if !s.ports.is_empty() {
+        let _ = writeln!(o, "\nListening ports ({})", s.ports.len());
+        let _ = writeln!(
+            o,
+            "  {:>5} {:<5} {:<16} {:>8}  {:<32} PROCESS",
+            "PORT", "PROTO", "ADDR", "OPEN", "OWNER"
+        );
+        for p in &s.ports {
+            let _ = writeln!(
+                o,
+                "  {:>5} {:<5} {:<16} {:>8}  {:<32} {} ({})",
+                p.port,
+                p.protocol,
+                fit_right(&p.addr, 16),
+                dur(p.open_for_secs),
+                fit_right(&p.owner, 32),
+                p.process,
+                p.pid
             );
         }
     }

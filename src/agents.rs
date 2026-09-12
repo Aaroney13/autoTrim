@@ -95,6 +95,12 @@ pub struct AgentSession {
     /// Seconds since `last_activity`. The strongest idle signal we have.
     #[serde(default)]
     pub idle_secs: Option<u64>,
+    /// Every pid in the session's process tree, root first.
+    #[serde(default)]
+    pub pids: Vec<u32>,
+    /// Ports something in the session tree is listening on.
+    #[serde(default)]
+    pub ports: Vec<u16>,
 }
 
 pub struct Detection {
@@ -202,7 +208,28 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
         claimed.insert(p.pid);
         claimed.extend(desc.iter().map(|d| d.pid));
 
-        let cwd = p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
+        let claude = if kind == AgentKind::ClaudeCode {
+            transcripts::claude_session(p.pid)
+        } else {
+            None
+        };
+        let codex = if kind == AgentKind::Codex {
+            transcripts::codex_session(p.pid)
+        } else {
+            None
+        };
+        let last_activity = claude
+            .as_ref()
+            .and_then(|c| c.last_activity)
+            .or_else(|| codex.as_ref().and_then(|c| c.last_activity));
+        let mut cwd = p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
+        // A Codex server's own cwd is usually `/`; the thread it is working
+        // in is the project a person recognises.
+        if let Some(c) = codex.as_ref().and_then(|c| c.cwd.clone())
+            && cwd.as_deref().is_none_or(|d| d == "/")
+        {
+            cwd = Some(c);
+        }
         let project = cwd.as_deref().map(shorten_home);
         let is_self = p.pid == self_pid || self_chain.contains(&p.pid);
         let state = if cpu >= 2.0 {
@@ -214,12 +241,6 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
         };
 
         let (host, host_app) = host_of(table, p);
-        let claude = if kind == AgentKind::ClaudeCode {
-            transcripts::claude_session(p.pid)
-        } else {
-            None
-        };
-        let last_activity = claude.as_ref().and_then(|c| c.last_activity);
         sessions.push(AgentSession {
             pid: p.pid,
             kind,
@@ -237,13 +258,26 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
             cpu_window_mean: None,
             quiet_for_secs: None,
             session_id: claude.as_ref().map(|c| c.session_id.clone()),
-            session_name: claude.as_ref().and_then(|c| c.name.clone()),
+            session_name: claude.as_ref().and_then(|c| c.name.clone()).or_else(|| {
+                codex.as_ref().map(|c| {
+                    format!(
+                        "{} open thread{}",
+                        c.threads,
+                        if c.threads == 1 { "" } else { "s" }
+                    )
+                })
+            }),
             transcript: claude
                 .as_ref()
                 .and_then(|c| c.transcript.as_ref())
+                .or_else(|| codex.as_ref().and_then(|c| c.transcript.as_ref()))
                 .map(|p| p.to_string_lossy().into_owned()),
             last_activity,
             idle_secs: last_activity.map(|t| now.saturating_sub(t)),
+            pids: std::iter::once(p.pid)
+                .chain(desc.iter().map(|d| d.pid))
+                .collect(),
+            ports: Vec::new(),
         });
     }
 

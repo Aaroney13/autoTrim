@@ -2,20 +2,25 @@
 
 mod agents;
 mod browser;
+mod config;
 mod daemon;
 mod fmt;
 mod groups;
 mod notify;
+mod openfiles;
 mod paths;
+mod ports;
 mod procs;
 mod report;
 mod rules;
 mod service;
 mod system;
 mod transcripts;
+mod watch;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use config::Config;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
@@ -33,16 +38,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// One-shot report: memory holders, agent sessions, browsers, advice.
+    /// One-shot report: memory holders, agent sessions, browsers, ports, advice.
     Scan(ScanArgs),
-    /// Sample continuously, keep history, and report advice as it changes.
+    /// Sample continuously, keep history, notify, and log advice as it changes.
     Daemon(DaemonArgs),
     /// Show the daemon's latest snapshot without sampling anything.
     Status(StatusArgs),
+    /// Live terminal view of the latest snapshot and the daemon log.
+    Watch(WatchArgs),
+    /// Print the daemon log.
+    Log(LogArgs),
+    /// Show the effective settings, or write a commented config file.
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigCmd>,
+    },
     /// Install, remove, restart, or inspect the login service (macOS launchd).
     Service {
         #[command(subcommand)]
         action: ServiceCmd,
+    },
+}
+
+#[derive(Subcommand, Clone, Copy)]
+enum ConfigCmd {
+    /// Write config.toml with every setting and its default, commented.
+    Init {
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -58,49 +82,39 @@ enum ServiceCmd {
     Status,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Default)]
 struct ScanArgs {
     /// Emit the snapshot as JSON instead of text.
     #[arg(long)]
     json: bool,
     /// How long to sample CPU before reporting, in milliseconds.
-    #[arg(long, default_value_t = 1500)]
-    sample_ms: u64,
-    /// A quiet session older than this is reported as stale.
-    #[arg(long, default_value_t = 6.0)]
-    stale_after_hours: f64,
-}
-
-impl Default for ScanArgs {
-    fn default() -> Self {
-        ScanArgs {
-            json: false,
-            sample_ms: 1500,
-            stale_after_hours: 6.0,
-        }
-    }
+    #[arg(long)]
+    sample_ms: Option<u64>,
+    /// A quiet session idle longer than this is reported as stale.
+    #[arg(long)]
+    stale_after_hours: Option<f64>,
 }
 
 #[derive(Args, Clone)]
 struct DaemonArgs {
     /// Seconds between samples.
-    #[arg(long, default_value_t = 30)]
-    interval: u64,
+    #[arg(long)]
+    interval: Option<u64>,
     /// Rolling window, in seconds, over which a session's CPU is averaged.
-    #[arg(long, default_value_t = 600)]
-    window: u64,
+    #[arg(long)]
+    window: Option<u64>,
     /// Days of history to keep on disk.
-    #[arg(long, default_value_t = 7)]
-    retention_days: u64,
-    /// A quiet session older than this is reported as stale.
-    #[arg(long, default_value_t = 6.0)]
-    stale_after_hours: f64,
+    #[arg(long)]
+    retention_days: Option<u64>,
+    /// A quiet session idle longer than this is reported as stale.
+    #[arg(long)]
+    stale_after_hours: Option<f64>,
     /// Minutes a session must be observed quiet before it can be called stale.
-    #[arg(long, default_value_t = 15)]
-    min_quiet_minutes: u64,
-    /// Window-mean CPU percent below which a session counts as quiet.
-    #[arg(long, default_value_t = 2.0)]
-    quiet_cpu: f32,
+    #[arg(long)]
+    min_quiet_minutes: Option<u64>,
+    /// CPU percent below which a session counts as quiet.
+    #[arg(long)]
+    quiet_cpu: Option<f32>,
     /// Take a single sample, write it, and exit.
     #[arg(long)]
     once: bool,
@@ -108,8 +122,28 @@ struct DaemonArgs {
     #[arg(long)]
     no_notify: bool,
     /// Hours before persisting advice is notified again.
-    #[arg(long, default_value_t = 4.0)]
-    remind_every_hours: f64,
+    #[arg(long)]
+    remind_every_hours: Option<f64>,
+}
+
+#[derive(Args, Clone)]
+struct WatchArgs {
+    /// Seconds between refreshes.
+    #[arg(long, default_value_t = 5)]
+    interval: u64,
+    /// Lines of daemon log to show under the report.
+    #[arg(long, default_value_t = 8)]
+    log_lines: usize,
+}
+
+#[derive(Args, Clone)]
+struct LogArgs {
+    /// Lines to print from the end of the log.
+    #[arg(short = 'n', long, default_value_t = 50)]
+    lines: usize,
+    /// Keep printing as the daemon writes.
+    #[arg(short = 'f', long)]
+    follow: bool,
 }
 
 #[derive(Args, Clone)]
@@ -129,6 +163,8 @@ pub struct Snapshot {
     pub groups: Vec<groups::AppGroup>,
     pub sessions: Vec<agents::AgentSession>,
     pub browsers: Vec<browser::BrowserInfo>,
+    #[serde(default)]
+    pub ports: Vec<ports::PortInfo>,
     pub advice: Vec<rules::Advice>,
 }
 
@@ -147,7 +183,24 @@ pub fn take_snapshot(
     }
     let groups = groups::group(&table, &det);
     let browsers = browser::detect(&table, &groups);
-    let advice = rules::evaluate(&system, &groups, &det.sessions, &browsers, thresholds);
+    let ports = ports::listening(&table, &det, &groups);
+    for s in &mut det.sessions {
+        s.ports = ports
+            .iter()
+            .filter(|p| s.pids.contains(&p.pid))
+            .map(|p| p.port)
+            .collect();
+        s.ports.sort_unstable();
+        s.ports.dedup();
+    }
+    let advice = rules::evaluate(
+        &system,
+        &groups,
+        &det.sessions,
+        &browsers,
+        &ports,
+        thresholds,
+    );
     Snapshot {
         taken_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -158,21 +211,19 @@ pub fn take_snapshot(
         groups,
         sessions: det.sessions,
         browsers,
+        ports,
         advice,
     }
 }
 
-fn scan(args: &ScanArgs) -> Result<()> {
-    let thresholds = rules::Thresholds {
-        stale_after_secs: (args.stale_after_hours * 3600.0) as u64,
-        ..Default::default()
-    };
+fn scan(args: &ScanArgs, cfg: &Config) -> Result<()> {
+    let mut thresholds = cfg.thresholds();
+    if let Some(h) = args.stale_after_hours {
+        thresholds.stale_after_secs = (h * 3600.0) as u64;
+    }
     let mut sys = System::new();
-    let snap = take_snapshot(
-        &mut sys,
-        Some(Duration::from_millis(args.sample_ms)),
-        &thresholds,
-    );
+    let sample = Duration::from_millis(args.sample_ms.unwrap_or(1500));
+    let snap = take_snapshot(&mut sys, Some(sample), &thresholds);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&snap)?);
     } else {
@@ -181,21 +232,28 @@ fn scan(args: &ScanArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_daemon(args: &DaemonArgs) -> Result<()> {
-    let thresholds = rules::Thresholds {
-        stale_after_secs: (args.stale_after_hours * 3600.0) as u64,
-        min_quiet_secs: args.min_quiet_minutes * 60,
-        quiet_cpu: args.quiet_cpu,
-        ..Default::default()
-    };
+fn run_daemon(args: &DaemonArgs, cfg: &Config) -> Result<()> {
+    let mut thresholds = cfg.thresholds();
+    if let Some(h) = args.stale_after_hours {
+        thresholds.stale_after_secs = (h * 3600.0) as u64;
+    }
+    if let Some(m) = args.min_quiet_minutes {
+        thresholds.min_quiet_secs = m * 60;
+    }
+    if let Some(q) = args.quiet_cpu {
+        thresholds.quiet_cpu = q;
+    }
+    let interval = args.interval.unwrap_or(cfg.interval_secs).max(5);
+    let window = args.window.unwrap_or(cfg.window_secs).max(interval);
+    let remind = args.remind_every_hours.unwrap_or(cfg.remind_every_hours);
     daemon::run(daemon::DaemonConfig {
-        interval: Duration::from_secs(args.interval.max(5)),
-        window: Duration::from_secs(args.window.max(args.interval)),
-        retention_days: args.retention_days.max(1),
+        interval: Duration::from_secs(interval),
+        window: Duration::from_secs(window),
+        retention_days: args.retention_days.unwrap_or(cfg.retention_days).max(1),
         thresholds,
         once: args.once,
-        notify: !args.no_notify,
-        remind_every: Duration::from_secs((args.remind_every_hours * 3600.0).max(60.0) as u64),
+        notify: cfg.notify && !args.no_notify,
+        remind_every: Duration::from_secs((remind * 3600.0).max(60.0) as u64),
     })
 }
 
@@ -218,12 +276,55 @@ fn status(args: &StatusArgs) -> Result<()> {
     Ok(())
 }
 
+fn show_config(cfg: &Config, from: Option<&std::path::Path>) -> Result<()> {
+    match from {
+        Some(p) => println!("# from {}", p.display()),
+        None => println!(
+            "# defaults (no file at {}; `autotrim config init` writes one)",
+            Config::path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "?".to_string())
+        ),
+    }
+    print!("{}", toml::to_string_pretty(cfg)?);
+    Ok(())
+}
+
+fn init_config(force: bool) -> Result<()> {
+    let path =
+        Config::path().ok_or_else(|| anyhow::anyhow!("no data directory on this platform"))?;
+    if path.exists() && !force {
+        println!(
+            "{} already exists; pass --force to overwrite",
+            path.display()
+        );
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, Config::template())?;
+    println!("wrote {}", path.display());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let (cfg, cfg_path) = Config::load()?;
     match cli.cmd.unwrap_or(Cmd::Scan(ScanArgs::default())) {
-        Cmd::Scan(args) => scan(&args),
-        Cmd::Daemon(args) => run_daemon(&args),
+        Cmd::Scan(args) => scan(&args, &cfg),
+        Cmd::Daemon(args) => run_daemon(&args, &cfg),
         Cmd::Status(args) => status(&args),
+        Cmd::Watch(args) => watch::run(
+            Duration::from_secs(args.interval.max(1)),
+            args.log_lines,
+            cfg.thresholds(),
+        ),
+        Cmd::Log(args) => watch::print_log(args.lines, args.follow),
+        Cmd::Config { action } => match action {
+            None => show_config(&cfg, cfg_path.as_deref()),
+            Some(ConfigCmd::Init { force }) => init_config(force),
+        },
         Cmd::Service { action } => service::run(match action {
             ServiceCmd::Install => service::Action::Install,
             ServiceCmd::Uninstall => service::Action::Uninstall,

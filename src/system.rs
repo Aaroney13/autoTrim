@@ -20,6 +20,15 @@ pub struct SystemInfo {
     /// System-wide free percentage as the OS reports it (macOS). None where unknown.
     pub free_pct: Option<u8>,
     pub uptime_secs: u64,
+    /// Whole-machine CPU percent over the sample window (100 = every core busy).
+    #[serde(default)]
+    pub cpu_pct: f32,
+    #[serde(default)]
+    pub load_one: f64,
+    #[serde(default)]
+    pub load_five: f64,
+    #[serde(default)]
+    pub load_fifteen: f64,
 }
 
 impl SystemInfo {
@@ -46,6 +55,10 @@ pub fn collect(sys: &mut System) -> SystemInfo {
         wired,
         free_pct: platform::free_pct(),
         uptime_secs: System::uptime(),
+        cpu_pct: sys.global_cpu_usage(),
+        load_one: System::load_average().one,
+        load_five: System::load_average().five,
+        load_fifteen: System::load_average().fifteen,
     }
 }
 

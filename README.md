@@ -97,14 +97,24 @@ dashboard, Tauri window.
 
 ```
 src/
-  main.rs      CLI entry: scan | daemon | tray
-  system.rs    memory totals, swap, compressed, uptime (platform-specific)
-  procs.rs     process snapshot: pid, parent, exe, args, cwd, rss, cpu, age
-  groups.rs    roll processes up into app groups
-  agents.rs    detect agent sessions, host, project, idle state
-  browser.rs   Chrome/Chromium breakdown
-  rules.rs     deterministic advice
-  report.rs    text rendering
+  main.rs         CLI entry: scan | daemon | status | watch | log | service
+  system.rs       memory totals, swap, compressed, wired, cpu, load, uptime
+  procs.rs        process snapshot: pid, parent, exe, args, cwd, rss, cpu, age
+  groups.rs       roll processes up into app groups
+  agents.rs       detect agent sessions: host, project, idle evidence
+  transcripts.rs  what agents leave on disk: Claude Code session files and
+                  transcripts, Codex rollouts
+  openfiles.rs    a process's open files (libproc on macOS, /proc on Linux)
+  browser.rs      Chrome/Chromium breakdown
+  ports.rs        listening ports and their owners
+  rules.rs        deterministic advice and the session-state decision
+  daemon.rs       sampling loop, rolling windows, history, notifications
+  notify.rs       native notification delivery
+  service.rs      launchd install/uninstall/restart/status
+  watch.rs        live terminal view and log printing
+  paths.rs        data directory per platform
+  report.rs       text rendering
+  fmt.rs          bytes, durations, dates
 ```
 
 Everything upstream of `rules.rs` produces one `Snapshot` struct, serialized
@@ -130,9 +140,29 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   (`--remind-every-hours`, `--no-notify`); the send log is persisted so a
   restart does not repeat itself. `--once` takes a single tick and exits.
 - `autotrim status`: renders the daemon's latest snapshot without sampling.
+- `autotrim watch`: a live terminal view that redraws every few seconds from
+  the daemon's latest snapshot (or its own scan when no daemon is running),
+  with the tail of the daemon log underneath. The quickest way to see what
+  it is doing.
+- `autotrim log [-n 50] [-f]`: print or follow the daemon log.
 - `autotrim service install | uninstall | restart | status`: launchd agent on
   macOS that starts the daemon now and at every login, logging to
   `daemon.log` in the data directory.
+
+- `autotrim config`: print the effective settings and where they came from.
+  `autotrim config init` writes `config.toml` in the data directory with
+  every setting, its default, and a comment. Flags override the file, the
+  file overrides the defaults. Thresholds, intervals, notification cadence,
+  and ignore lists for ports, apps, and projects all live there.
+
+Every report also carries whole-machine CPU and load average, CPU per app
+group and per session, and a table of listening TCP/UDP ports with the app
+group or agent session that owns each one and how long it has been open.
+The daemon tracks port age across ticks (a port cannot predate its process,
+so first sight uses the owner's start time), and a fifth rule reports old
+local servers: a listener that is not an app, not a system process, and not
+part of an agent session, quiet, and open longer than a day by default. The
+verb that stops one is part of the reclaim work still to come.
 
 How "idle" is decided, strongest evidence first:
 
@@ -148,11 +178,19 @@ How "idle" is decided, strongest evidence first:
    ignored, which is why the file's modification time is not a signal) and
    reports idle time from it. A session idle longer than the stale threshold
    (default 6 h) is stale, immediately, even on a one-shot scan.
-3. **Other agents fall back to the daemon's quiet window.** A session must be
+3. **Codex publishes it a different way.** Codex keeps one rollout file per
+   thread under `~/.codex/sessions` and holds the live ones open, so a Codex
+   server's own open-file table (read with libproc on macOS, `/proc` on
+   Linux, no `lsof`) says which threads it is hosting. Idle time is the
+   newest response or event across those files, and the project is the
+   working directory in the newest thread's metadata rather than the
+   server's own `/`. A Codex server with no thread open falls through to
+   the next rule.
+4. **Other agents fall back to the daemon's quiet window.** A session must be
    observed quiet for a minimum period (default 15 min) before it is called
    stale, however old it is, so a fresh daemon never judges anything in its
    first minutes.
-4. **A one-shot scan of an agent with no transcript** falls back to age plus
+5. **A one-shot scan of an agent with no transcript** falls back to age plus
    a quiet sample, which is the weakest signal here and is labelled as such
    in the JSON (no `idle_secs`, no `quiet_for_secs`).
 
@@ -166,31 +204,66 @@ Override with `AUTOTRIM_DATA_DIR`.
 
 Known gaps, in the order they should be fixed:
 
-- **Codex sessions have no transcript mapping yet.** Codex keeps rollouts
-  under `~/.codex/sessions`, but nothing ties a process to one. They fall
-  back to the quiet window. The Codex server under the ChatGPT app is
-  reported as a session with `/` as its project; it is really a long-lived
-  backend and deserves a distinct label.
+- **Transcript tails are re-read every tick.** A Codex server with a dozen
+  threads open costs a few megabytes of reads per tick. Cache by file length.
 - **Notifications carry no buttons.** A bare binary cannot register
   actionable notifications on macOS; that needs an app bundle, which comes
   with the tray.
-- **No quiet hours** for notifications yet.
 - **No reclaim actions yet.** The advice tells you what to close; the close
-  verb with its resume-command logging is the next feature, and auto mode
-  sits behind it.
+  verbs (agent session with its resume command logged, old local server,
+  browser tab discard) are the next feature, and auto mode sits behind them.
+- **No quiet hours** for notifications yet; the config file is where they
+  will go.
 - **macOS only** for the service, the memory counters beyond swap, and
   browser profiles. Windows and Linux compile and run `scan` and `daemon`.
 
-Build and run:
+## Getting started
+
+Build once, then pick how you want to run it.
 
 ```bash
 cargo build --release && ./target/release/autotrim scan
 ```
 
-```bash
-./target/release/autotrim daemon --interval 30
-```
+Always on, starting now and at every login (macOS):
 
 ```bash
 ./target/release/autotrim service install
 ```
+
+Or in the foreground, in a terminal you keep open:
+
+```bash
+./target/release/autotrim daemon
+```
+
+Then, in another terminal, watch it work:
+
+```bash
+./target/release/autotrim watch
+```
+
+`autotrim status` prints the latest snapshot once, `autotrim log -f` follows
+the daemon log, and `autotrim service uninstall` removes the login service.
+Rebuilt the binary? `autotrim service restart` picks up the new one.
+
+## Decisions
+
+Things that came up and where they landed.
+
+- **Emergencies stay deterministic.** When memory is critical the wrong move
+  is to start a model that needs memory to think, and a wedged machine cannot
+  run one anyway. The planned emergency tier notifies loudly and, in auto
+  mode, runs the reclaim verbs in a fixed order. No model in that loop.
+- **Hand-off to your agent is a launch, not a decision.** A planned
+  `autotrim fix` starts your own agent (Claude Code or Codex) with the
+  current snapshot and the safe action verbs, so it can diagnose and act with
+  full context. It runs when you ask for it. An opt-in flag may later fire it
+  after an emergency has been handled, off by default. The daemon itself
+  never calls a model.
+- **UI comes as a Tauri tray app** once the daemon and its actions are
+  stable: a menu bar item with pressure and the current advice, a window with
+  the sessions, ports, and history, one-click actions that talk to the
+  daemon over a local socket. The terminal `watch` view is the interface
+  until then, and stays afterwards for people who live in a terminal.
+

@@ -60,9 +60,11 @@ impl ProcTable {
             .with_cmd(UpdateKind::OnlyIfNotSet);
         if let Some(sample) = sample {
             sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+            sys.refresh_cpu_usage();
             std::thread::sleep(sample.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL));
         }
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+        sys.refresh_cpu_usage();
 
         let mut procs: Vec<Proc> = sys
             .processes()
