@@ -265,6 +265,10 @@ fn action_log() -> Result<Vec<actions::ActionRecord>, String> {
 fn main() {
     let cfg = Config::load().map(|(c, _)| c).unwrap_or_default();
     tauri::Builder::default()
+        // First, so a second launch only focuses the window of the first.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_window(app);
+        }))
         .manage(AppState {
             thresholds: cfg.thresholds(),
             latest: Mutex::new(None),

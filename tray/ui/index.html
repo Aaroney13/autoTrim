@@ -54,6 +54,7 @@
   <section><h2>Advice</h2><div class="cards" id="advice"></div></section>
   <section><h2>Agent sessions</h2><div class="wrap"><table id="sessions"></table></div></section>
   <section><h2>Listening ports</h2><div class="wrap"><table id="ports"></table></div></section>
+  <section><h2>Browsers</h2><div class="cards" id="browsers"></div></section>
   <section><h2>Trends</h2><div class="wrap"><table id="trends"></table></div></section>
   <section><h2>Top holders</h2><div class="wrap"><table id="groups"></table></div></section>
   <section><h2>Actions</h2><div class="log" id="log"><span class="muted">nothing yet</span></div></section>
@@ -109,8 +110,13 @@ function render(s, src) {
       return `<tr><td>${esc(x.kind.replace("_", " "))}</td><td>${esc(x.host)}</td><td class="path" title="${esc(x.project)}">${esc(x.session_name ? x.session_name + " · " : "")}${esc(x.project ?? "?")}</td><td class="num">${dur(x.age_secs)}</td><td class="num">${cpu}</td><td class="num">${bytes(x.rss)}</td><td>${x.ports.join(", ") || "–"}</td><td class="state ${x.state}">${esc(stateLabel(x))}${x.is_self ? " (this app)" : ""}</td><td class="num"><button ${can ? "" : "disabled"} data-close="${x.pid}">Close</button></td></tr>`;
     }).join("");
 
-  document.getElementById("ports").innerHTML = `<tr><th class="num">Port</th><th>Proto</th><th>Addr</th><th class="num">Open</th><th>Owner</th><th>Process</th><th></th></tr>` +
-    s.ports.map(p => `<tr><td class="num">${p.port}</td><td>${p.protocol}</td><td>${esc(p.addr)}</td><td class="num">${dur(p.open_for_secs)}</td><td>${esc(p.owner)}</td><td>${esc(p.process)} <span class="muted">(${p.pid})</span></td><td class="num"><button ${p.owner_managed ? "disabled" : ""} data-stop="${p.pid}" title="${p.owner_managed ? "managed by its app or the system" : "stop this process"}">Stop</button></td></tr>`).join("");
+  document.getElementById("ports").innerHTML = `<tr><th class="num">Port</th><th>Proto</th><th>Addr</th><th class="num">Open</th><th>What</th><th>Owner</th><th>Process</th><th></th></tr>` +
+    s.ports.map(p => `<tr><td class="num">${p.port}</td><td>${p.protocol}</td><td>${esc(p.addr)}</td><td class="num">${dur(p.open_for_secs)}</td><td title="${esc(p.label_source || "")}">${esc(p.label || "?")}</td><td>${esc(p.owner)}</td><td>${esc(p.process)} <span class="muted">(${p.pid})</span></td><td class="num"><button ${p.owner_managed ? "disabled" : ""} data-stop="${p.pid}" title="${p.owner_managed ? "managed by its app or the system" : "stop this process"}">Stop</button></td></tr>`).join("");
+
+  const browsers = s.browsers || [];
+  document.getElementById("browsers").innerHTML = browsers.length
+    ? browsers.map(b => `<div class="card"><div class="t">${esc(b.name)}</div><div class="e">${bytes(b.rss)} across ${b.procs} processes · ${b.renderers} renderers (${b.tab_sized_renderers} tab-sized)${b.tabs != null ? ` · ${b.tabs} tabs in ${b.windows} windows` : ""} · ${b.extension_renderers} extension${b.profiles != null ? ` · ${b.profiles} profiles` : ""}</div></div>`).join("")
+    : `<div class="card"><div class="muted">No Chromium-family browser running.</div></div>`;
 
   const trends = (s.trends || []).filter(t => t.span_secs >= 600).slice(0, 10);
   document.getElementById("trends").innerHTML = trends.length

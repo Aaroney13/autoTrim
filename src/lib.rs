@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod agents;
+pub mod app;
 pub mod browser;
 pub mod config;
 pub mod daemon;
@@ -13,6 +14,7 @@ pub mod groups;
 pub mod notify;
 pub mod openfiles;
 pub mod paths;
+pub mod portlabel;
 pub mod ports;
 pub mod procs;
 pub mod report;
@@ -53,6 +55,17 @@ pub fn take_snapshot(
     sample: Option<Duration>,
     thresholds: &rules::Thresholds,
 ) -> Snapshot {
+    take_snapshot_with(sys, sample, thresholds, None)
+}
+
+/// As `take_snapshot`, with a cache of port probe results the daemon keeps
+/// across ticks so each port is asked what it is once.
+pub fn take_snapshot_with(
+    sys: &mut System,
+    sample: Option<Duration>,
+    thresholds: &rules::Thresholds,
+    port_cache: Option<&mut std::collections::HashMap<String, String>>,
+) -> Snapshot {
     let table = procs::ProcTable::collect(sys, sample);
     let system = system::collect(sys);
     let mut det = agents::detect(&table, thresholds.stale_after_secs);
@@ -60,8 +73,15 @@ pub fn take_snapshot(
         s.state = rules::session_state(s, thresholds);
     }
     let groups = groups::group(&table, &det);
-    let browsers = browser::detect(&table, &groups);
-    let ports = ports::listening(&table, &det, &groups);
+    let browsers = browser::detect(&table, &groups, thresholds.count_browser_tabs);
+    let mut ports = ports::listening(&table, &det, &groups);
+    portlabel::label_all(
+        &mut ports,
+        &table,
+        thresholds.probe_ports,
+        Duration::from_millis(thresholds.probe_timeout_ms.clamp(50, 5000)),
+        port_cache,
+    );
     for s in &mut det.sessions {
         s.ports = ports
             .iter()

@@ -3,7 +3,7 @@
 //! A session is the root process of a recognized agent plus everything it
 //! spawned. Memory and CPU are summed over that tree.
 
-use crate::groups::bundle_name;
+use crate::groups::app_name;
 use crate::procs::{Proc, ProcTable};
 use crate::system::home;
 use crate::transcripts;
@@ -114,15 +114,29 @@ fn is_runtime(exe: &str) -> bool {
     e == "node" || e == "bun" || e == "deno" || e.starts_with("python")
 }
 
-fn script_arg_ends_with(p: &Proc, suffix: &str) -> bool {
-    p.cmd.iter().skip(1).take(2).any(|a| a.ends_with(suffix))
+/// Whether one of the first script arguments is a file called `name`, on
+/// either kind of path separator.
+fn script_named(p: &Proc, name: &str) -> bool {
+    p.cmd.iter().skip(1).take(2).any(|a| {
+        a.strip_suffix(name)
+            .map(|dir| dir.ends_with(['/', '\\']))
+            .unwrap_or(false)
+    })
 }
 
 /// Which agent, if any, this single process is. Case-sensitive on the
 /// executable name on purpose: `claude` is the CLI, `Claude` is the desktop app.
 pub fn classify(p: &Proc) -> Option<AgentKind> {
-    let exe = p.exe_name();
-    match exe.as_str() {
+    let full = p.exe_name();
+    let exe = full.strip_suffix(".exe").unwrap_or(&full);
+    // Claude Desktop on Windows is also claude.exe; it is the host, not a session.
+    if p.exe
+        .as_ref()
+        .is_some_and(|e| e.to_string_lossy().contains("AnthropicClaude"))
+    {
+        return None;
+    }
+    match exe {
         "claude" => return Some(AgentKind::ClaudeCode),
         "codex" => return Some(AgentKind::Codex),
         "cursor-agent" => return Some(AgentKind::CursorAgent),
@@ -133,14 +147,14 @@ pub fn classify(p: &Proc) -> Option<AgentKind> {
         "openclaw" => return Some(AgentKind::OpenClaw),
         _ => {}
     }
-    if !is_runtime(&exe) {
+    if !is_runtime(exe) {
         return None;
     }
-    if script_arg_ends_with(p, "/claude") || p.cmd_has("@anthropic-ai/claude-code") {
+    if script_named(p, "claude") || p.cmd_has("@anthropic-ai/claude-code") {
         Some(AgentKind::ClaudeCode)
     } else if p.cmd_has("@openai/codex") {
         Some(AgentKind::Codex)
-    } else if p.cmd_has("@google/gemini-cli") || script_arg_ends_with(p, "/gemini") {
+    } else if p.cmd_has("@google/gemini-cli") || script_named(p, "gemini") {
         Some(AgentKind::GeminiCli)
     } else if exe.to_ascii_lowercase().starts_with("python") && p.cmd_has("aider") {
         Some(AgentKind::Aider)
@@ -165,7 +179,7 @@ fn host_label(app: &str) -> String {
 
 fn host_of(table: &ProcTable, p: &Proc) -> (String, Option<String>) {
     for a in table.ancestors(p.pid) {
-        if let Some(b) = bundle_name(a) {
+        if let Some(b) = app_name(a) {
             return (host_label(&b), Some(b));
         }
     }

@@ -11,7 +11,7 @@ use crate::notify;
 use crate::paths;
 use crate::rules::{self, Advice, Thresholds};
 use crate::trends::History;
-use crate::{Snapshot, take_snapshot};
+use crate::{Snapshot, take_snapshot_with};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -73,6 +73,9 @@ struct Tracker {
     /// Rolling series per app and session, for growth and CPU trends.
     #[serde(default)]
     history: History,
+    /// "pid:port" to what the probe learned, so each port is asked once.
+    #[serde(default)]
+    port_labels: HashMap<String, String>,
 }
 
 fn key(s: &AgentSession) -> String {
@@ -234,6 +237,33 @@ fn record(snap: &Snapshot) -> HistoryRecord {
             .collect(),
         advice: snap.advice.iter().map(|a| a.id.clone()).collect(),
     }
+}
+
+/// One daemon per data directory. The lock is a pid file; one left by a
+/// crash is ignored when no live autotrim process has that pid, so a stale
+/// file never blocks a restart.
+fn claim_lock(dir: &Path) -> Result<()> {
+    let path = dir.join("daemon.pid");
+    if let Ok(text) = fs::read_to_string(&path)
+        && let Ok(pid) = text.trim().parse::<u32>()
+        && pid != std::process::id()
+    {
+        let mut sys = System::new();
+        let target = sysinfo::Pid::from_u32(pid);
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
+        if let Some(p) = sys.process(target)
+            && p.name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with("autotrim")
+        {
+            anyhow::bail!(
+                "an autotrim daemon is already running (pid {pid}) on {}; stop it with `autotrim service restart` or point AUTOTRIM_DATA_DIR elsewhere",
+                dir.display()
+            );
+        }
+    }
+    write_atomic(&path, std::process::id().to_string().as_bytes())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -565,6 +595,7 @@ fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64
 pub fn run(cfg: DaemonConfig) -> Result<()> {
     let dir = paths::data_dir().context("no data directory for this platform")?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    claim_lock(&dir)?;
     let state_path = dir.join("state.json");
     let latest_path = dir.join("latest.json");
 
@@ -603,7 +634,18 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
         };
         first = false;
 
-        let mut snap = take_snapshot(&mut sys, sample, &cfg.thresholds);
+        let mut snap = take_snapshot_with(
+            &mut sys,
+            sample,
+            &cfg.thresholds,
+            Some(&mut tracker.port_labels),
+        );
+        let live_ports: std::collections::HashSet<String> = snap
+            .ports
+            .iter()
+            .map(|p| format!("{}:{}", p.pid, p.port))
+            .collect();
+        tracker.port_labels.retain(|k, _| live_ports.contains(k));
         tracker.observe(now, window, cfg.thresholds.quiet_cpu, &mut snap.sessions);
         tracker.observe_ports(now, &mut snap.ports);
         for s in &mut snap.sessions {
@@ -663,6 +705,7 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
         }
         std::thread::sleep(cfg.interval);
     }
+    let _ = fs::remove_file(dir.join("daemon.pid"));
     Ok(())
 }
 

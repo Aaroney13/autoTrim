@@ -51,7 +51,8 @@ Out of scope, deliberately:
   no queues, no routing work between agents. autoTrim only ever stops things
   or suggests stopping them.
 - **Being an agent.** No model calls inside the daemon. Every decision the
-  daemon makes is a rule you can read in the source.
+   main.rs         CLI entry: scan | daemon | status | watch | log | service | open
+makes is a rule you can read in the source.
 - **Memory "cleaning."** No purge tricks, no cache clearing, no claims that
   freeing inactive memory speeds anything up.
 - **General system monitoring.** Not a replacement for Stats or iStat Menus.
@@ -100,18 +101,20 @@ src/
   main.rs         CLI entry: scan | daemon | status | watch | log | service
   system.rs       memory totals, swap, compressed, wired, cpu, load, uptime
   procs.rs        process snapshot: pid, parent, exe, args, cwd, rss, cpu, age
-  groups.rs       roll processes up into app groups
+  groups.rs       roll processes up into app groups; what counts as an app per platform
   agents.rs       detect agent sessions: host, project, idle evidence
   transcripts.rs  what agents leave on disk: Claude Code session files and
                   transcripts, Codex rollouts
   openfiles.rs    a process's open files (libproc on macOS, /proc on Linux)
-  browser.rs      Chrome/Chromium breakdown
+  browser.rs      Chrome/Chromium breakdown, profile directories per platform
   ports.rs        listening ports and their owners
+  portlabel.rs    what a port is: known table, command line, HTTP fingerprint
   rules.rs        deterministic advice and the session-state decision
   daemon.rs       sampling loop, rolling windows, history, notifications, auto mode
   trends.rs       rolling series, linear fit, growth and CPU readings
   notify.rs       native notification delivery
   service.rs      launchd install/uninstall/restart/status
+  app.rs          find and launch the menu bar app, for `autotrim open`
   watch.rs        live terminal view and log printing
   paths.rs        data directory per platform
   report.rs       text rendering
@@ -121,6 +124,9 @@ tray/
   src/main.rs     Tauri menu bar app: tray menu, window, commands
   ui/index.html   the window, plain HTML and JS, no bundler
   tauri.conf.json window and bundle settings
+  icons/          app icon; icon-source.png is the 1024px original
+scripts/
+  install-app.sh  bundle the tray as autoTrim.app and put it in Applications
 ```
 
 The root package is both the `autotrim` library and the `autotrim` binary;
@@ -130,8 +136,9 @@ library. `cargo build --release` at the root builds the CLI; the tray is
 
 Everything upstream of `rules.rs` produces one `Snapshot` struct, serialized
 to JSON. The daemon, the tray, the MCP server, and the `scan` command all
-consume that struct. Platform-specific code stays in `system.rs` and behind
-`cfg` blocks in `procs.rs`.
+consume that struct. Platform-specific code stays behind `cfg` in `system.rs`,
+`browser.rs`, `paths.rs`, `openfiles.rs`, `service.rs`, and `groups.rs`; the
+path rules in `groups.rs` are plain functions tested on every host.
 
 ## Status
 
@@ -203,7 +210,8 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   first click arms, second click acts, and the result with its resume
   command appears in a toast and in the Actions list. The tray reads the
   daemon's snapshot every five seconds and only scans on its own when no
-  daemon is running. No Dock icon. The window is created when you open it
+  daemon is running. No Dock icon. Launching it again only brings the
+  window forward. The window is created when you open it
   and destroyed when you close it, so an idle tray is only the menu item.
   Built with Tauri on the system web view: measured at about 60 MB resident
   idle on macOS, which is the runtime's price, against the daemon's 7 MB.
@@ -217,7 +225,17 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
 
 Every report also carries whole-machine CPU and load average, CPU per app
 group and per session, and a table of listening TCP/UDP ports with the app
-group or agent session that owns each one and how long it has been open.
+group or agent session that owns each one, how long it has been open, and
+what it is. Labels come from three sources, cheapest first and none of them
+a guess: a table of ports and owners people recognise (AirPlay, Handoff,
+Lima, Spotify, Postgres, the VS Code extension host), the owner's own
+command line and working directory ("Next.js dev server · ~/code/shop"),
+and, for what is still vague, one short HTTP request to the port itself,
+which fingerprints Vite, Next.js, Express, Flask, Django, uvicorn and
+friends from their headers and markup. Probes go to loopback only, time out
+in 300 ms, skip ports that speak something other than HTTP, and the daemon
+remembers each answer so a port is asked once in its lifetime. A port that
+none of this can name stays a question mark rather than a story.
 The daemon tracks port age across ticks (a port cannot predate its process,
 so first sight uses the owner's start time), and a fifth rule reports old
 local servers: a listener that is not an app, not a system process, and not
@@ -276,8 +294,11 @@ Known gaps, in the order they should be fixed:
   never targets it; `close` will, with `--force`, and it will come back.
 - **No quiet hours** for notifications yet; the config file is where they
   will go.
-- **macOS only** for the service, the memory counters beyond swap, and
-  browser profiles. Windows and Linux compile and run `scan` and `daemon`.
+- **macOS only** for the service and the memory counters beyond swap.
+  Linux and Windows build in CI and run `scan` and `daemon`: app grouping
+  uses each platform's install layout, browsers are found by their native
+  executable names, and Codex attribution needs the open-file table, which
+  Windows does not expose yet. Neither has been used on a real desktop.
 
 ## Getting started
 
@@ -309,18 +330,45 @@ Then, in another terminal, watch it work:
 the daemon log, and `autotrim service uninstall` removes the login service.
 Rebuilt the binary? `autotrim service restart` picks up the new one.
 
-The menu bar app:
+The menu bar app, as a real application with an icon:
 
 ```bash
-cargo run -p autotrim-tray --release
+./scripts/install-app.sh
 ```
 
-It runs until you pick Quit from its menu. Making it start at login and
-packaging it as a signed `.app` is still to do.
+That bundles the tray with Tauri and copies `autoTrim.app` into
+Applications (yours, when the system folder is not writable). Open it from
+there, keep it in the Dock, or from any terminal:
+
+```bash
+autotrim open
+```
+
+`open` launches the app or brings its window forward. The app refuses to
+run twice, and so does the daemon: one per data directory, tracked in
+`daemon.pid`, with a stale file from a crash ignored. The app runs until
+you pick Quit from its menu. Starting it at login and signing the bundle
+are still to do. For a quick unbundled run while developing,
+`cargo run -p autotrim-tray --release` still works.
 
 ## Decisions
 
 Things that came up and where they landed.
+
+- **Renderers are not tabs.** Chrome runs a process per tab, but also one
+  per cross-site frame (site isolation), per prerendered page, plus a spare
+  it keeps warm, so 52 renderer processes for 31 tabs is normal. The
+  report now says both numbers when it can ask the browser for its tab and
+  window count (AppleScript, macOS, on by default) and otherwise splits
+  renderers into tab-sized and small. The tab threshold in the browser rule
+  uses the tab-sized count.
+- **Port labels are deterministic, not model-guessed.** The idea of asking
+  a local model what a port is came up. The command line, the working
+  directory, and a one-request HTTP fingerprint identify nearly every dev
+  port precisely for free, and a model would be guessing from the same
+  evidence with less rigour. The leftovers are exactly what the planned
+  MCP interface is for: your own agent, with the snapshot in hand, can go
+  and look.
 
 - **Closing a Claude Code session is clean.** Tested on a VS Code-hosted
   session that had been idle for 54 days: the polite signal was enough, the

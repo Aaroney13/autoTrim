@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use autotrim::config::Config;
-use autotrim::{actions, daemon, fmt, report, service, take_snapshot, watch};
+use autotrim::{actions, app, daemon, fmt, report, service, take_snapshot, watch};
 use clap::{Args, Parser, Subcommand};
 use std::time::Duration;
 use sysinfo::System;
@@ -46,6 +46,9 @@ enum Cmd {
         #[command(subcommand)]
         action: ServiceCmd,
     },
+    /// Open the autoTrim window: start the menu bar app, or bring it forward.
+    #[command(alias = "tray")]
+    Open,
 }
 
 #[derive(Subcommand, Clone, Copy)]
@@ -320,5 +323,6 @@ fn main() -> Result<()> {
             ServiceCmd::Restart => service::Action::Restart,
             ServiceCmd::Status => service::Action::Status,
         }),
+        Cmd::Open => app::open(),
     }
 }

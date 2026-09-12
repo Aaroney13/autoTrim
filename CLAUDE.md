@@ -16,7 +16,11 @@ orchestrator and the daemon never calls a model.
 - One `Snapshot` struct (src/main.rs) feeds every consumer. Add fields there
   and keep them serde round-trippable; `status` deserializes `latest.json`.
 - Platform-specific code stays behind `cfg` in system.rs, browser.rs, paths.rs,
-  openfiles.rs, service.rs.
+  openfiles.rs, service.rs, groups.rs. Pure path rules (groups.rs) are compiled
+  and unit-tested on every host; only the dispatcher is `cfg`-selected.
+- Cross-check before pushing: `cargo clippy -p autotrim --target
+  x86_64-unknown-linux-gnu` and `--target x86_64-pc-windows-msvc` (targets
+  installed via rustup). CI builds all three platforms.
 - The workspace has two packages: the root (`autotrim`, library + CLI) and
   `tray/` (`autotrim-tray`, Tauri). Lint with `cargo clippy --workspace`.
   The tray never depends on sysinfo directly; it goes through the library.

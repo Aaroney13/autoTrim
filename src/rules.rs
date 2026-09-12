@@ -52,6 +52,9 @@ pub struct Thresholds {
     pub cpu_hog_pct: f32,
     pub cpu_hog_secs: u64,
     pub pressure_rise_bytes_per_hour: u64,
+    pub probe_ports: bool,
+    pub probe_timeout_ms: u64,
+    pub count_browser_tabs: bool,
     pub ignore_ports: Vec<u16>,
     pub ignore_apps: Vec<String>,
     pub ignore_projects: Vec<String>,
@@ -76,6 +79,9 @@ impl Default for Thresholds {
             cpu_hog_pct: 90.0,
             cpu_hog_secs: 10 * 60,
             pressure_rise_bytes_per_hour: 1024 * 1024 * 1024,
+            probe_ports: true,
+            probe_timeout_ms: 300,
+            count_browser_tabs: true,
             ignore_ports: Vec::new(),
             ignore_apps: Vec::new(),
             ignore_projects: Vec::new(),
@@ -121,6 +127,24 @@ pub fn session_state(s: &AgentSession, t: &Thresholds) -> SessionState {
         // One-shot scan with nothing better than age.
         (None, None) if s.age_secs >= t.stale_after_secs => SessionState::Stale,
         _ => SessionState::Idle,
+    }
+}
+
+/// Renderers are not tabs: every cross-site frame, prerender, and the spare
+/// renderer gets a process too. Say both numbers when both are known.
+pub fn browser_renderer_line(b: &BrowserInfo) -> String {
+    match (b.tabs, b.windows) {
+        (Some(tabs), Some(windows)) => format!(
+            "{} renderer processes for {} tabs in {} windows; the other {} are cross-site frames, prerenders and a spare",
+            b.renderers,
+            tabs,
+            windows,
+            b.renderers.saturating_sub(tabs)
+        ),
+        _ => format!(
+            "{} renderer processes: {} tab-sized, {} small (cross-site frames, prerenders, a spare)",
+            b.renderers, b.tab_sized_renderers, b.small_renderers
+        ),
     }
 }
 
@@ -224,7 +248,7 @@ pub fn evaluate(
 
     // 3. Browser sprawl.
     for b in browsers.iter().filter(|b| !ignored_app(&b.name)) {
-        let many_tabs = b.renderers >= t.browser_renderers;
+        let many_tabs = b.tab_sized_renderers >= t.browser_renderers;
         let many_profiles = b.profiles.map(|n| n > t.browser_profiles).unwrap_or(false);
         if !(many_tabs || many_profiles) {
             continue;
@@ -236,7 +260,7 @@ pub fn evaluate(
         )];
         let mut actions = Vec::new();
         if many_tabs {
-            evidence.push(format!("{} live tab renderers", b.renderers));
+            evidence.push(browser_renderer_line(b));
             actions.push("set Memory Saver to Maximum (chrome://settings/performance)");
         }
         if let Some(n) = b.profiles

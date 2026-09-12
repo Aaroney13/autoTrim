@@ -60,9 +60,15 @@ pub fn render(s: &Snapshot) -> String {
         for b in &s.browsers {
             let mut parts = vec![
                 bytes(b.rss),
-                format!("{} tab renderers", b.renderers),
-                format!("{} extension", b.extension_renderers),
+                format!(
+                    "{} renderers ({} tab-sized)",
+                    b.renderers, b.tab_sized_renderers
+                ),
             ];
+            if let (Some(t), Some(w)) = (b.tabs, b.windows) {
+                parts.push(format!("{t} tabs in {w} windows"));
+            }
+            parts.push(format!("{} extension", b.extension_renderers));
             if let Some(n) = b.profiles {
                 parts.push(format!("{n} profiles"));
             }
@@ -122,18 +128,19 @@ pub fn render(s: &Snapshot) -> String {
         let _ = writeln!(o, "\nListening ports ({})", s.ports.len());
         let _ = writeln!(
             o,
-            "  {:>5} {:<5} {:<16} {:>8}  {:<32} PROCESS",
-            "PORT", "PROTO", "ADDR", "OPEN", "OWNER"
+            "  {:>5} {:<5} {:<12} {:>8}  {:<40} {:<24} PROCESS",
+            "PORT", "PROTO", "ADDR", "OPEN", "WHAT", "OWNER"
         );
         for p in &s.ports {
             let _ = writeln!(
                 o,
-                "  {:>5} {:<5} {:<16} {:>8}  {:<32} {} ({})",
+                "  {:>5} {:<5} {:<12} {:>8}  {:<40} {:<24} {} ({})",
                 p.port,
                 p.protocol,
-                fit_right(&p.addr, 16),
+                fit_right(&p.addr, 12),
                 dur(p.open_for_secs),
-                fit_right(&p.owner, 32),
+                fit_right(p.label.as_deref().unwrap_or("?"), 40),
+                fit_right(&p.owner, 24),
                 p.process,
                 p.pid
             );

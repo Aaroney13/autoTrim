@@ -59,6 +59,13 @@ pub struct Config {
     /// Swap growing by more than this in an hour is "pressure rising".
     pub pressure_rise_mb_per_hour: u64,
 
+    /// Send a short HTTP request to unlabelled local TCP ports to identify
+    /// them (Vite, Next.js, Flask, ...). Loopback only, once per port.
+    pub probe_ports: bool,
+    pub probe_timeout_ms: u64,
+    /// Ask the browser for its real tab and window count (macOS, AppleScript).
+    pub count_browser_tabs: bool,
+
     /// Close stale agent sessions on a timer. Off by default.
     pub auto_close_sessions: bool,
     /// Stop old local servers on a timer. Off by default.
@@ -104,6 +111,9 @@ impl Default for Config {
             cpu_hog_pct: 90.0,
             cpu_hog_minutes: 10,
             pressure_rise_mb_per_hour: 1024,
+            probe_ports: true,
+            probe_timeout_ms: 300,
+            count_browser_tabs: true,
             auto_close_sessions: false,
             auto_stop_servers: false,
             auto_grace_minutes: 10,
@@ -158,6 +168,9 @@ impl Config {
             cpu_hog_pct: self.cpu_hog_pct,
             cpu_hog_secs: self.cpu_hog_minutes * 60,
             pressure_rise_bytes_per_hour: self.pressure_rise_mb_per_hour * 1024 * 1024,
+            probe_ports: self.probe_ports,
+            probe_timeout_ms: self.probe_timeout_ms,
+            count_browser_tabs: self.count_browser_tabs,
             ignore_ports: self.ignore_ports.clone(),
             ignore_apps: self.ignore_apps.clone(),
             ignore_projects: self.ignore_projects.clone(),
@@ -206,6 +219,11 @@ cpu_hog_pct = {cpu_hog_pct:.0}                 # sustained CPU, 100 = one full c
 cpu_hog_minutes = {cpu_hog_minutes}
 pressure_rise_mb_per_hour = {pressure_rise_mb_per_hour}   # swap growing faster than this names the culprits
 
+# Port labels and browser tabs
+probe_ports = {probe_ports}              # identify local HTTP ports with one short request each
+probe_timeout_ms = {probe_timeout_ms}
+count_browser_tabs = {count_browser_tabs}       # ask the browser for real tab counts (macOS)
+
 # Auto mode. Off by default. Try auto_dry_run = true first: it logs and
 # notifies what it would have closed, and closes nothing.
 auto_close_sessions = {auto_close_sessions}
@@ -240,6 +258,9 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             cpu_hog_pct = d.cpu_hog_pct,
             cpu_hog_minutes = d.cpu_hog_minutes,
             pressure_rise_mb_per_hour = d.pressure_rise_mb_per_hour,
+            probe_ports = d.probe_ports,
+            probe_timeout_ms = d.probe_timeout_ms,
+            count_browser_tabs = d.count_browser_tabs,
             auto_close_sessions = d.auto_close_sessions,
             auto_stop_servers = d.auto_stop_servers,
             auto_grace_minutes = d.auto_grace_minutes,

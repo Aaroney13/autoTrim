@@ -39,6 +39,13 @@ pub struct PortInfo {
     /// these; a VM manager or database left running is reported, not killed.
     #[serde(default)]
     pub dev_runtime: bool,
+    /// What this port is, when it can be said without guessing.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// "known" (a table of familiar ports and owners), "process" (the
+    /// owner's command line), or "probe" (an HTTP request to the port).
+    #[serde(default)]
+    pub label_source: Option<String>,
 }
 
 const DEV_RUNTIMES: &[&str] = &[
@@ -78,6 +85,8 @@ const SYSTEM_PREFIXES: &[&str] = &[
     "/Library/Apple/",
     "/private/var/",
     "/opt/homebrew/opt/",
+    "/snap/snapd/",
+    "C:\\Windows\\",
 ];
 
 pub fn listening(table: &ProcTable, det: &Detection, groups: &[AppGroup]) -> Vec<PortInfo> {
@@ -168,6 +177,8 @@ pub fn listening(table: &ProcTable, det: &Detection, groups: &[AppGroup]) -> Vec
             owner_age_secs,
             open_for_secs: owner_age_secs,
             dev_runtime,
+            label: None,
+            label_source: None,
         });
     }
     out.sort_by_key(|p| (p.port, p.protocol.clone(), p.pid));
