@@ -1,6 +1,7 @@
 //! Command-line entry point. All the logic lives in the library.
 
 use anyhow::Result;
+use autotrim::browser::{BrowserInfo, TabInfo};
 use autotrim::config::Config;
 use autotrim::{actions, daemon, fmt, report, service, take_snapshot, watch};
 use clap::{Args, Parser, Subcommand};
@@ -34,6 +35,12 @@ enum Cmd {
     Close(TargetArgs),
     /// Stop an unmanaged local server by pid.
     Stop(TargetArgs),
+    /// List open browser tabs, longest untouched first.
+    Tabs(TabsArgs),
+    /// Close browser tabs by id, as listed by `tabs`. Logs the URL first.
+    CloseTab(CloseTabArgs),
+    /// Ask an app to quit, the way ⌘Q would.
+    Quit(QuitArgs),
     /// Print the action log: what was closed, when, and how to get it back.
     Actions(ActionsArgs),
     /// Show the effective settings, or write a commented config file.
@@ -147,6 +154,44 @@ struct TargetArgs {
 }
 
 #[derive(Args, Clone)]
+struct TabsArgs {
+    /// Only this browser (default: every running one).
+    #[arg(long)]
+    browser: Option<String>,
+    /// Only tabs not looked at for at least this many hours.
+    #[arg(long)]
+    idle_hours: Option<f64>,
+    /// Emit the browsers, with their tabs and sites, as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Clone)]
+struct CloseTabArgs {
+    /// Tab ids, as printed by `autotrim tabs`.
+    #[arg(required = true)]
+    ids: Vec<i32>,
+    /// The browser the tabs belong to.
+    #[arg(long, default_value = "Google Chrome")]
+    browser: String,
+    /// Show what would happen without doing it.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Args, Clone)]
+struct QuitArgs {
+    /// The app's name as shown under Top holders, e.g. "Slack".
+    app: String,
+    /// Show what would happen without doing it.
+    #[arg(long)]
+    dry_run: bool,
+    /// Ask even if the app hosts agent sessions.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args, Clone)]
 struct ActionsArgs {
     /// Entries to print from the end of the log.
     #[arg(short = 'n', long, default_value_t = 20)]
@@ -223,6 +268,104 @@ fn close(args: &TargetArgs, cfg: &Config) -> Result<()> {
 fn stop(args: &TargetArgs, cfg: &Config) -> Result<()> {
     let rec = actions::stop_by_pid(
         args.pid,
+        &cfg.thresholds(),
+        args.dry_run,
+        args.force,
+        "manual",
+    )?;
+    println!("{}", actions::describe(&rec));
+    Ok(())
+}
+
+fn tabs(args: &TabsArgs, cfg: &Config) -> Result<()> {
+    let snap = take_snapshot(
+        &mut System::new(),
+        Some(Duration::from_millis(300)),
+        &cfg.thresholds(),
+    );
+    let browsers: Vec<&BrowserInfo> = snap
+        .browsers
+        .iter()
+        .filter(|b| args.browser.as_deref().is_none_or(|n| n == b.name))
+        .collect();
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&browsers)?);
+        return Ok(());
+    }
+    if browsers.is_empty() {
+        println!("no running browser found");
+    }
+    let min_idle = args.idle_hours.map(|h| (h * 3600.0) as u64);
+    for b in browsers {
+        println!(
+            "{} · {} tabs · {} stale · {}",
+            b.name,
+            b.tabs.len(),
+            b.stale_tabs,
+            b.per_tab_estimate
+                .map(|e| format!("≈{} per tab (renderers ÷ tabs)", fmt::bytes(e)))
+                .unwrap_or_else(|| "no renderer memory to estimate from".to_string())
+        );
+        if let Some(n) = &b.tabs_note {
+            println!("  {n}");
+        }
+        let label = |dir: &str| {
+            b.open_profiles
+                .iter()
+                .find(|p| p.dir == dir)
+                .map(|p| p.label.clone())
+                .unwrap_or_else(|| dir.to_string())
+        };
+        let mut tabs: Vec<&TabInfo> = b
+            .tabs
+            .iter()
+            .filter(|t| min_idle.is_none_or(|m| t.idle_secs.is_some_and(|i| i >= m)))
+            .collect();
+        tabs.sort_by_key(|t| std::cmp::Reverse(t.idle_secs));
+        if tabs.is_empty() {
+            continue;
+        }
+        println!(
+            "  {:>10} {:>8}  {:<20} {:<44} SITE",
+            "ID", "IDLE", "PROFILE", "TITLE"
+        );
+        for t in tabs {
+            let idle = if t.active {
+                "active".to_string()
+            } else {
+                t.idle_secs.map(fmt::dur).unwrap_or_else(|| "-".to_string())
+            };
+            println!(
+                "  {:>10} {:>8}  {:<20} {:<44} {}{}",
+                t.id,
+                idle,
+                fmt::fit_right(&label(&t.profile), 20),
+                fmt::fit_right(&t.title, 44),
+                t.site,
+                if t.pinned { "  (pinned)" } else { "" }
+            );
+        }
+    }
+    Ok(())
+}
+
+fn close_tab(args: &CloseTabArgs, cfg: &Config) -> Result<()> {
+    let recs = actions::close_tabs_by_id(
+        &args.browser,
+        &args.ids,
+        &cfg.thresholds(),
+        args.dry_run,
+        "manual",
+    )?;
+    for r in recs {
+        println!("{}", actions::describe(&r));
+    }
+    Ok(())
+}
+
+fn quit(args: &QuitArgs, cfg: &Config) -> Result<()> {
+    let rec = actions::quit_app_by_name(
+        &args.app,
         &cfg.thresholds(),
         args.dry_run,
         args.force,
@@ -309,6 +452,9 @@ fn main() -> Result<()> {
         Cmd::Log(args) => watch::print_log(args.lines, args.follow),
         Cmd::Close(args) => close(&args, &cfg),
         Cmd::Stop(args) => stop(&args, &cfg),
+        Cmd::Tabs(args) => tabs(&args, &cfg),
+        Cmd::CloseTab(args) => close_tab(&args, &cfg),
+        Cmd::Quit(args) => quit(&args, &cfg),
         Cmd::Actions(args) => print_actions(args.lines),
         Cmd::Config { action } => match action {
             None => show_config(&cfg, cfg_path.as_deref()),

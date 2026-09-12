@@ -2,6 +2,7 @@
 
 use crate::Snapshot;
 use crate::agents::SessionState;
+use crate::browser::TabInfo;
 use crate::fmt::{bytes, dur, fit_left, fit_right, pct};
 use crate::rules::Severity;
 use std::fmt::Write;
@@ -67,6 +68,54 @@ pub fn render(s: &Snapshot) -> String {
                 parts.push(format!("{n} profiles"));
             }
             let _ = writeln!(o, "  {:<16} {}", b.name, parts.join(" · "));
+            if b.tabs.is_empty() {
+                if let Some(n) = &b.tabs_note {
+                    let _ = writeln!(o, "  {:<16} tabs: {n}", "");
+                }
+                continue;
+            }
+            let profiles: Vec<String> = b
+                .open_profiles
+                .iter()
+                .map(|p| format!("{} ({})", p.label, p.tabs))
+                .collect();
+            let mut line = format!("{} tabs open · {}", b.tabs.len(), profiles.join(", "));
+            if b.stale_tabs > 0 {
+                line.push_str(&format!(" · {} stale", b.stale_tabs));
+            }
+            if let Some(e) = b.per_tab_estimate {
+                line.push_str(&format!(" · ≈{} per tab (renderers ÷ tabs)", bytes(e)));
+            }
+            let _ = writeln!(o, "  {:<16} {line}", "");
+            let sites: Vec<String> = b
+                .sites
+                .iter()
+                .take(6)
+                .map(|st| {
+                    if st.stale_tabs > 0 {
+                        format!("{} {} ({} stale)", st.site, st.tabs, st.stale_tabs)
+                    } else {
+                        format!("{} {}", st.site, st.tabs)
+                    }
+                })
+                .collect();
+            let _ = writeln!(o, "  {:<16} sites: {}", "", sites.join(" · "));
+            let mut oldest: Vec<&TabInfo> = b
+                .tabs
+                .iter()
+                .filter(|t| !t.active && t.idle_secs.is_some())
+                .collect();
+            oldest.sort_by_key(|t| std::cmp::Reverse(t.idle_secs));
+            for t in oldest.iter().take(5) {
+                let _ = writeln!(
+                    o,
+                    "  {:<16} {:>8}  {:<44} {}",
+                    "",
+                    dur(t.idle_secs.unwrap_or(0)),
+                    fit_right(&t.title, 44),
+                    t.site
+                );
+            }
         }
     }
 

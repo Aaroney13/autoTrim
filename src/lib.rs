@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod agents;
+pub mod automation;
 pub mod browser;
 pub mod config;
 pub mod daemon;
@@ -18,6 +19,7 @@ pub mod procs;
 pub mod report;
 pub mod rules;
 pub mod service;
+pub mod snss;
 pub mod system;
 pub mod transcripts;
 pub mod trends;
@@ -60,7 +62,7 @@ pub fn take_snapshot(
         s.state = rules::session_state(s, thresholds);
     }
     let groups = groups::group(&table, &det);
-    let browsers = browser::detect(&table, &groups);
+    let browsers = browser::detect(&table, &groups, thresholds.tab_stale_after_secs);
     let ports = ports::listening(&table, &det, &groups);
     for s in &mut det.sessions {
         s.ports = ports

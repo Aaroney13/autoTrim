@@ -36,6 +36,10 @@ pub struct Thresholds {
     pub stale_after_secs: u64,
     pub browser_renderers: usize,
     pub browser_profiles: usize,
+    /// A tab not looked at for this long counts as stale.
+    pub tab_stale_after_secs: u64,
+    /// Browser advice also fires at this many stale tabs.
+    pub browser_stale_tabs: usize,
     pub heavy_app_bytes: u64,
     pub pressure_swap_frac: f64,
     /// Window-mean CPU below this counts as quiet (daemon mode).
@@ -65,6 +69,8 @@ impl Default for Thresholds {
             stale_after_secs: 6 * 3_600,
             browser_renderers: 50,
             browser_profiles: 2,
+            tab_stale_after_secs: 24 * 3_600,
+            browser_stale_tabs: 15,
             heavy_app_bytes: 600 * 1024 * 1024,
             pressure_swap_frac: 0.5,
             quiet_cpu: 2.0,
@@ -222,11 +228,13 @@ pub fn evaluate(
         });
     }
 
-    // 3. Browser sprawl.
+    // 3. Browser sprawl: too many renderers, too many profiles, or too many
+    //    tabs nobody has looked at in a day.
     for b in browsers.iter().filter(|b| !ignored_app(&b.name)) {
         let many_tabs = b.renderers >= t.browser_renderers;
         let many_profiles = b.profiles.map(|n| n > t.browser_profiles).unwrap_or(false);
-        if !(many_tabs || many_profiles) {
+        let many_stale = b.stale_tabs >= t.browser_stale_tabs;
+        if !(many_tabs || many_profiles || many_stale) {
             continue;
         }
         let mut evidence = vec![format!(
@@ -234,10 +242,46 @@ pub fn evaluate(
             fmt::bytes(b.rss),
             b.procs
         )];
-        let mut actions = Vec::new();
+        let mut actions: Vec<String> = Vec::new();
+        if !b.tabs.is_empty() {
+            evidence.push(format!(
+                "{} tabs open in {} profile{}",
+                b.tabs.len(),
+                b.open_profiles.len(),
+                if b.open_profiles.len() == 1 { "" } else { "s" }
+            ));
+        }
         if many_tabs {
             evidence.push(format!("{} live tab renderers", b.renderers));
-            actions.push("set Memory Saver to Maximum (chrome://settings/performance)");
+            actions.push("set Memory Saver to Maximum (chrome://settings/performance)".to_string());
+        }
+        if many_stale {
+            let worst: Vec<String> = b
+                .sites
+                .iter()
+                .filter(|s| s.stale_tabs > 0)
+                .take(3)
+                .map(|s| format!("{} {}", s.site, s.stale_tabs))
+                .collect();
+            evidence.push(format!(
+                "{} not looked at in over {}: {}",
+                b.stale_tabs,
+                fmt::dur(t.tab_stale_after_secs),
+                worst.join(", ")
+            ));
+            let est = b
+                .per_tab_estimate
+                .map(|p| {
+                    format!(
+                        ", roughly {} at the average renderer size",
+                        fmt::bytes(p * b.stale_tabs as u64)
+                    )
+                })
+                .unwrap_or_default();
+            actions.push(format!(
+                "close the {} stale tabs from the browser view{est}",
+                b.stale_tabs
+            ));
         }
         if let Some(n) = b.profiles
             && many_profiles
@@ -245,7 +289,7 @@ pub fn evaluate(
             evidence.push(format!(
                 "{n} profiles, each with its own extension and utility processes"
             ));
-            actions.push("consolidate to one or two profiles");
+            actions.push("consolidate to one or two profiles".to_string());
         }
         out.push(Advice {
             id: "browser_sprawl".to_string(),
