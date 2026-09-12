@@ -1,0 +1,202 @@
+//! Detect AI agent sessions and judge whether each one is doing anything.
+//!
+//! A session is the root process of a recognized agent plus everything it
+//! spawned. Memory and CPU are summed over that tree.
+
+use crate::groups::bundle_name;
+use crate::procs::{Proc, ProcTable};
+use crate::system::home;
+use serde::Serialize;
+use std::collections::HashSet;
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentKind {
+    ClaudeCode,
+    Codex,
+    CursorAgent,
+    GeminiCli,
+    Aider,
+    OpenCode,
+    Copilot,
+    OpenClaw,
+}
+
+impl AgentKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "Claude Code",
+            AgentKind::Codex => "Codex",
+            AgentKind::CursorAgent => "Cursor Agent",
+            AgentKind::GeminiCli => "Gemini CLI",
+            AgentKind::Aider => "Aider",
+            AgentKind::OpenCode => "OpenCode",
+            AgentKind::Copilot => "Copilot CLI",
+            AgentKind::OpenClaw => "OpenClaw",
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    /// Burning CPU right now.
+    Active,
+    /// Quiet, but younger than the stale threshold.
+    Idle,
+    /// Quiet and older than the stale threshold.
+    Stale,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct AgentSession {
+    pub pid: u32,
+    pub kind: AgentKind,
+    /// What launched it: a desktop app, an editor, or a terminal.
+    pub host: String,
+    /// Raw bundle name of the hosting app, if any. Used to keep the rules
+    /// from suggesting you quit the app that owns your sessions.
+    pub host_app: Option<String>,
+    pub cwd: Option<String>,
+    /// `cwd` with the home directory shortened to `~`.
+    pub project: Option<String>,
+    pub age_secs: u64,
+    /// CPU percent summed over the session's process tree.
+    pub cpu: f32,
+    /// Resident bytes summed over the session's process tree.
+    pub rss: u64,
+    pub procs: usize,
+    pub state: SessionState,
+    /// True when this scan is itself running inside the session.
+    pub is_self: bool,
+}
+
+pub struct Detection {
+    pub sessions: Vec<AgentSession>,
+    /// Every pid that belongs to some session tree.
+    pub claimed: HashSet<u32>,
+}
+
+fn is_runtime(exe: &str) -> bool {
+    let e = exe.to_ascii_lowercase();
+    e == "node" || e == "bun" || e == "deno" || e.starts_with("python")
+}
+
+fn script_arg_ends_with(p: &Proc, suffix: &str) -> bool {
+    p.cmd.iter().skip(1).take(2).any(|a| a.ends_with(suffix))
+}
+
+/// Which agent, if any, this single process is. Case-sensitive on the
+/// executable name on purpose: `claude` is the CLI, `Claude` is the desktop app.
+pub fn classify(p: &Proc) -> Option<AgentKind> {
+    let exe = p.exe_name();
+    match exe.as_str() {
+        "claude" => return Some(AgentKind::ClaudeCode),
+        "codex" => return Some(AgentKind::Codex),
+        "cursor-agent" => return Some(AgentKind::CursorAgent),
+        "gemini" => return Some(AgentKind::GeminiCli),
+        "aider" => return Some(AgentKind::Aider),
+        "opencode" => return Some(AgentKind::OpenCode),
+        "copilot" => return Some(AgentKind::Copilot),
+        "openclaw" => return Some(AgentKind::OpenClaw),
+        _ => {}
+    }
+    if !is_runtime(&exe) {
+        return None;
+    }
+    if script_arg_ends_with(p, "/claude") || p.cmd_has("@anthropic-ai/claude-code") {
+        Some(AgentKind::ClaudeCode)
+    } else if p.cmd_has("@openai/codex") {
+        Some(AgentKind::Codex)
+    } else if p.cmd_has("@google/gemini-cli") || script_arg_ends_with(p, "/gemini") {
+        Some(AgentKind::GeminiCli)
+    } else if exe.to_ascii_lowercase().starts_with("python") && p.cmd_has("aider") {
+        Some(AgentKind::Aider)
+    } else if p.cmd_has("openclaw") {
+        Some(AgentKind::OpenClaw)
+    } else if p.cmd_has("@github/copilot") {
+        Some(AgentKind::Copilot)
+    } else {
+        None
+    }
+}
+
+fn host_label(app: &str) -> String {
+    match app {
+        "Claude" => "Claude app".to_string(),
+        "Code" | "Visual Studio Code" | "Visual Studio Code - Insiders" => "VS Code".to_string(),
+        "ChatGPT" => "ChatGPT app".to_string(),
+        "Codex" => "Codex app".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn host_of(table: &ProcTable, p: &Proc) -> (String, Option<String>) {
+    for a in table.ancestors(p.pid) {
+        if let Some(b) = bundle_name(a) {
+            return (host_label(&b), Some(b));
+        }
+    }
+    ("terminal".to_string(), None)
+}
+
+fn shorten_home(path: &str) -> String {
+    if let Some(h) = home() {
+        let h = h.to_string_lossy();
+        if let Some(rest) = path.strip_prefix(h.as_ref()) {
+            return format!("~{rest}");
+        }
+    }
+    path.to_string()
+}
+
+pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
+    let self_pid = std::process::id();
+    let self_chain: HashSet<u32> = table.ancestors(self_pid).iter().map(|p| p.pid).collect();
+
+    let mut sessions = Vec::new();
+    let mut claimed = HashSet::new();
+
+    for p in &table.procs {
+        let Some(kind) = classify(p) else { continue };
+        // Nested agents belong to the outermost session, not their own.
+        if table.ancestors(p.pid).iter().any(|a| classify(a).is_some()) {
+            continue;
+        }
+        let desc = table.descendants(p.pid);
+        let rss = p.rss + desc.iter().map(|d| d.rss).sum::<u64>();
+        let cpu = p.cpu + desc.iter().map(|d| d.cpu).sum::<f32>();
+        claimed.insert(p.pid);
+        claimed.extend(desc.iter().map(|d| d.pid));
+
+        let cwd = p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
+        let project = cwd.as_deref().map(shorten_home);
+        let is_self = p.pid == self_pid || self_chain.contains(&p.pid);
+        let state = if cpu >= 2.0 {
+            SessionState::Active
+        } else if p.run_time >= stale_after_secs {
+            SessionState::Stale
+        } else {
+            SessionState::Idle
+        };
+
+        let (host, host_app) = host_of(table, p);
+        sessions.push(AgentSession {
+            pid: p.pid,
+            kind,
+            host,
+            host_app,
+            cwd,
+            project,
+            age_secs: p.run_time,
+            cpu,
+            rss,
+            procs: 1 + desc.len(),
+            state,
+            is_self,
+        });
+    }
+
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.age_secs));
+    Detection { sessions, claimed }
+}
