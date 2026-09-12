@@ -2,7 +2,7 @@
 
 use crate::groups::AppGroup;
 use crate::procs::ProcTable;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// (bundle name, user-data directory relative to the platform app-data root)
 const BROWSERS: &[(&str, &str)] = &[
@@ -14,7 +14,7 @@ const BROWSERS: &[(&str, &str)] = &[
     ("Vivaldi", "Vivaldi"),
 ];
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BrowserInfo {
     pub name: String,
     pub rss: u64,

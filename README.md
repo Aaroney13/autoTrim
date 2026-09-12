@@ -114,21 +114,39 @@ consume that struct. Platform-specific code stays in `system.rs` and behind
 
 ## Status
 
-Day one. `autotrim scan` works on macOS: system totals, top holders, browser
-breakdown, agent sessions, and the four first rules (restart, stale sessions,
-browser sprawl, heavy app). Text and `--json`. Release binary is about 1.3 MB
-and a scan peaks around 10 MB resident.
+Early. Three commands work on macOS:
+
+- `autotrim scan`: one-shot report. System totals, top holders, browser
+  breakdown, agent sessions, and the first four rules (restart, stale
+  sessions, browser sprawl, heavy app). Text and `--json`. Release binary is
+  about 1.3 MB and a scan peaks around 10 MB resident.
+- `autotrim daemon`: samples every 30 s with one long-lived system handle, so
+  each CPU reading is a 30 s average rather than an instant. Keeps a rolling
+  window (default 10 min) per session, keyed by pid and start time, and
+  tracks how long each has been continuously quiet. A session is only called
+  stale after it has been observed quiet for a minimum period (default 15 min),
+  however old it is, so a freshly started daemon never judges anything in its
+  first minutes. Writes `latest.json`, one compact history line per tick into
+  daily `history-YYYY-MM-DD.jsonl` files (7 days kept), and its window state,
+  under the platform data directory. Prints advice as it appears and resolves.
+  Runs in the foreground for now; `--once` takes a single tick and exits.
+- `autotrim status`: renders the daemon's latest snapshot without sampling.
+
+Data lives in `~/Library/Application Support/autotrim` on macOS,
+`$XDG_DATA_HOME/autotrim` on Linux, `%LOCALAPPDATA%\autotrim` on Windows.
+Override with `AUTOTRIM_DATA_DIR`.
 
 Known gaps, in the order they should be fixed:
 
-- **Idle detection is a 1.5 s CPU sample.** On a machine under memory
-  pressure, idle sessions jitter between 0.5% and 4% CPU, so the same session
-  can read `stale` on one run and `active` on the next. The daemon's rolling
-  window fixes this properly. For Claude Code, the transcript's last real
-  user or assistant entry is a better signal, but mapping a process to its
+- **No notifications yet.** The daemon logs advice transitions to stdout.
+  That is the hook where native notifications plug in.
+- **Not installable as a service yet.** No launchd plist, no Task Scheduler
+  entry, no systemd unit.
+- **Quiet means low CPU.** For Claude Code, the transcript's last real user
+  or assistant entry would be a better signal, but mapping a process to its
   transcript needs a spike (the process does not carry its session id).
-- **`vm_stat` and `memory_pressure` are shelled out.** Fine for a one-shot
-  scan, wrong for a daemon sampling every 30 s. Replace with mach calls.
+- **`vm_stat` and `memory_pressure` are shelled out** on every tick. Fine for
+  a scan, wasteful for a daemon. Replace with mach calls.
 - **Resident size, not footprint.** Activity Monitor shows physical footprint,
   which counts compressed pages. Numbers here run a little lower than it.
 - **Codex under the ChatGPT app is reported as a session** with `/` as its
@@ -140,4 +158,8 @@ Build and run:
 
 ```bash
 cargo build --release && ./target/release/autotrim scan
+```
+
+```bash
+./target/release/autotrim daemon --interval 30
 ```

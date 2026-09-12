@@ -1,11 +1,11 @@
 //! System-wide memory totals, swap, compressed memory, and uptime.
 //! Platform-specific detail lives in the `platform` submodule.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use sysinfo::System;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SystemInfo {
     pub os: String,
     pub total_mem: u64,

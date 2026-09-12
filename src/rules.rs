@@ -5,10 +5,10 @@ use crate::browser::BrowserInfo;
 use crate::fmt;
 use crate::groups::{AppGroup, GroupKind};
 use crate::system::SystemInfo;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     High,
@@ -16,9 +16,9 @@ pub enum Severity {
     Low,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Advice {
-    pub id: &'static str,
+    pub id: String,
     pub severity: Severity,
     pub title: String,
     pub evidence: Vec<String>,
@@ -36,6 +36,12 @@ pub struct Thresholds {
     pub browser_profiles: usize,
     pub heavy_app_bytes: u64,
     pub pressure_swap_frac: f64,
+    /// Window-mean CPU below this counts as quiet (daemon mode).
+    pub quiet_cpu: f32,
+    /// A session must be observed quiet at least this long before it is
+    /// called stale, however old it is. Keeps a freshly started daemon from
+    /// judging anything in its first minutes.
+    pub min_quiet_secs: u64,
 }
 
 impl Default for Thresholds {
@@ -48,7 +54,22 @@ impl Default for Thresholds {
             browser_profiles: 2,
             heavy_app_bytes: 600 * 1024 * 1024,
             pressure_swap_frac: 0.5,
+            quiet_cpu: 2.0,
+            min_quiet_secs: 15 * 60,
         }
+    }
+}
+
+/// State of a session once the daemon has a rolling window on it. Falls back
+/// to the instantaneous state for one-shot scans.
+pub fn windowed_state(s: &AgentSession, t: &Thresholds) -> SessionState {
+    match (s.cpu_window_mean, s.quiet_for_secs) {
+        (None, _) => s.state,
+        (Some(_), None) => SessionState::Active,
+        (Some(_), Some(q)) if s.age_secs >= t.stale_after_secs && q >= t.min_quiet_secs => {
+            SessionState::Stale
+        }
+        (Some(_), Some(_)) => SessionState::Idle,
     }
 }
 
@@ -80,7 +101,7 @@ pub fn evaluate(
             evidence.push(format!("wired {}", fmt::bytes(w)));
         }
         out.push(Advice {
-            id: "restart",
+            id: "restart".to_string(),
             severity: Severity::High,
             title: "Restart this machine".to_string(),
             evidence,
@@ -98,12 +119,17 @@ pub fn evaluate(
         let total: u64 = stale.iter().map(|s| s.rss).sum();
         let mut evidence = Vec::new();
         for s in stale.iter().take(5) {
+            let quiet = match s.quiet_for_secs {
+                Some(q) => format!(" · quiet {}", fmt::dur(q)),
+                None => String::new(),
+            };
             evidence.push(format!(
-                "{} · {} · {} · idle {} · {}",
+                "{} · {} · {} · age {}{} · {}",
                 s.kind.label(),
                 s.host,
                 s.project.as_deref().unwrap_or("?"),
                 fmt::dur(s.age_secs),
+                quiet,
                 fmt::bytes(s.rss)
             ));
         }
@@ -116,7 +142,7 @@ pub fn evaluate(
             Severity::Medium
         };
         out.push(Advice {
-            id: "stale_sessions",
+            id: "stale_sessions".to_string(),
             severity,
             title: format!(
                 "Close {} stale agent session{} holding {}",
@@ -156,7 +182,7 @@ pub fn evaluate(
             actions.push("consolidate to one or two profiles");
         }
         out.push(Advice {
-            id: "browser_sprawl",
+            id: "browser_sprawl".to_string(),
             severity: Severity::Medium,
             title: format!("{} is holding {}", b.name, fmt::bytes(b.rss)),
             evidence,
@@ -181,7 +207,7 @@ pub fn evaluate(
             .find(|g| g.rss >= t.heavy_app_bytes)
         {
             out.push(Advice {
-                id: "heavy_app",
+                id: "heavy_app".to_string(),
                 severity: Severity::Low,
                 title: format!("{} is holding {}", g.name, fmt::bytes(g.rss)),
                 evidence: vec![

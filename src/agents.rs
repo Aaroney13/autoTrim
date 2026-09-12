@@ -6,10 +6,10 @@
 use crate::groups::bundle_name;
 use crate::procs::{Proc, ProcTable};
 use crate::system::home;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentKind {
     ClaudeCode,
@@ -37,7 +37,7 @@ impl AgentKind {
     }
 }
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
     /// Burning CPU right now.
@@ -48,7 +48,7 @@ pub enum SessionState {
     Stale,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AgentSession {
     pub pid: u32,
     pub kind: AgentKind,
@@ -61,6 +61,9 @@ pub struct AgentSession {
     /// `cwd` with the home directory shortened to `~`.
     pub project: Option<String>,
     pub age_secs: u64,
+    /// Epoch seconds when the root process started. With the pid, this
+    /// identifies a session across daemon ticks even if the pid is reused.
+    pub start_time: u64,
     /// CPU percent summed over the session's process tree.
     pub cpu: f32,
     /// Resident bytes summed over the session's process tree.
@@ -69,6 +72,11 @@ pub struct AgentSession {
     pub state: SessionState,
     /// True when this scan is itself running inside the session.
     pub is_self: bool,
+    /// Mean CPU over the daemon's rolling window. None for a one-shot scan.
+    pub cpu_window_mean: Option<f32>,
+    /// How long the session has been continuously quiet, when the daemon
+    /// has been watching it. None when it is busy or not yet windowed.
+    pub quiet_for_secs: Option<u64>,
 }
 
 pub struct Detection {
@@ -189,11 +197,14 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
             cwd,
             project,
             age_secs: p.run_time,
+            start_time: p.start_time,
             cpu,
             rss,
             procs: 1 + desc.len(),
             state,
             is_self,
+            cpu_window_mean: None,
+            quiet_for_secs: None,
         });
     }
 

@@ -45,17 +45,23 @@ pub struct ProcTable {
 }
 
 impl ProcTable {
-    /// Collect every process. Two refreshes separated by `sample` give a real
-    /// CPU reading instead of zero.
-    pub fn collect(sys: &mut System, sample: Duration) -> ProcTable {
+    /// Collect every process.
+    ///
+    /// With `Some(sample)`, two refreshes separated by that long give a real
+    /// CPU reading from a fresh `System`. With `None`, a single refresh is
+    /// taken and CPU is measured since the caller's previous refresh, which is
+    /// what a daemon wants: one refresh per tick, CPU averaged over the tick.
+    pub fn collect(sys: &mut System, sample: Option<Duration>) -> ProcTable {
         let kind = ProcessRefreshKind::nothing()
             .with_memory()
             .with_cpu()
             .with_exe(UpdateKind::OnlyIfNotSet)
             .with_cwd(UpdateKind::OnlyIfNotSet)
             .with_cmd(UpdateKind::OnlyIfNotSet);
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
-        std::thread::sleep(sample.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL));
+        if let Some(sample) = sample {
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+            std::thread::sleep(sample.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL));
+        }
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
 
         let mut procs: Vec<Proc> = sys

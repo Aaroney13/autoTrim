@@ -80,16 +80,21 @@ pub fn render(s: &Snapshot) -> String {
                 SessionState::Stale => "stale",
             };
             let tag = if x.is_self { " (this scan)" } else { "" };
+            let quiet = match x.quiet_for_secs {
+                Some(q) if q > 0 => format!(" · quiet {}", dur(q)),
+                _ => String::new(),
+            };
             let _ = writeln!(
                 o,
-                "  {:<12} {:<12} {:<32} {:>8} {:>5.1}% {:>8}  {}{}",
+                "  {:<12} {:<12} {:<32} {:>8} {:>5.1}% {:>8}  {}{}{}",
                 fit_right(x.kind.label(), 12),
                 fit_right(&x.host, 12),
                 fit_left(x.project.as_deref().unwrap_or("?"), 32),
                 dur(x.age_secs),
-                x.cpu,
+                x.cpu_window_mean.unwrap_or(x.cpu),
                 bytes(x.rss),
                 state,
+                quiet,
                 tag
             );
         }
