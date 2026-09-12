@@ -60,16 +60,44 @@ impl Default for Thresholds {
     }
 }
 
-/// State of a session once the daemon has a rolling window on it. Falls back
-/// to the instantaneous state for one-shot scans.
-pub fn windowed_state(s: &AgentSession, t: &Thresholds) -> SessionState {
+/// Decide what a session is doing, from the best evidence available:
+///
+/// 1. Busy CPU right now (window mean when the daemon has one, otherwise the
+///    instantaneous sample) means active, whatever the transcript says.
+/// 2. A transcript with a last real message is trusted immediately: stale
+///    when that message is older than the threshold.
+/// 3. Without a transcript, the daemon's quiet window decides, and it needs
+///    a minimum observed quiet period before calling anything stale.
+/// 4. A one-shot scan with neither falls back to age alone.
+pub fn session_state(s: &AgentSession, t: &Thresholds) -> SessionState {
+    // A one-shot CPU sample on a busy machine jitters by a few percent, so
+    // it only overrides transcript evidence when it is unmistakably busy.
+    // The daemon's window mean is trusted at the normal threshold.
+    let busy = match s.cpu_window_mean {
+        Some(mean) => mean >= t.quiet_cpu,
+        None if s.idle_secs.is_some() => s.cpu >= t.quiet_cpu.max(10.0),
+        None => s.cpu >= t.quiet_cpu,
+    };
+    if busy {
+        return SessionState::Active;
+    }
+    if let Some(idle) = s.idle_secs {
+        return if idle >= t.stale_after_secs {
+            SessionState::Stale
+        } else {
+            SessionState::Idle
+        };
+    }
     match (s.cpu_window_mean, s.quiet_for_secs) {
-        (None, _) => s.state,
-        (Some(_), None) => SessionState::Active,
+        // Watched long enough, and quiet long enough.
         (Some(_), Some(q)) if s.age_secs >= t.stale_after_secs && q >= t.min_quiet_secs => {
             SessionState::Stale
         }
-        (Some(_), Some(_)) => SessionState::Idle,
+        // Being watched, but the window is not warm or the quiet is too short.
+        (_, Some(_)) => SessionState::Idle,
+        // One-shot scan with nothing better than age.
+        (None, None) if s.age_secs >= t.stale_after_secs => SessionState::Stale,
+        _ => SessionState::Idle,
     }
 }
 
@@ -119,17 +147,20 @@ pub fn evaluate(
         let total: u64 = stale.iter().map(|s| s.rss).sum();
         let mut evidence = Vec::new();
         for s in stale.iter().take(5) {
-            let quiet = match s.quiet_for_secs {
-                Some(q) => format!(" · quiet {}", fmt::dur(q)),
-                None => String::new(),
+            let since = match (s.idle_secs, s.quiet_for_secs) {
+                (Some(i), _) => format!("idle {}", fmt::dur(i)),
+                (None, Some(q)) => format!("quiet {}", fmt::dur(q)),
+                (None, None) => format!("age {}", fmt::dur(s.age_secs)),
             };
             evidence.push(format!(
-                "{} · {} · {} · age {}{} · {}",
+                "{} · {} · {} · {} · {}",
                 s.kind.label(),
                 s.host,
-                s.project.as_deref().unwrap_or("?"),
-                fmt::dur(s.age_secs),
-                quiet,
+                s.session_name
+                    .as_deref()
+                    .or(s.project.as_deref())
+                    .unwrap_or("?"),
+                since,
                 fmt::bytes(s.rss)
             ));
         }

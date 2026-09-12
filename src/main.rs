@@ -5,11 +5,14 @@ mod browser;
 mod daemon;
 mod fmt;
 mod groups;
+mod notify;
 mod paths;
 mod procs;
 mod report;
 mod rules;
+mod service;
 mod system;
+mod transcripts;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -36,6 +39,23 @@ enum Cmd {
     Daemon(DaemonArgs),
     /// Show the daemon's latest snapshot without sampling anything.
     Status(StatusArgs),
+    /// Install, remove, restart, or inspect the login service (macOS launchd).
+    Service {
+        #[command(subcommand)]
+        action: ServiceCmd,
+    },
+}
+
+#[derive(Subcommand, Clone, Copy)]
+enum ServiceCmd {
+    /// Write the launch agent and start it now and at every login.
+    Install,
+    /// Stop the daemon and remove the launch agent. Data is kept.
+    Uninstall,
+    /// Restart the running daemon, for example after rebuilding.
+    Restart,
+    /// Show whether the launch agent is loaded and running.
+    Status,
 }
 
 #[derive(Args, Clone)]
@@ -84,6 +104,12 @@ struct DaemonArgs {
     /// Take a single sample, write it, and exit.
     #[arg(long)]
     once: bool,
+    /// Do not send native notifications; only log advice to stdout.
+    #[arg(long)]
+    no_notify: bool,
+    /// Hours before persisting advice is notified again.
+    #[arg(long, default_value_t = 4.0)]
+    remind_every_hours: f64,
 }
 
 #[derive(Args, Clone)]
@@ -115,7 +141,10 @@ pub fn take_snapshot(
 ) -> Snapshot {
     let table = procs::ProcTable::collect(sys, sample);
     let system = system::collect(sys);
-    let det = agents::detect(&table, thresholds.stale_after_secs);
+    let mut det = agents::detect(&table, thresholds.stale_after_secs);
+    for s in &mut det.sessions {
+        s.state = rules::session_state(s, thresholds);
+    }
     let groups = groups::group(&table, &det);
     let browsers = browser::detect(&table, &groups);
     let advice = rules::evaluate(&system, &groups, &det.sessions, &browsers, thresholds);
@@ -165,6 +194,8 @@ fn run_daemon(args: &DaemonArgs) -> Result<()> {
         retention_days: args.retention_days.max(1),
         thresholds,
         once: args.once,
+        notify: !args.no_notify,
+        remind_every: Duration::from_secs((args.remind_every_hours * 3600.0).max(60.0) as u64),
     })
 }
 
@@ -193,5 +224,11 @@ fn main() -> Result<()> {
         Cmd::Scan(args) => scan(&args),
         Cmd::Daemon(args) => run_daemon(&args),
         Cmd::Status(args) => status(&args),
+        Cmd::Service { action } => service::run(match action {
+            ServiceCmd::Install => service::Action::Install,
+            ServiceCmd::Uninstall => service::Action::Uninstall,
+            ServiceCmd::Restart => service::Action::Restart,
+            ServiceCmd::Status => service::Action::Status,
+        }),
     }
 }

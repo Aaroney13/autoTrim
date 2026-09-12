@@ -6,8 +6,10 @@
 use crate::groups::bundle_name;
 use crate::procs::{Proc, ProcTable};
 use crate::system::home;
+use crate::transcripts;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +79,22 @@ pub struct AgentSession {
     /// How long the session has been continuously quiet, when the daemon
     /// has been watching it. None when it is busy or not yet windowed.
     pub quiet_for_secs: Option<u64>,
+    /// The agent's own session id, when it publishes one.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The agent's own name for the session, when it publishes one.
+    #[serde(default)]
+    pub session_name: Option<String>,
+    /// Where the transcript lives, when known. What a close action would log
+    /// next to the resume command.
+    #[serde(default)]
+    pub transcript: Option<String>,
+    /// Epoch seconds of the last real message in the session's transcript.
+    #[serde(default)]
+    pub last_activity: Option<u64>,
+    /// Seconds since `last_activity`. The strongest idle signal we have.
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 pub struct Detection {
@@ -158,7 +176,14 @@ fn shorten_home(path: &str) -> String {
     path.to_string()
 }
 
+/// Find every agent session. States are provisional here (instantaneous
+/// CPU only); `rules::session_state` makes the real call once transcript and
+/// window information are folded in.
 pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let self_pid = std::process::id();
     let self_chain: HashSet<u32> = table.ancestors(self_pid).iter().map(|p| p.pid).collect();
 
@@ -189,6 +214,12 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
         };
 
         let (host, host_app) = host_of(table, p);
+        let claude = if kind == AgentKind::ClaudeCode {
+            transcripts::claude_session(p.pid)
+        } else {
+            None
+        };
+        let last_activity = claude.as_ref().and_then(|c| c.last_activity);
         sessions.push(AgentSession {
             pid: p.pid,
             kind,
@@ -205,6 +236,14 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
             is_self,
             cpu_window_mean: None,
             quiet_for_secs: None,
+            session_id: claude.as_ref().map(|c| c.session_id.clone()),
+            session_name: claude.as_ref().and_then(|c| c.name.clone()),
+            transcript: claude
+                .as_ref()
+                .and_then(|c| c.transcript.as_ref())
+                .map(|p| p.to_string_lossy().into_owned()),
+            last_activity,
+            idle_secs: last_activity.map(|t| now.saturating_sub(t)),
         });
     }
 

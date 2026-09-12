@@ -57,45 +57,60 @@ pub fn home() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use std::process::Command;
+    use std::mem;
+    use std::sync::OnceLock;
 
-    /// Parse `vm_stat` for compressor and wired page counts.
-    /// TODO: replace with host_statistics64 via mach once the daemon exists;
-    /// shelling out is fine for a one-shot scan.
+    /// The host port is a send right; asking for it once and keeping it avoids
+    /// leaking one per tick. libc flags the mach entry points as deprecated
+    /// in favour of the `mach2` crate; the ABI is stable and one dependency
+    /// fewer matters here.
+    #[allow(deprecated)]
+    fn host() -> libc::mach_port_t {
+        static HOST: OnceLock<libc::mach_port_t> = OnceLock::new();
+        *HOST.get_or_init(|| unsafe { libc::mach_host_self() })
+    }
+
+    /// Compressor and wired bytes from `host_statistics64`, the same counters
+    /// `vm_stat` prints.
     pub fn vm_details() -> (Option<u64>, Option<u64>) {
-        let Ok(out) = Command::new("vm_stat").output() else {
+        let mut stats: libc::vm_statistics64 = unsafe { mem::zeroed() };
+        let mut count = (mem::size_of::<libc::vm_statistics64>()
+            / mem::size_of::<libc::integer_t>())
+            as libc::mach_msg_type_number_t;
+        #[allow(deprecated)]
+        let kr = unsafe {
+            libc::host_statistics64(
+                host(),
+                libc::HOST_VM_INFO64,
+                &mut stats as *mut libc::vm_statistics64 as *mut libc::integer_t,
+                &mut count,
+            )
+        };
+        if kr != 0 {
             return (None, None);
-        };
-        let text = String::from_utf8_lossy(&out.stdout);
-        let page_size = text
-            .lines()
-            .next()
-            .and_then(|l| l.split("page size of ").nth(1))
-            .and_then(|s| s.split_whitespace().next())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(4096);
-        let pages = |key: &str| -> Option<u64> {
-            text.lines()
-                .find(|l| l.starts_with(key))
-                .and_then(|l| l.split(':').nth(1))
-                .map(|v| v.trim().trim_end_matches('.'))
-                .and_then(|v| v.parse::<u64>().ok())
-                .map(|n| n * page_size)
-        };
+        }
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(4096) as u64;
         (
-            pages("Pages occupied by compressor"),
-            pages("Pages wired down"),
+            Some(stats.compressor_page_count as u64 * page),
+            Some(stats.wire_count as u64 * page),
         )
     }
 
+    /// `kern.memorystatus_level` is the number `memory_pressure` reports as
+    /// "system-wide memory free percentage".
     pub fn free_pct() -> Option<u8> {
-        let out = Command::new("memory_pressure").output().ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        text.lines()
-            .find(|l| l.contains("free percentage"))
-            .and_then(|l| l.split(':').nth(1))
-            .map(|v| v.trim().trim_end_matches('%'))
-            .and_then(|v| v.parse::<u8>().ok())
+        let mut val: libc::c_int = 0;
+        let mut len = mem::size_of::<libc::c_int>();
+        let r = unsafe {
+            libc::sysctlbyname(
+                c"kern.memorystatus_level".as_ptr(),
+                &mut val as *mut libc::c_int as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (r == 0).then(|| val.clamp(0, 100) as u8)
     }
 }
 

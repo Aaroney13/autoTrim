@@ -74,16 +74,20 @@ pub fn render(s: &Snapshot) -> String {
             "AGENT", "HOST", "PROJECT", "AGE", "CPU", "MEM"
         );
         for x in &s.sessions {
-            let state = match x.state {
-                SessionState::Active => "active",
-                SessionState::Idle => "idle",
-                SessionState::Stale => "stale",
-            };
             let tag = if x.is_self { " (this scan)" } else { "" };
-            let quiet = match x.quiet_for_secs {
-                Some(q) if q > 0 => format!(" · quiet {}", dur(q)),
-                _ => String::new(),
+            let since = match (x.idle_secs, x.quiet_for_secs) {
+                (Some(i), _) => Some(format!("idle {}", dur(i))),
+                (None, Some(q)) if q > 0 => Some(format!("quiet {}", dur(q))),
+                _ => None,
             };
+            let state = match (x.state, since) {
+                (SessionState::Active, _) => "active".to_string(),
+                (SessionState::Idle, Some(s)) => s,
+                (SessionState::Idle, None) => "idle".to_string(),
+                (SessionState::Stale, Some(s)) => format!("stale · {s}"),
+                (SessionState::Stale, None) => "stale".to_string(),
+            };
+            let quiet = String::new();
             let _ = writeln!(
                 o,
                 "  {:<12} {:<12} {:<32} {:>8} {:>5.1}% {:>8}  {}{}{}",

@@ -6,8 +6,9 @@
 
 use crate::agents::AgentSession;
 use crate::fmt::{bytes, date_utc, stamp_utc};
+use crate::notify;
 use crate::paths;
-use crate::rules::{self, Thresholds};
+use crate::rules::{self, Advice, Thresholds};
 use crate::{Snapshot, take_snapshot};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,10 @@ pub struct DaemonConfig {
     pub thresholds: Thresholds,
     /// Take one sample and exit. For testing and for cron-style use.
     pub once: bool,
+    /// Deliver native notifications for advice.
+    pub notify: bool,
+    /// How long before the same advice is notified again while it persists.
+    pub remind_every: Duration,
 }
 
 /// Rolling observations for one session, keyed by pid and start time so a
@@ -41,6 +46,10 @@ struct SessionTrack {
 #[derive(Serialize, Deserialize, Default)]
 struct Tracker {
     sessions: HashMap<String, SessionTrack>,
+    /// Advice id to the last time it was notified. Persisted so a restart
+    /// does not repeat what the user was just told.
+    #[serde(default)]
+    notified: HashMap<String, u64>,
 }
 
 fn key(s: &AgentSession) -> String {
@@ -82,12 +91,38 @@ impl Tracker {
                 t.quiet_since = None;
             }
             t.last_seen = now;
-            s.cpu_window_mean = Some(mean);
+            // A window with one or two samples is no better than a one-shot
+            // sample; only publish the mean once it is worth trusting.
+            let warm = t.samples.len() >= 3;
+            s.cpu_window_mean = warm.then_some(mean);
             s.quiet_for_secs = t.quiet_since.map(|q| now.saturating_sub(q));
         }
         // Forget sessions that have been gone for a full window.
         self.sessions
             .retain(|_, t| now.saturating_sub(t.last_seen) <= window);
+    }
+
+    /// Advice worth notifying now: never seen, or seen longer ago than the
+    /// reminder interval. Records the send.
+    fn due_for_notification<'a>(
+        &mut self,
+        now: u64,
+        remind_every: u64,
+        advice: &'a [Advice],
+    ) -> Vec<&'a Advice> {
+        let mut due = Vec::new();
+        for a in advice {
+            let last = self.notified.get(&a.id).copied();
+            if last.is_none_or(|t| now.saturating_sub(t) >= remind_every) {
+                self.notified.insert(a.id.clone(), now);
+                due.push(a);
+            }
+        }
+        // Drop records for advice that has been gone long enough to be news again.
+        let live: BTreeSet<&str> = advice.iter().map(|a| a.id.as_str()).collect();
+        self.notified
+            .retain(|id, t| live.contains(id.as_str()) || now.saturating_sub(*t) < remind_every);
+        due
     }
 }
 
@@ -224,7 +259,7 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
         let mut snap = take_snapshot(&mut sys, sample, &cfg.thresholds);
         tracker.observe(now, window, cfg.thresholds.quiet_cpu, &mut snap.sessions);
         for s in &mut snap.sessions {
-            s.state = rules::windowed_state(s, &cfg.thresholds);
+            s.state = rules::session_state(s, &cfg.thresholds);
         }
         snap.advice = rules::evaluate(
             &snap.system,
@@ -245,6 +280,16 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
             println!("{} · nothing to do", stamp_utc(now));
         }
         prev_ids = ids;
+
+        if cfg.notify {
+            for a in tracker.due_for_notification(now, cfg.remind_every.as_secs(), &snap.advice) {
+                let body = a.evidence.first().cloned().unwrap_or_default();
+                match notify::send(&a.title, &a.action, &body) {
+                    Ok(()) => println!("{} ! notified: {}", stamp_utc(now), a.title),
+                    Err(e) => eprintln!("{} notification failed: {e}", stamp_utc(now)),
+                }
+            }
+        }
 
         write_atomic(&latest_path, &serde_json::to_vec_pretty(&snap)?)?;
         append_history(&dir, now, &record(&snap))?;

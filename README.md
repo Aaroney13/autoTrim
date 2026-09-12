@@ -114,23 +114,51 @@ consume that struct. Platform-specific code stays in `system.rs` and behind
 
 ## Status
 
-Early. Three commands work on macOS:
+Early, but the loop is closed on macOS: observe, judge, notify, install.
 
 - `autotrim scan`: one-shot report. System totals, top holders, browser
   breakdown, agent sessions, and the first four rules (restart, stale
   sessions, browser sprawl, heavy app). Text and `--json`. Release binary is
-  about 1.3 MB and a scan peaks around 10 MB resident.
+  under 2 MB and a scan peaks around 10 MB resident.
 - `autotrim daemon`: samples every 30 s with one long-lived system handle, so
   each CPU reading is a 30 s average rather than an instant. Keeps a rolling
   window (default 10 min) per session, keyed by pid and start time, and
-  tracks how long each has been continuously quiet. A session is only called
-  stale after it has been observed quiet for a minimum period (default 15 min),
-  however old it is, so a freshly started daemon never judges anything in its
-  first minutes. Writes `latest.json`, one compact history line per tick into
-  daily `history-YYYY-MM-DD.jsonl` files (7 days kept), and its window state,
-  under the platform data directory. Prints advice as it appears and resolves.
-  Runs in the foreground for now; `--once` takes a single tick and exits.
+  tracks how long each has been continuously quiet. Writes `latest.json`, one
+  compact history line per tick into daily `history-YYYY-MM-DD.jsonl` files
+  (7 days kept), and its window state. Sends a native notification when
+  advice first appears and again every 4 hours while it persists
+  (`--remind-every-hours`, `--no-notify`); the send log is persisted so a
+  restart does not repeat itself. `--once` takes a single tick and exits.
 - `autotrim status`: renders the daemon's latest snapshot without sampling.
+- `autotrim service install | uninstall | restart | status`: launchd agent on
+  macOS that starts the daemon now and at every login, logging to
+  `daemon.log` in the data directory.
+
+How "idle" is decided, strongest evidence first:
+
+1. **Busy CPU right now means active**, whatever else is known. The daemon's
+   window mean is trusted at 2%; a one-shot sample only overrides transcript
+   evidence when it is unmistakably busy, because a single 1.5 s sample on a
+   swapping machine jitters by a few percent.
+2. **Claude Code publishes enough to know the truth.** Every running process
+   has `~/.claude/sessions/<pid>.json` with its session id and working
+   directory, and the transcript sits at a predictable path under
+   `~/.claude/projects`. autoTrim reads the tail of that transcript for the
+   last real user or assistant entry (host-app bookkeeping entries are
+   ignored, which is why the file's modification time is not a signal) and
+   reports idle time from it. A session idle longer than the stale threshold
+   (default 6 h) is stale, immediately, even on a one-shot scan.
+3. **Other agents fall back to the daemon's quiet window.** A session must be
+   observed quiet for a minimum period (default 15 min) before it is called
+   stale, however old it is, so a fresh daemon never judges anything in its
+   first minutes.
+4. **A one-shot scan of an agent with no transcript** falls back to age plus
+   a quiet sample, which is the weakest signal here and is labelled as such
+   in the JSON (no `idle_secs`, no `quiet_for_secs`).
+
+Memory counters on macOS come from `host_statistics64` and the
+`kern.memorystatus_level` sysctl, the same sources `vm_stat` and
+`memory_pressure` print, with no subprocesses.
 
 Data lives in `~/Library/Application Support/autotrim` on macOS,
 `$XDG_DATA_HOME/autotrim` on Linux, `%LOCALAPPDATA%\autotrim` on Windows.
@@ -138,21 +166,20 @@ Override with `AUTOTRIM_DATA_DIR`.
 
 Known gaps, in the order they should be fixed:
 
-- **No notifications yet.** The daemon logs advice transitions to stdout.
-  That is the hook where native notifications plug in.
-- **Not installable as a service yet.** No launchd plist, no Task Scheduler
-  entry, no systemd unit.
-- **Quiet means low CPU.** For Claude Code, the transcript's last real user
-  or assistant entry would be a better signal, but mapping a process to its
-  transcript needs a spike (the process does not carry its session id).
-- **`vm_stat` and `memory_pressure` are shelled out** on every tick. Fine for
-  a scan, wasteful for a daemon. Replace with mach calls.
-- **Resident size, not footprint.** Activity Monitor shows physical footprint,
-  which counts compressed pages. Numbers here run a little lower than it.
-- **Codex under the ChatGPT app is reported as a session** with `/` as its
-  project. It is really a long-lived backend. Worth a distinct label.
-- **macOS only.** Windows and Linux compile but report no compressed memory,
-  no free percentage, and no browser profiles.
+- **Codex sessions have no transcript mapping yet.** Codex keeps rollouts
+  under `~/.codex/sessions`, but nothing ties a process to one. They fall
+  back to the quiet window. The Codex server under the ChatGPT app is
+  reported as a session with `/` as its project; it is really a long-lived
+  backend and deserves a distinct label.
+- **Notifications carry no buttons.** A bare binary cannot register
+  actionable notifications on macOS; that needs an app bundle, which comes
+  with the tray.
+- **No quiet hours** for notifications yet.
+- **No reclaim actions yet.** The advice tells you what to close; the close
+  verb with its resume-command logging is the next feature, and auto mode
+  sits behind it.
+- **macOS only** for the service, the memory counters beyond swap, and
+  browser profiles. Windows and Linux compile and run `scan` and `daemon`.
 
 Build and run:
 
@@ -162,4 +189,8 @@ cargo build --release && ./target/release/autotrim scan
 
 ```bash
 ./target/release/autotrim daemon --interval 30
+```
+
+```bash
+./target/release/autotrim service install
 ```
