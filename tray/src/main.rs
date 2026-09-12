@@ -7,7 +7,7 @@
 
 use autotrim::agents::SessionState;
 use autotrim::config::Config;
-use autotrim::rules::Thresholds;
+use autotrim::rules::{self, Thresholds};
 use autotrim::{Snapshot, actions, daemon, fmt, scan_now};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -50,6 +50,31 @@ fn current_snapshot(t: &Thresholds) -> Snapshot {
         Ok(Some((snap, age))) if age <= 120 => snap,
         _ => scan_now(t, Duration::from_millis(800)),
     }
+}
+
+/// A fresh scan for right after an action, so the window shows what just
+/// changed rather than the daemon's last tick, which can be half a minute
+/// old. A scan has no history of its own, so the trends come from the
+/// daemon's snapshot when there is one and the advice is re-evaluated with
+/// them.
+fn fresh_snapshot(t: &Thresholds) -> Snapshot {
+    let mut snap = scan_now(t, Duration::from_millis(300));
+    if let Ok(Some((d, age))) = daemon::latest()
+        && age <= 120
+    {
+        snap.trends = d.trends;
+        snap.advice = rules::evaluate(
+            &snap.system,
+            &snap.groups,
+            &snap.sessions,
+            &snap.browsers,
+            &snap.ports,
+            &snap.trends,
+            None,
+            t,
+        );
+    }
+    snap
 }
 
 /// A 22-pixel ring, black on transparent, so macOS can treat it as a
@@ -226,9 +251,23 @@ fn close_all_stale<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+/// The snapshot the window renders. `fresh` asks for a scan taken now,
+/// which the window does after an action; otherwise the daemon's. Off the
+/// main thread either way, since a scan takes a few hundred milliseconds.
 #[tauri::command]
-fn snapshot(state: tauri::State<'_, AppState>) -> Result<Snapshot, String> {
-    let snap = current_snapshot(&state.thresholds);
+async fn snapshot(
+    fresh: Option<bool>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Snapshot, String> {
+    let t = state.thresholds.clone();
+    let snap = off_thread(move || {
+        Ok(if fresh.unwrap_or(false) {
+            fresh_snapshot(&t)
+        } else {
+            current_snapshot(&t)
+        })
+    })
+    .await?;
     let json = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
     *state.latest.lock().unwrap() = Some(snap);
     serde_json::from_value(json).map_err(|e| e.to_string())

@@ -141,7 +141,17 @@ function twoStep(btn, key, run) {
     return;
   }
   delete armed[key]; btn.disabled = true; btn.textContent = "…";
-  run().catch(e => toast(String(e))).finally(refresh);
+  run().catch(e => toast(String(e))).finally(afterAction);
+}
+
+// After an action: redraw at once with what is already known (the rows
+// just closed say so), then scan for real instead of waiting on the
+// daemon's next tick. Browsers write their session file a few seconds
+// after a tab closes, so look a second time.
+function afterAction() {
+  renderAll(false);
+  refresh({ fresh: true });
+  setTimeout(() => refresh({ fresh: true }), 3500);
 }
 
 function report(recs) {
@@ -156,8 +166,8 @@ function holders(s) {
     const sessions = g.kind === "agent" ? s.sessions.filter(x => g.pids.includes(x.pid)) : [];
     const kind = g.kind === "agent" ? "agent" : browser ? "browser" : g.kind === "app" ? "app" : "other";
     let count;
-    if (kind === "agent") count = plural(sessions.length, "session") + (sessions.some(x => x.state === "stale") ? ` · ${sessions.filter(x => x.state === "stale").length} stale` : "");
-    else if (browser) count = browser.tabs.length ? plural(browser.tabs.length, "tab") + (browser.stale_tabs ? ` · ${browser.stale_tabs} stale` : "") : plural(g.procs, "proc");
+    if (kind === "agent") { const live = sessions.filter(x => !goneSession(x)), stale = live.filter(x => x.state === "stale").length; count = plural(live.length, "session") + (stale ? ` · ${stale} stale` : ""); }
+    else if (browser) { const live = browser.tabs.filter(t => !goneTab(t)), stale = live.filter(t => isStale(browser, t)).length; count = live.length ? plural(live.length, "tab") + (stale ? ` · ${stale} stale` : "") : plural(g.procs, "proc"); }
     else count = plural(g.procs, "proc");
     return { key: "g:" + g.name, name: g.name, kind, rss: g.rss, cpu: g.cpu, procs: g.procs, pids: g.pids, count, group: g, browser, sessions };
   });
@@ -234,7 +244,7 @@ function viewOverview() {
   const trends = (s.trends || []).filter(t => t.kind !== "renderer" && t.span_secs >= 600).slice(0, 8);
   const top = holders(s).slice(0, 8);
   return `<h1>Overview</h1>
-    <div class="sub"><span><b>${plural(s.sessions.length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.length, 0), "browser tab")}</b></span><span><b>${plural(s.groups.length, "holder")}</b> of memory</span></div>
+    <div class="sub"><span><b>${plural(s.sessions.filter(x => !goneSession(x)).length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span><span><b>${plural(s.groups.length, "holder")}</b> of memory</span></div>
     <h2>Advice</h2><div class="cards">${adviceCards(s.advice)}</div>
     <h2>Largest holders <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">click one for detail</span></h2>
     <div class="card mini">${top.map(h => `<div class="row" data-goto="${esc(h.key)}"><div><div>${esc(h.name)} <span class="muted">· ${esc(h.count)}</span></div><div class="bar"><i class="${h.kind}" style="width:${(h.rss * 100 / s.system.total_mem).toFixed(1)}%"></i></div></div><div class="num">${bytes(h.rss)}</div></div>`).join("")}</div>
@@ -260,9 +270,10 @@ function sessionRows(list) {
 }
 
 function viewAgents(h) {
-  const stale = h.sessions.filter(x => x.state === "stale" && !x.is_self);
+  const live = h.sessions.filter(x => !goneSession(x));
+  const stale = live.filter(x => x.state === "stale" && !x.is_self);
   return `<h1>${esc(h.name)} <span class="pill">agent</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> resident</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.sessions.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span></div>
+    <div class="sub"><span><b>${bytes(h.rss)}</b> resident</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(live.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span></div>
     <h2>Sessions <span class="tools">sort <select data-sess-sort>${["rss","idle","age","name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"memory",idle:"idle",age:"age",name:"name"}[k]}</option>`).join("")}</select>
       <button ${stale.length ? "" : "disabled"} data-close-stale="${esc(h.name)}">Close ${stale.length} stale</button></span></h2>
     <div class="wrap">${sessionTable(h.sessions)}</div>
@@ -297,11 +308,14 @@ function viewBrowser(h) {
   if (!b.tabs.length) {
     return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + quitBlock(h);
   }
-  const stale = b.tabs.filter(t => isStale(b, t));
-  const staleChat = stale.filter(t => t.kind === "chat" && !t.pinned && !goneTab(t));
+  const live = b.tabs.filter(t => !goneTab(t));
+  const stale = live.filter(t => isStale(b, t));
+  const staleChat = stale.filter(t => t.kind === "chat" && !t.pinned);
   const staleChatIds = staleChat.map(t => t.id);
-  html += `<div class="chips">${b.open_profiles.map(p => `<span class="chip ${state.tabProfile === p.dir ? "sel" : ""}" data-profile="${esc(p.dir)}">${esc(p.label)} · ${p.tabs}</span>`).join("")}
-    <span class="chip" style="cursor:default"><b>${b.tabs.length}</b> tabs · <b>${stale.length}</b> not looked at in over a day${est ? ` · ≈${bytes(est)} per tab` : ""}</span>${b.chat_tabs ? `<span class="chip" style="cursor:default" title="chatgpt.com, claude.ai, gemini.google.com and friends: pages that keep the whole conversation in memory and grow with it"><b>${b.chat_tabs}</b> conversation${b.chat_tabs === 1 ? "" : "s"} · <b>${staleChat.length}</b> stale</span>` : ""}</div>`;
+  const chat = live.filter(t => t.kind === "chat").length;
+  const profileTabs = p => live.filter(t => t.profile === p.dir).length;
+  html += `<div class="chips">${b.open_profiles.map(p => `<span class="chip ${state.tabProfile === p.dir ? "sel" : ""}" data-profile="${esc(p.dir)}">${esc(p.label)} · ${profileTabs(p)}</span>`).join("")}
+    <span class="chip" style="cursor:default"><b>${live.length}</b> tabs · <b>${stale.length}</b> not looked at in over a day${est ? ` · ≈${bytes(est)} per tab` : ""}</span>${chat ? `<span class="chip" style="cursor:default" title="chatgpt.com, claude.ai, gemini.google.com and friends: pages that keep the whole conversation in memory and grow with it"><b>${chat}</b> conversation${chat === 1 ? "" : "s"} · <b>${staleChat.length}</b> stale</span>` : ""}</div>`;
   const growing = (s.trends || []).filter(t => t.kind === "renderer" && t.growth > 0 && t.span_secs >= 600 && (b.renderer_procs || []).some(r => `r:${r.pid}:${r.start_time}` === t.key)).sort((x, y) => y.growth - x.growth).slice(0, 5);
   if (growing.length) {
     html += `<h2>Pages growing <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">one renderer process each; Chrome does not say which tab</span></h2>
@@ -327,7 +341,7 @@ function viewBrowser(h) {
   html += `<h2>Tabs <span class="tools"><input data-tab-filter placeholder="filter title, url, site" value="${esc(state.tabFilter)}" size="24">
       <select data-tab-sort>${["idle","site","title","window"].map(k => `<option value="${k}" ${state.tabSort === k ? "selected" : ""}>${{idle:"longest untouched",site:"site",title:"title",window:"window order"}[k]}</option>`).join("")}</select>
       <button ${b.can_close_tabs && staleUnpinned.length ? "" : "disabled"} data-close-tabs="${staleUnpinned.join(",")}" data-browser="${esc(b.name)}" title="every unpinned tab not looked at in over a day, in every open profile">Close all ${staleUnpinned.length} stale</button>
-      ${b.chat_tabs ? `<button ${b.can_close_tabs && staleChatIds.length ? "" : "disabled"} data-close-tabs="${staleChatIds.join(",")}" data-browser="${esc(b.name)}" title="unpinned conversation tabs (chatgpt.com, claude.ai, …) not looked at in over a day; the service keeps the conversation">Close ${staleChatIds.length} stale conversation${staleChatIds.length === 1 ? "" : "s"}</button>` : ""}</span></h2>
+      ${chat ? `<button ${b.can_close_tabs && staleChatIds.length ? "" : "disabled"} data-close-tabs="${staleChatIds.join(",")}" data-browser="${esc(b.name)}" title="unpinned conversation tabs (chatgpt.com, claude.ai, …) not looked at in over a day; the service keeps the conversation">Close ${staleChatIds.length} stale conversation${staleChatIds.length === 1 ? "" : "s"}</button>` : ""}</span></h2>
     <div class="wrap">${tabTable(b, tabs)}</div>
     <p class="muted" style="margin-top:8px">Idle is how long since the tab was last the one you were looking at, from the browser's own session records. ${b.can_close_tabs ? "Close asks the browser to close that exact tab (matched by id and URL); ⌘⇧T brings it back and the URL is in the action log." : "Closing tabs is not available on this platform yet."} Chrome does not publish per-tab memory; the ≈ figures divide renderer memory evenly across open tabs. Conversation pages (chatgpt.com, claude.ai and friends) keep the whole exchange in the page and grow with it, so they usually sit well above that average; the services keep the history, so closing one loses nothing.</p>`;
   return html + quitBlock(h);
@@ -422,13 +436,16 @@ function renderMain(viewChanged) {
 
 function wire(root) {
   root.querySelectorAll("[data-goto]").forEach(a => a.onclick = () => { state.view = a.dataset.goto; renderSide(); renderMain(true); });
-  const sessionOk = r => /^(terminated|killed)/.test(r.result);
+  // A row is gone when the action closed it, and just as gone when the
+  // action found it already closed: either way it should stop being listed.
+  const sessionGone = r => /^(terminated|killed|already gone)/.test(r.result);
   const tabOk = r => r.result === "closed";
-  root.querySelectorAll("[data-close-session]").forEach(b => b.onclick = () => twoStep(b, "s" + b.dataset.closeSession, async () => { const pid = +b.dataset.closeSession; const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionOk); report(rec); }));
+  const tabGone = r => tabOk(r) || /already gone|not open any more/.test(r.result);
+  root.querySelectorAll("[data-close-session]").forEach(b => b.onclick = () => twoStep(b, "s" + b.dataset.closeSession, async () => { const pid = +b.dataset.closeSession; const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); report(rec); }));
   root.querySelectorAll("[data-stop]").forEach(b => b.onclick = () => twoStep(b, "p" + b.dataset.stop, async () => report(await invoke("stop_server", { pid: +b.dataset.stop, force: false }))));
-  root.querySelectorAll("[data-close-tab]").forEach(b => b.onclick = () => twoStep(b, "t" + b.dataset.closeTab, async () => { const ids = [+b.dataset.closeTab]; const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabOk); report(recs); }));
-  root.querySelectorAll("[data-close-tabs]").forEach(b => b.onclick = () => { const ids = b.dataset.closeTabs.split(",").filter(Boolean).map(Number); if (!ids.length) return; twoStep(b, "T" + b.dataset.closeTabs, async () => { const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabOk); const ok = recs.filter(tabOk).length; toast(`closed ${ok} of ${recs.length} tabs` + (ok < recs.length ? "\n" + recs.filter(r => !tabOk(r)).map(r => `${r.target}: ${r.result}`).join("\n") : "")); }); });
-  root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); const pids = h ? h.sessions.filter(x => x.state === "stale" && !x.is_self && !goneSession(x)).map(x => x.pid) : []; twoStep(b, "S" + b.dataset.closeStale, async () => { const out = []; for (const pid of pids) { try { const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionOk); out.push(rec); } catch (e) { out.push({ action: "close_session", target: `pid ${pid}`, result: String(e) }); } } report(out); }); });
+  root.querySelectorAll("[data-close-tab]").forEach(b => b.onclick = () => twoStep(b, "t" + b.dataset.closeTab, async () => { const ids = [+b.dataset.closeTab]; const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); report(recs); }));
+  root.querySelectorAll("[data-close-tabs]").forEach(b => b.onclick = () => { const ids = b.dataset.closeTabs.split(",").filter(Boolean).map(Number); if (!ids.length) return; twoStep(b, "T" + b.dataset.closeTabs, async () => { const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); const ok = recs.filter(tabOk).length; toast(`closed ${ok} of ${recs.length} tabs` + (ok < recs.length ? "\n" + recs.filter(r => !tabOk(r)).map(r => `${r.target}: ${r.result}`).join("\n") : "")); }); });
+  root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); const pids = h ? h.sessions.filter(x => x.state === "stale" && !x.is_self && !goneSession(x)).map(x => x.pid) : []; twoStep(b, "S" + b.dataset.closeStale, async () => { const out = []; for (const pid of pids) { try { const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); out.push(rec); } catch (e) { out.push({ action: "close_session", target: `pid ${pid}`, result: String(e) }); } } report(out); }); });
   root.querySelectorAll("[data-quit]").forEach(b => b.onclick = () => twoStep(b, "q" + b.dataset.quit, async () => report(await invoke("quit_app", { name: b.dataset.quit, force: false }))));
   root.querySelectorAll("[data-profile]").forEach(c => c.onclick = () => { state.tabProfile = state.tabProfile === c.dataset.profile ? "" : c.dataset.profile; renderMain(true); });
   root.querySelectorAll("[data-tab-sort]").forEach(sel => sel.onchange = () => { state.tabSort = sel.value; renderMain(true); });
@@ -438,17 +455,23 @@ function wire(root) {
   });
 }
 
-async function refresh() {
+function renderAll(viewChanged) { renderHeader(); renderSide(); renderMain(viewChanged); }
+
+// `fresh` asks the app to scan now instead of reading the daemon's last
+// tick. What is on screen is never replaced by something older, so a fresh
+// scan taken after an action stays until the daemon catches up with it.
+async function refresh(opts = {}) {
   try {
-    const [snap, src, log] = await Promise.all([invoke("snapshot"), invoke("source_info"), invoke("action_log").catch(() => [])]);
+    const [snap, src, log] = await Promise.all([invoke("snapshot", { fresh: !!opts.fresh }), invoke("source_info"), invoke("action_log").catch(() => [])]);
     const first = !state.snap;
+    if (!first && snap.taken_at < state.snap.taken_at) { state.src = src; state.log = log; renderAll(false); return; }
     state.snap = snap; state.src = src; state.log = log;
     pruneGone(snap);
-    renderHeader(); renderSide(); renderMain(first);
+    renderAll(first);
   } catch (e) { document.getElementById("head").innerHTML = `<span class="muted">${esc(String(e))}</span>`; }
 }
 refresh();
-setInterval(refresh, 5000);
+setInterval(() => refresh(), 5000);
 </script>
 </body>
 </html>
