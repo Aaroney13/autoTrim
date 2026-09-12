@@ -82,9 +82,17 @@ pub struct AgentSession {
     /// The agent's own session id, when it publishes one.
     #[serde(default)]
     pub session_id: Option<String>,
-    /// The agent's own name for the session, when it publishes one.
+    /// The best human name there is for the session: a title the user
+    /// gave it, else the agent's own name when that is more than a label
+    /// derived from the directory, else the first thing the user asked.
     #[serde(default)]
     pub session_name: Option<String>,
+    /// The user's own title for the session, when the agent recorded one.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The first thing the user asked, shortened to one line.
+    #[serde(default)]
+    pub first_prompt: Option<String>,
     /// Where the transcript lives, when known. What a close action would log
     /// next to the resume command.
     #[serde(default)]
@@ -255,6 +263,31 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
         };
 
         let (host, host_app) = host_of(table, p);
+        let title = claude.as_ref().and_then(|c| c.title.clone());
+        let first_prompt = claude
+            .as_ref()
+            .and_then(|c| c.first_prompt.clone())
+            .or_else(|| codex.as_ref().and_then(|c| c.first_prompt.clone()));
+        let session_name = match (&claude, &codex) {
+            (Some(c), _) => c
+                .title
+                .clone()
+                .or_else(|| {
+                    c.name
+                        .clone()
+                        .filter(|_| c.name_source.as_deref() != Some("derived"))
+                })
+                .or_else(|| c.first_prompt.clone())
+                .or_else(|| c.name.clone()),
+            (None, Some(c)) => c.first_prompt.clone().or_else(|| {
+                Some(format!(
+                    "{} open thread{}",
+                    c.threads,
+                    if c.threads == 1 { "" } else { "s" }
+                ))
+            }),
+            (None, None) => None,
+        };
         sessions.push(AgentSession {
             pid: p.pid,
             kind,
@@ -272,15 +305,9 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
             cpu_window_mean: None,
             quiet_for_secs: None,
             session_id: claude.as_ref().map(|c| c.session_id.clone()),
-            session_name: claude.as_ref().and_then(|c| c.name.clone()).or_else(|| {
-                codex.as_ref().map(|c| {
-                    format!(
-                        "{} open thread{}",
-                        c.threads,
-                        if c.threads == 1 { "" } else { "s" }
-                    )
-                })
-            }),
+            session_name,
+            title,
+            first_prompt,
             transcript: claude
                 .as_ref()
                 .and_then(|c| c.transcript.as_ref())

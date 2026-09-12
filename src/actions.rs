@@ -1,8 +1,12 @@
 //! The reclaim verbs. Narrow on purpose: close an agent session, stop an
-//! unmanaged local server. Every action is logged with how to undo it.
+//! unmanaged local server, close a browser tab, ask an app to quit. Every
+//! action is logged with how to undo it.
 
 use crate::agents::{AgentKind, AgentSession, SessionState};
+use crate::automation;
+use crate::browser::{self, BrowserInfo, TabInfo};
 use crate::fmt::{self, stamp_utc};
+use crate::groups::{AppGroup, GroupKind};
 use crate::paths;
 use crate::ports::PortInfo;
 use crate::rules::Thresholds;
@@ -20,8 +24,9 @@ pub struct ActionRecord {
     pub ts: u64,
     /// manual, auto, or dry-run
     pub mode: String,
-    /// close_session or stop_server
+    /// close_session, stop_server, close_tab, or quit_app
     pub action: String,
+    /// The process acted on. Zero for a tab, which is not a process.
     pub pid: u32,
     pub target: String,
     pub project: Option<String>,
@@ -183,6 +188,228 @@ pub fn stop_server(p: &PortInfo, mode: &str, dry_run: bool) -> ActionRecord {
         rss: p.owner_rss,
         result,
     }
+}
+
+/// Close one browser tab. Matched by id and URL at the moment of closing,
+/// so a tab that moved on since the snapshot is left alone.
+pub fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionRecord {
+    let profile = b
+        .open_profiles
+        .iter()
+        .find(|p| p.dir == t.profile)
+        .map(|p| p.label.clone())
+        .unwrap_or_else(|| t.profile.clone());
+    let result = if dry_run {
+        "dry run, nothing done".to_string()
+    } else {
+        browser::close_tab(&b.name, t.id, &t.url).unwrap_or_else(|e| format!("failed: {e}"))
+    };
+    let title = if t.title.trim().is_empty() {
+        t.url.clone()
+    } else {
+        t.title.clone()
+    };
+    ActionRecord {
+        ts: now_epoch(),
+        mode: if dry_run {
+            "dry-run".to_string()
+        } else {
+            mode.to_string()
+        },
+        action: "close_tab".to_string(),
+        pid: 0,
+        target: format!("{} · {} · {}", b.name, fmt::fit_right(&title, 70), t.site),
+        project: None,
+        session_id: None,
+        transcript: None,
+        resume: Some(format!(
+            "open -a {} {}   # or ⌘⇧T in the \"{profile}\" window",
+            shell_quote(&b.name),
+            shell_quote(&t.url)
+        )),
+        rss: b.per_tab_estimate.unwrap_or(0),
+        result,
+    }
+}
+
+/// Close tabs by id with the checks every interface shares: a fresh
+/// snapshot, only tabs the browser's own session file lists, and the URL
+/// re-checked by the browser itself. One record per requested id, in the
+/// same order; an id the browser no longer lists gets a record saying so,
+/// which is not logged because nothing was done.
+pub fn close_tabs_by_id(
+    browser: &str,
+    ids: &[i32],
+    t: &Thresholds,
+    dry_run: bool,
+    mode: &str,
+) -> Result<Vec<ActionRecord>> {
+    let mut sys = System::new();
+    let snap = take_snapshot(&mut sys, Some(Duration::from_millis(300)), t);
+    let Some(b) = snap.browsers.iter().find(|b| b.name == browser) else {
+        anyhow::bail!("{browser} is not running");
+    };
+    if !b.can_close_tabs {
+        anyhow::bail!("{browser} tabs cannot be closed from here");
+    }
+    let mut out = Vec::new();
+    let mut found = 0;
+    for id in ids {
+        let Some(tab) = b.tabs.iter().find(|x| x.id == *id) else {
+            out.push(ActionRecord {
+                ts: now_epoch(),
+                mode: mode.to_string(),
+                action: "close_tab".to_string(),
+                pid: 0,
+                target: format!("{browser} · tab {id}"),
+                project: None,
+                session_id: None,
+                transcript: None,
+                resume: None,
+                rss: 0,
+                result: "not open any more".to_string(),
+            });
+            continue;
+        };
+        found += 1;
+        let rec = close_tab(b, tab, mode, dry_run);
+        log(&rec)?;
+        out.push(rec);
+    }
+    if found == 0 && !ids.is_empty() {
+        anyhow::bail!(
+            "no open tab in {browser} has id {}",
+            ids.iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(out)
+}
+
+fn wait_gone(pid: u32, wait: Duration) -> bool {
+    let mut sys = System::new();
+    let target = [Pid::from_u32(pid)];
+    let started = Instant::now();
+    loop {
+        sys.refresh_processes(ProcessesToUpdate::Some(&target), true);
+        if sys.process(target[0]).is_none() {
+            return true;
+        }
+        if started.elapsed() >= wait {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Ask an app to quit the way ⌘Q would: it may prompt to save, and it may
+/// say no. `root` is the app's main process, for the log and to see whether
+/// it went.
+pub fn quit_app(g: &AppGroup, root: u32, mode: &str, dry_run: bool) -> ActionRecord {
+    let result = if dry_run {
+        "dry run, nothing done".to_string()
+    } else {
+        match automation::quit_app(&g.name) {
+            Ok(msg) => {
+                if wait_gone(root, Duration::from_secs(10)) {
+                    "quit".to_string()
+                } else {
+                    format!("{msg}; still running after 10 s")
+                }
+            }
+            Err(e) => format!("failed: {e}"),
+        }
+    };
+    ActionRecord {
+        ts: now_epoch(),
+        mode: if dry_run {
+            "dry-run".to_string()
+        } else {
+            mode.to_string()
+        },
+        action: "quit_app".to_string(),
+        pid: root,
+        target: g.name.clone(),
+        project: None,
+        session_id: None,
+        transcript: None,
+        resume: Some(format!("open -a {}", shell_quote(&g.name))),
+        rss: g.rss,
+        result,
+    }
+}
+
+/// Apps that are part of the desk, not something to quit.
+const NEVER_QUIT: &[&str] = &[
+    "Finder",
+    "autoTrim",
+    "autotrim-tray",
+    "Dock",
+    "SystemUIServer",
+    "loginwindow",
+    "WindowServer",
+    "Control Center",
+    "ControlCenter",
+    "Notification Center",
+];
+
+/// Quit an app by its group name with the checks every interface shares:
+/// only application bundles, never the desk itself, never the app running
+/// this, and never one that hosts agent sessions without `force`.
+pub fn quit_app_by_name(
+    name: &str,
+    t: &Thresholds,
+    dry_run: bool,
+    force: bool,
+    mode: &str,
+) -> Result<ActionRecord> {
+    if NEVER_QUIT.contains(&name) {
+        anyhow::bail!("{name} is not something autoTrim will quit");
+    }
+    let mut sys = System::new();
+    let snap = take_snapshot(&mut sys, Some(Duration::from_millis(300)), t);
+    let Some(g) = snap.groups.iter().find(|g| g.name == name) else {
+        anyhow::bail!("{name} is not running");
+    };
+    if g.kind != GroupKind::App {
+        anyhow::bail!("{name} is not an application bundle; only apps can be asked to quit");
+    }
+    let in_group = |pid: Pid| g.pids.contains(&pid.as_u32());
+    // Walk up from this process: quitting our own host would cut the branch
+    // we are sitting on.
+    let mut cur = Some(Pid::from_u32(std::process::id()));
+    while let Some(pid) = cur {
+        if in_group(pid) {
+            anyhow::bail!("{name} is running this command");
+        }
+        cur = sys.process(pid).and_then(|p| p.parent());
+    }
+    let hosting = snap
+        .sessions
+        .iter()
+        .filter(|s| s.host_app.as_deref() == Some(name))
+        .count();
+    if hosting > 0 && !force {
+        anyhow::bail!(
+            "{name} hosts {hosting} agent session{}; close those first, or use force",
+            if hosting == 1 { "" } else { "s" }
+        );
+    }
+    let root = g
+        .pids
+        .iter()
+        .copied()
+        .find(|pid| {
+            sys.process(Pid::from_u32(*pid))
+                .and_then(|p| p.parent())
+                .is_none_or(|pp| !in_group(pp))
+        })
+        .unwrap_or(g.pids[0]);
+    let rec = quit_app(g, root, mode, dry_run);
+    log(&rec)?;
+    Ok(rec)
 }
 
 pub fn log(rec: &ActionRecord) -> Result<()> {

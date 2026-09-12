@@ -40,6 +40,10 @@ pub struct Config {
     /// Browser advice fires at this many live tab renderers or profiles.
     pub browser_renderers: usize,
     pub browser_profiles: usize,
+    /// A tab not looked at for this long is stale.
+    pub tab_stale_after_hours: f64,
+    /// Browser advice also fires at this many stale tabs.
+    pub browser_stale_tabs: usize,
     /// Under pressure, an ordinary app holding more than this is named.
     pub heavy_app_mb: u64,
 
@@ -63,8 +67,6 @@ pub struct Config {
     /// them (Vite, Next.js, Flask, ...). Loopback only, once per port.
     pub probe_ports: bool,
     pub probe_timeout_ms: u64,
-    /// Ask the browser for its real tab and window count (macOS, AppleScript).
-    pub count_browser_tabs: bool,
 
     /// Close stale agent sessions on a timer. Off by default.
     pub auto_close_sessions: bool,
@@ -103,6 +105,8 @@ impl Default for Config {
             pressure_swap_pct: 50.0,
             browser_renderers: 50,
             browser_profiles: 2,
+            tab_stale_after_hours: 24.0,
+            browser_stale_tabs: 15,
             heavy_app_mb: 600,
             port_stale_after_hours: 24.0,
             trend_window_minutes: 120,
@@ -113,7 +117,6 @@ impl Default for Config {
             pressure_rise_mb_per_hour: 1024,
             probe_ports: true,
             probe_timeout_ms: 300,
-            count_browser_tabs: true,
             auto_close_sessions: false,
             auto_stop_servers: false,
             auto_grace_minutes: 10,
@@ -157,6 +160,8 @@ impl Config {
             stale_after_secs: (self.stale_after_hours * 3_600.0) as u64,
             browser_renderers: self.browser_renderers,
             browser_profiles: self.browser_profiles,
+            tab_stale_after_secs: (self.tab_stale_after_hours * 3_600.0) as u64,
+            browser_stale_tabs: self.browser_stale_tabs,
             heavy_app_bytes: self.heavy_app_mb * 1024 * 1024,
             pressure_swap_frac: self.pressure_swap_pct / 100.0,
             quiet_cpu: self.quiet_cpu,
@@ -170,7 +175,6 @@ impl Config {
             pressure_rise_bytes_per_hour: self.pressure_rise_mb_per_hour * 1024 * 1024,
             probe_ports: self.probe_ports,
             probe_timeout_ms: self.probe_timeout_ms,
-            count_browser_tabs: self.count_browser_tabs,
             ignore_ports: self.ignore_ports.clone(),
             ignore_apps: self.ignore_apps.clone(),
             ignore_projects: self.ignore_projects.clone(),
@@ -206,6 +210,8 @@ pressure_swap_pct = {pressure_swap_pct:.0}
 # Browsers and heavy apps
 browser_renderers = {browser_renderers}
 browser_profiles = {browser_profiles}
+tab_stale_after_hours = {tab_stale_after_hours:.1}     # a tab not looked at for this long is stale
+browser_stale_tabs = {browser_stale_tabs}           # advice also fires at this many stale tabs
 heavy_app_mb = {heavy_app_mb}
 
 # Local servers
@@ -219,10 +225,9 @@ cpu_hog_pct = {cpu_hog_pct:.0}                 # sustained CPU, 100 = one full c
 cpu_hog_minutes = {cpu_hog_minutes}
 pressure_rise_mb_per_hour = {pressure_rise_mb_per_hour}   # swap growing faster than this names the culprits
 
-# Port labels and browser tabs
+# Port labels
 probe_ports = {probe_ports}              # identify local HTTP ports with one short request each
 probe_timeout_ms = {probe_timeout_ms}
-count_browser_tabs = {count_browser_tabs}       # ask the browser for real tab counts (macOS)
 
 # Auto mode. Off by default. Try auto_dry_run = true first: it logs and
 # notifies what it would have closed, and closes nothing.
@@ -250,6 +255,8 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             pressure_swap_pct = d.pressure_swap_pct,
             browser_renderers = d.browser_renderers,
             browser_profiles = d.browser_profiles,
+            tab_stale_after_hours = d.tab_stale_after_hours,
+            browser_stale_tabs = d.browser_stale_tabs,
             heavy_app_mb = d.heavy_app_mb,
             port_stale_after_hours = d.port_stale_after_hours,
             trend_window_minutes = d.trend_window_minutes,
@@ -260,7 +267,6 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             pressure_rise_mb_per_hour = d.pressure_rise_mb_per_hour,
             probe_ports = d.probe_ports,
             probe_timeout_ms = d.probe_timeout_ms,
-            count_browser_tabs = d.count_browser_tabs,
             auto_close_sessions = d.auto_close_sessions,
             auto_stop_servers = d.auto_stop_servers,
             auto_grace_minutes = d.auto_grace_minutes,
@@ -283,6 +289,14 @@ mod tests {
         );
         assert!(parsed.ignore_ports.is_empty());
         assert!(!parsed.auto_close_sessions);
+        assert_eq!(
+            parsed.browser_stale_tabs,
+            Config::default().browser_stale_tabs
+        );
+        assert_eq!(
+            parsed.tab_stale_after_hours,
+            Config::default().tab_stale_after_hours
+        );
         assert_eq!(parsed.auto_hosts, Config::default().auto_hosts);
     }
 

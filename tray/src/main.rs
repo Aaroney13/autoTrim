@@ -239,22 +239,55 @@ fn source_info() -> Source {
     source()
 }
 
-#[tauri::command]
-fn close_session(
-    pid: u32,
-    force: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<actions::ActionRecord, String> {
-    actions::close_by_pid(pid, &state.thresholds, false, force, "manual").map_err(|e| e.to_string())
+/// Run an action off the main thread: each one takes a fresh snapshot and
+/// may wait on another process, and the window should stay responsive.
+async fn off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn stop_server(
+async fn close_session(
     pid: u32,
     force: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<actions::ActionRecord, String> {
-    actions::stop_by_pid(pid, &state.thresholds, false, force, "manual").map_err(|e| e.to_string())
+    let t = state.thresholds.clone();
+    off_thread(move || actions::close_by_pid(pid, &t, false, force, "manual")).await
+}
+
+#[tauri::command]
+async fn stop_server(
+    pid: u32,
+    force: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<actions::ActionRecord, String> {
+    let t = state.thresholds.clone();
+    off_thread(move || actions::stop_by_pid(pid, &t, false, force, "manual")).await
+}
+
+#[tauri::command]
+async fn close_tabs(
+    browser: String,
+    ids: Vec<i32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<actions::ActionRecord>, String> {
+    let t = state.thresholds.clone();
+    off_thread(move || actions::close_tabs_by_id(&browser, &ids, &t, false, "manual")).await
+}
+
+#[tauri::command]
+async fn quit_app(
+    name: String,
+    force: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<actions::ActionRecord, String> {
+    let t = state.thresholds.clone();
+    off_thread(move || actions::quit_app_by_name(&name, &t, false, force, "manual")).await
 }
 
 #[tauri::command]
@@ -278,6 +311,8 @@ fn main() {
             source_info,
             close_session,
             stop_server,
+            close_tabs,
+            quit_app,
             action_log
         ])
         .setup(|app| {

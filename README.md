@@ -51,8 +51,7 @@ Out of scope, deliberately:
   no queues, no routing work between agents. autoTrim only ever stops things
   or suggests stopping them.
 - **Being an agent.** No model calls inside the daemon. Every decision the
-   main.rs         CLI entry: scan | daemon | status | watch | log | service | open
-makes is a rule you can read in the source.
+  daemon makes is a rule you can read in the source.
 - **Memory "cleaning."** No purge tricks, no cache clearing, no claims that
   freeing inactive memory speeds anything up.
 - **General system monitoring.** Not a replacement for Stats or iStat Menus.
@@ -90,23 +89,32 @@ makes is a rule you can read in the source.
 5. MCP server inside the daemon exposing snapshot, history, sessions, and
    actions.
 
-Later: Windows and Linux ports, Chrome per-tab attribution (needs a feasibility
-spike; stable Chrome does not expose renderer-to-tab mapping), localhost
-dashboard, Tauri window.
+Later: Windows and Linux ports, localhost dashboard. (Chrome per-tab
+attribution had its feasibility spike: tabs, titles, and last-viewed times
+come from the browser's own session files, and a tab can be closed by its
+session id. Per-tab memory is still not something stable Chrome exposes.)
 
 ## Architecture
 
 ```
 src/
-  main.rs         CLI entry: scan | daemon | status | watch | log | service
+  main.rs         CLI entry: scan | daemon | status | watch | log | tabs |
+                  close | stop | close-tab | quit | actions | config |
+                  service | open
   system.rs       memory totals, swap, compressed, wired, cpu, load, uptime
   procs.rs        process snapshot: pid, parent, exe, args, cwd, rss, cpu, age
   groups.rs       roll processes up into app groups; what counts as an app per platform
-  agents.rs       detect agent sessions: host, project, idle evidence
+  agents.rs       detect agent sessions: host, project, name, idle evidence
   transcripts.rs  what agents leave on disk: Claude Code session files and
-                  transcripts, Codex rollouts
+                  transcripts, Codex rollouts; last activity and session names
   openfiles.rs    a process's open files (libproc on macOS, /proc on Linux)
-  browser.rs      Chrome/Chromium breakdown, profile directories per platform
+  browser.rs      Chrome/Chromium breakdown: renderers, profile directories
+                  per platform, open tabs, sites, stale tabs
+  snss.rs         reader for Chromium session files (windows, tabs, titles,
+                  last-viewed times)
+  automation.rs   asking another app to do something: close a tab, quit
+                  (Apple Events on macOS)
+  actions.rs      the reclaim verbs and the action log
   ports.rs        listening ports and their owners
   portlabel.rs    what a port is: known table, command line, HTTP fingerprint
   rules.rs        deterministic advice and the session-state decision
@@ -202,21 +210,50 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   show a Trends table once the daemon has ten minutes of history. This is
   the part macOS does not do at all: Activity Monitor shows an instant,
   never a direction, and never says what changed.
+- **Browser tabs.** Every open tab in every running Chrome profile (and
+  Chromium, Brave, Edge, Vivaldi): title, URL, site, profile, pinned, and
+  how long since you last looked at it. This comes from the browser's own
+  session files, the ones it would restore from after a crash, found by
+  looking at which of them the browser process holds open, so nothing asks
+  the browser anything and closed profiles do not count. Tabs roll up by
+  site into a worst-offenders list, and a tab not looked at for a day
+  (`tab_stale_after_hours`) is stale; the browser rule now also fires at
+  fifteen stale tabs (`browser_stale_tabs`) and names the worst sites.
+  `autotrim tabs` lists them longest-untouched first with their ids, and
+  `autotrim close-tab <id>…` closes them. Per-tab memory is not something
+  stable Chrome publishes; the ≈ figure everywhere is renderer memory
+  divided by open tabs, and is labelled as an estimate.
+- **Session names.** A session is shown by the title you gave it, when the
+  transcript records one, otherwise by the first thing you asked, shortened
+  to a line, and only then by the agent's own derived label. Transcripts are
+  append-only, so each one is read in full once and then only what was
+  appended since.
+- `autotrim quit <app>` asks an application to quit the way ⌘Q would, so it
+  can prompt to save or refuse. It never quits an app that hosts agent
+  sessions without `--force`, never the app running the command, and never
+  the Finder or the tray itself. Like the other verbs it is logged with the
+  command to reopen the app.
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
   menu bar item showing free memory, with a menu that carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".
-  The window shows everything the report shows, with a Close button on each
-  session and a Stop button on each unmanaged port. Buttons are two-step:
-  first click arms, second click acts, and the result with its resume
-  command appears in a toast and in the Actions list. The tray reads the
-  daemon's snapshot every five seconds and only scans on its own when no
-  daemon is running. No Dock icon. Launching it again only brings the
-  window forward. The window is created when you open it
-  and destroyed when you close it, so an idle tray is only the menu item.
-  Built with Tauri on the system web view: measured at about 60 MB resident
-  idle on macOS, which is the runtime's price, against the daemon's 7 MB.
-  A future pure-tray build without a web view could get that under 15 MB;
-  the dashboard would then open in the browser instead.
+  The window is a sidebar of everything holding memory, largest first, with
+  a bar for its share of RAM and a count of what it contains (sessions,
+  tabs, processes). Click one for the detail: an agent's sessions by name
+  with a Close on each and "Close N stale"; a browser's worst sites and
+  every tab, longest untouched first, filterable, with Close per tab, per
+  site, and for every stale tab at once; an app's memory, trend, hosted
+  sessions and ports, with a Quit. Overview carries the advice (each card
+  links to the view it is about), the largest holders, and trends. Buttons
+  are two-step: first click arms, second click acts, and the result with
+  its resume command appears in a toast and in the Actions list. The tray
+  reads the daemon's snapshot every five seconds and only scans on its own
+  when no daemon is running. No Dock icon. Launching it again only brings
+  the window forward. The window is created when you open it and destroyed
+  when you close it, so an idle tray is only the menu item. Built with
+  Tauri on the system web view: measured at about 60 MB resident idle on
+  macOS, which is the runtime's price, against the daemon's 7 MB. A future
+  pure-tray build without a web view could get that under 15 MB; the
+  dashboard would then open in the browser instead.
 - `autotrim config`: print the effective settings and where they came from.
   `autotrim config init` writes `config.toml` in the data directory with
   every setting, its default, and a comment. Flags override the file, the
@@ -287,8 +324,14 @@ Known gaps, in the order they should be fixed:
 - **Notifications carry no buttons.** A bare binary cannot register
   actionable notifications on macOS; that needs an app bundle, which comes
   with the tray.
-- **No browser action.** Chrome exposes no way to discard a tab from
-  outside short of the DevTools protocol, so browser advice stays advice.
+- **No per-tab memory.** Chrome exposes renderer-to-tab mapping only
+  inside itself (its task manager) or over the DevTools protocol, which
+  needs a launch flag. Tabs are attributed by count and age, and memory per
+  tab is an average. Discarding a tab (Memory Saver's trick) is likewise
+  not reachable from outside; closing is.
+- **Tab closing is macOS only** for now: it is an Apple Event to the
+  browser, the same as pressing ⌘W in that tab. Linux and Windows list tabs
+  but cannot close them yet.
 - **Codex sessions cannot be closed usefully.** The Codex process is a
   server owned by the ChatGPT app or VS Code, which restarts it. Auto mode
   never targets it; `close` will, with `--force`, and it will come back.
@@ -357,11 +400,12 @@ Things that came up and where they landed.
 
 - **Renderers are not tabs.** Chrome runs a process per tab, but also one
   per cross-site frame (site isolation), per prerendered page, plus a spare
-  it keeps warm, so 52 renderer processes for 31 tabs is normal. The
-  report now says both numbers when it can ask the browser for its tab and
-  window count (AppleScript, macOS, on by default) and otherwise splits
-  renderers into tab-sized and small. The tab threshold in the browser rule
-  uses the tab-sized count.
+  it keeps warm, so 52 renderer processes for 31 tabs is normal. The tab
+  and window count comes from the browser's own session files, so the
+  report says both numbers. Where those files cannot be read it splits
+  renderers into tab-sized and small and the browser rule thresholds on
+  the tab-sized count. Asking the browser over AppleScript was tried and
+  dropped: it prompts for permission, and the session file already knows.
 - **Port labels are deterministic, not model-guessed.** The idea of asking
   a local model what a port is came up. The command line, the working
   directory, and a one-request HTTP fingerprint identify nearly every dev
@@ -391,4 +435,18 @@ Things that came up and where they landed.
   and the action log is append-only, so a file is the simplest possible
   interface and the tray never needs the daemon to answer. The terminal
   `watch` view stays for people who live in a terminal.
+- **Tabs come from Chrome's session files, not from Chrome.** The
+  alternatives were AppleScript (a subprocess and an Automation prompt on
+  every tick, for the daemon of all things) and the DevTools protocol (a
+  launch flag nobody has set). The session file under each profile's
+  `Sessions/` directory is an append-only log of everything session restore
+  needs, written a couple of seconds after any change, and it carries the
+  one thing neither alternative does: when each tab was last the active
+  one. `snss.rs` reads it with no dependencies and skips commands it does
+  not know, which is how it survives new Chrome versions. Which profiles
+  are live is answered by which session files the browser process holds
+  open. The tab id in that file is the same number the browser's
+  AppleScript dictionary reports, verified against a running Chrome, which
+  is what lets a close target one exact tab; the browser re-checks the URL
+  before closing, so a tab that moved on since the snapshot is left alone.
 
