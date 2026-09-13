@@ -294,21 +294,25 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
   menu bar item showing free memory, with a menu that carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".
-  The window is a sidebar of everything holding memory, largest first, with
-  a bar for its share of RAM and a count of what it contains (sessions,
-  tabs, processes). Click one for the detail: an agent's sessions by name
-  with a Close on each and "Close N stale"; a browser's worst sites and
-  every tab, longest untouched first, filterable, with Close per tab, per
-  site, and for every stale tab at once; an app's memory, trend, hosted
-  sessions and ports, with Quit and Restart. Overview carries the advice
-  (each card links to the view it is about), the largest holders, and
-  trends. Above them sit two cards. *Auto mode* has the three switches and,
-  once the daemon has picked them up, the targets it has warned about with
-  the time left on each. *In the background* says whether the daemon runs
-  as a login service and has the "Run in background" button that installs
-  it (with the `autotrim` binary next to the app, inside its bundle, or on
-  PATH), a "Hide window" button, and the choice of whether the window
-  opens when the app starts (`open_window_at_launch`). Buttons
+  The header is one memory bar (used, with compressed as a second shade
+  and swap in red when any is in use), the CPU figure, and the age of the
+  numbers with a ring that fills toward the daemon's next snapshot. The
+  sidebar lists everything holding memory, largest first, with a count of
+  what each contains (sessions, tabs, processes). Click one for the
+  detail: an agent's sessions by name with a Close on each and "Close N
+  stale"; a browser's worst sites and every tab, longest untouched first,
+  filterable, with Close per tab, per site, and for every stale tab at
+  once; an app's memory, trend, hosted sessions and ports, with Quit and
+  Restart. Overview carries a status line (auto mode, the daemon, anything
+  auto mode is about to close), the advice (each card links to the view
+  it is about), one bar of memory by kind, and trends. Settings holds two
+  cards. *Auto mode* has the three switches and, once the daemon has
+  picked them up, the targets it has warned about with the time left on
+  each. *In the background* says whether the daemon runs as a login
+  service and has the "Run in background" button that installs it (with
+  the `autotrim` binary next to the app, inside its bundle, or on PATH), a
+  "Hide window" button, and the choice of whether the window opens when
+  the app starts (`open_window_at_launch`). Buttons
   are two-step: first click arms, second click acts, and the result with
   its resume command appears in a toast and in the Actions list. The tray
   reads the daemon's snapshot every five seconds and only scans on its own
