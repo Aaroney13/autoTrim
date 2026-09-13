@@ -48,6 +48,10 @@ pub struct Snapshot {
     #[serde(default)]
     pub trends: Vec<trends::Trend>,
     pub advice: Vec<rules::Advice>,
+    /// Auto mode as the daemon is running it: its settings and the targets
+    /// it has warned about. None for a one-shot scan.
+    #[serde(default)]
+    pub auto: Option<daemon::AutoStatus>,
 }
 
 /// Observe everything once. `sample` is how a fresh `System` gets a CPU
@@ -116,6 +120,7 @@ pub fn take_snapshot_with(
         ports,
         trends: Vec::new(),
         advice,
+        auto: None,
     }
 }
 

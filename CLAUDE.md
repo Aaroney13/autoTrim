@@ -34,5 +34,9 @@ orchestrator and the daemon never calls a model.
   shared.
 - The tray window (tray/ui/index.html) is embedded at compile time; rebuild
   the tray after editing it.
+- `config.toml` is the one settings file. The daemon re-reads it when it
+  changes, and anything that writes it (the window, `config set`) goes
+  through `Config::set_values`, which keeps comments and refuses a result
+  that would not parse.
 - The daemon's footprint is a public promise (under 20 MB resident). Check it
   when adding dependencies.

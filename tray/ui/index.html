@@ -73,6 +73,16 @@
   .card .e { color: var(--muted); margin: 4px 0 0 20px; white-space: pre-line; }
   .card .a { margin: 6px 0 0 20px; }
   .note { color: var(--muted); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px; }
+  @media (max-width: 980px) { .duo { grid-template-columns: 1fr; } }
+  .card .h { font-weight: 600; display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+  .card .h .tag { margin-left: 0; }
+  .card .h a { margin-left: auto; color: var(--blue); font-weight: 500; font-size: 12px; cursor: pointer; }
+  .card label { display: block; margin: 3px 0; cursor: pointer; }
+  .card label input { margin: 0 6px 0 0; vertical-align: -1px; }
+  .card .row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .pending { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+  .pending div { display: flex; gap: 8px; justify-content: space-between; }
   table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
@@ -122,7 +132,9 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? "" : w.endsWith("s") ? "es" : "s"
 const kindTag = k => k === "chat" ? `<span class="tag" title="a conversation UI: keeps the whole exchange in the page and grows with it">chat</span>` : k === "local" ? `<span class="tag" title="served from this machine">local</span>` : "";
 const AGENT_LABEL = { claude_code: "Claude Code", codex: "Codex", cursor_agent: "Cursor Agent", gemini_cli: "Gemini CLI", aider: "Aider", open_code: "OpenCode", copilot: "Copilot CLI", open_claw: "OpenClaw" };
 
-const state = { snap: null, src: null, log: [], view: "overview", showAll: false, tabSort: "idle", tabFilter: "", tabProfile: "", sessSort: "rss",
+const epochNow = () => Date.now() / 1000;
+
+const state = { snap: null, src: null, log: [], settings: null, service: null, view: "overview", showAll: false, tabSort: "idle", tabFilter: "", tabProfile: "", sessSort: "rss",
   // Things closed from here that the daemon's snapshot has not caught up with yet.
   gone: { tabs: new Set(), pids: new Set() } };
 const armed = {};
@@ -239,12 +251,63 @@ function trendsTable(list) {
     list.map(t => { const sg = t.growth >= 0 ? "+" : "−"; return `<tr><td>${esc(t.name)}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">${sg}${bytes(Math.abs(t.growth))}</td><td class="num">${sg}${bytes(Math.abs(t.bytes_per_hour))}</td><td class="num">${t.cpu_mean.toFixed(0)}%</td><td class="num">${Math.round(t.rising_frac * 100)}%</td></tr>`; }).join("") + `</table></div>`;
 }
 
+// ---- the two switches: auto mode, and running in the background ----
+function controlCards() {
+  if (!state.settings || !state.service) return "";
+  return `<div class="duo">${autoCard()}${backgroundCard()}</div>`;
+}
+
+// The file's settings are the switches; what the daemon is running with
+// (the snapshot's `auto`) says whether they have been picked up yet and
+// what is about to be closed.
+function autoCard() {
+  const c = state.settings, a = state.snap.auto, src = state.src;
+  const on = c.auto_close_sessions || c.auto_stop_servers;
+  const mode = !on ? "off" : c.auto_dry_run ? "dry run" : "on";
+  const box = (key, label, checked, title) => `<label title="${esc(title)}"><input type="checkbox" data-auto="${key}" ${checked ? "checked" : ""}>${label}</label>`;
+  let html = `<div class="card"><div class="h">Auto mode <span class="tag ${on && !c.auto_dry_run ? "on" : ""}">${mode}</span><a data-goto="actions">log ›</a></div>`;
+  if (c.config_error) html += `<div class="state stale" style="margin-bottom:6px">config.toml could not be read, so these are the defaults: ${esc(c.config_error)}</div>`;
+  html += box("close_sessions", "Close stale agent sessions", c.auto_close_sessions, "sessions idle by their own transcript for longer than the stale threshold, quiet, under an allowed host, and never the newest in a project")
+    + box("stop_servers", "Stop old local servers", c.auto_stop_servers, "quiet listeners open for over a day whose owner is a known dev runtime (node, python, ruby, …), started from a terminal rather than an app")
+    + box("dry_run", "Dry run: log and notify, close nothing", c.auto_dry_run, "the way to try it for a week; every would-be close lands in the Actions list");
+  html += `<div class="muted" style="margin-top:6px">Warns first, then waits ${dur(c.auto_grace_minutes * 60)}; anything used in between is spared. Never the newest session in a project, never a host outside ${esc(c.auto_hosts.join(", "))}. The rest is in config.toml.</div>`;
+  if (!src.daemon_running) html += `<div class="muted" style="margin-top:6px">Auto mode runs inside the daemon, and no daemon is running.</div>`;
+  else if (a) {
+    const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.dry_run === c.auto_dry_run;
+    if (!applied) html += `<div class="muted" style="margin-top:6px">Applying… the daemon picks changes up on its next tick.</div>`;
+    else if (a.pending.length) {
+      const now = epochNow();
+      html += `<div class="pending">${a.pending.map(p => `<div><span class="l1" title="${esc(p.target + " · " + p.detail)}">${esc(p.target)} <span class="muted">· ${esc(p.detail)} · ${bytes(p.rss)}</span></span><span class="num state stale">${a.dry_run ? "would close" : "closing"} in ${dur(Math.max(0, p.due_at - now))}</span></div>`).join("")}</div>`;
+    } else if (on) html += `<div class="muted" style="margin-top:6px">Nothing is waiting to be closed.</div>`;
+  }
+  const dry = state.log.filter(r => r.mode === "dry-run");
+  if (dry.length) html += `<div class="muted" style="margin-top:6px">Dry run so far: ${plural(dry.length, "would-be close")} among the last ${state.log.length} logged actions, about ${bytes(dry.reduce((n, r) => n + (r.rss || 0), 0))}.</div>`;
+  return html + `</div>`;
+}
+
+function backgroundCard() {
+  const sv = state.service, src = state.src, c = state.settings;
+  let status, buttons = "";
+  if (!sv.supported) status = "The login service is macOS only so far; run <code>autotrim daemon</code> under your own supervisor.";
+  else if (sv.installed && sv.running) { status = `Running as a login service${sv.pid ? ` (pid ${sv.pid})` : ""}, started at every login${sv.binary ? `, from ${esc(sv.binary)}` : ""}.`; buttons = `<button data-service="restart" title="restart the daemon, for example after rebuilding it">Restart</button> <button data-service="uninstall" title="stop the daemon and remove the login service; data is kept">Stop login service</button>`; }
+  else if (sv.installed) { status = "The login service is installed but the daemon is not running."; buttons = `<button class="primary" data-service="restart">Start</button> <button data-service="uninstall">Remove login service</button>`; }
+  else if (src.daemon_running) { status = "A daemon is running in the foreground, in a terminal. As a login service it would outlive that terminal and start at every login."; buttons = `<button class="primary" data-service="install">Run in background</button>`; }
+  else { status = "Nothing is running in the background, so this window scans on its own: no trends, no reminders, no auto mode. Run in background installs the daemon as a login service."; buttons = `<button class="primary" data-service="install">Run in background</button>`; }
+  const tag = sv.installed && sv.running ? `<span class="tag on">login service</span>` : src.daemon_running ? `<span class="tag">foreground</span>` : `<span class="tag">not running</span>`;
+  return `<div class="card"><div class="h">In the background ${tag}</div>
+    <div class="muted">${status}</div>
+    <div class="row2">${buttons}</div>
+    <label style="margin-top:8px" title="off: the app starts as a menu bar item only; Open autoTrim… in its menu brings the window back"><input type="checkbox" data-launch-window ${c.open_window_at_launch ? "checked" : ""}>Open this window when the app starts</label>
+    <div class="row2"><button data-hide>Hide window</button><span class="muted">The menu bar item stays. The daemon keeps working with the window closed, and with the app quit.</span></div></div>`;
+}
+
 function viewOverview() {
   const s = state.snap;
   const trends = (s.trends || []).filter(t => t.kind !== "renderer" && t.span_secs >= 600).slice(0, 8);
   const top = holders(s).slice(0, 8);
   return `<h1>Overview</h1>
     <div class="sub"><span><b>${plural(s.sessions.filter(x => !goneSession(x)).length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span><span><b>${plural(s.groups.length, "holder")}</b> of memory</span></div>
+    ${controlCards()}
     <h2>Advice</h2><div class="cards">${adviceCards(s.advice)}</div>
     <h2>Largest holders <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">click one for detail</span></h2>
     <div class="card mini">${top.map(h => `<div class="row" data-goto="${esc(h.key)}"><div><div>${esc(h.name)} <span class="muted">· ${esc(h.count)}</span></div><div class="bar"><i class="${h.kind}" style="width:${(h.rss * 100 / s.system.total_mem).toFixed(1)}%"></i></div></div><div class="num">${bytes(h.rss)}</div></div>`).join("")}</div>
@@ -461,6 +524,16 @@ function wire(root) {
   root.querySelectorAll("[data-close-tabs]").forEach(b => b.onclick = () => { const ids = b.dataset.closeTabs.split(",").filter(Boolean).map(Number); if (!ids.length) return; twoStep(b, "T" + b.dataset.closeTabs, async () => { const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); const ok = recs.filter(tabOk).length; toast(`closed ${ok} of ${recs.length} tabs` + (ok < recs.length ? "\n" + recs.filter(r => !tabOk(r)).map(r => `${r.target}: ${r.result}`).join("\n") : "")); }); });
   root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); const pids = h ? h.sessions.filter(x => x.state === "stale" && !x.is_self && !goneSession(x)).map(x => x.pid) : []; twoStep(b, "S" + b.dataset.closeStale, async () => { const out = []; for (const pid of pids) { try { const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); out.push(rec); } catch (e) { out.push({ action: "close_session", target: `pid ${pid}`, result: String(e) }); } } report(out); }); });
   root.querySelectorAll("[data-quit]").forEach(b => b.onclick = () => twoStep(b, "q" + b.dataset.quit, async () => report(await invoke("quit_app", { name: b.dataset.quit, force: false }))));
+  // The switches write config.toml; the daemon picks it up on its next tick.
+  root.querySelectorAll("[data-auto]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_auto", { [cb.dataset.auto]: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });
+  root.querySelectorAll("[data-launch-window]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_open_window_at_launch", { value: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });
+  root.querySelectorAll("[data-hide]").forEach(b => b.onclick = () => invoke("hide_window").catch(e => toast(String(e))));
+  root.querySelectorAll("[data-service]").forEach(b => {
+    const what = b.dataset.service;
+    const run = async () => { state.service = await invoke("service_" + what); toast(what === "install" ? "Installed the login service. The daemon runs now and at every login." : what === "restart" ? "The daemon was restarted." : "Removed the login service; the daemon has stopped. Its data is kept."); };
+    if (what === "uninstall") b.onclick = () => twoStep(b, "svc", run);
+    else b.onclick = () => { b.disabled = true; b.textContent = "…"; run().catch(e => toast(String(e))).finally(() => refresh()); };
+  });
   root.querySelectorAll("[data-profile]").forEach(c => c.onclick = () => { state.tabProfile = state.tabProfile === c.dataset.profile ? "" : c.dataset.profile; renderMain(true); });
   root.querySelectorAll("[data-tab-sort]").forEach(sel => sel.onchange = () => { state.tabSort = sel.value; renderMain(true); });
   root.querySelectorAll("[data-sess-sort]").forEach(sel => sel.onchange = () => { state.sessSort = sel.value; renderMain(true); });
@@ -476,10 +549,10 @@ function renderAll(viewChanged) { renderHeader(); renderSide(); renderMain(viewC
 // scan taken after an action stays until the daemon catches up with it.
 async function refresh(opts = {}) {
   try {
-    const [snap, src, log] = await Promise.all([invoke("snapshot", { fresh: !!opts.fresh }), invoke("source_info"), invoke("action_log").catch(() => [])]);
+    const [snap, src, log, settings, service] = await Promise.all([invoke("snapshot", { fresh: !!opts.fresh }), invoke("source_info"), invoke("action_log").catch(() => []), invoke("settings").catch(() => null), invoke("service_info").catch(() => null)]);
     const first = !state.snap;
-    if (!first && snap.taken_at < state.snap.taken_at) { state.src = src; state.log = log; renderAll(false); return; }
-    state.snap = snap; state.src = src; state.log = log;
+    if (!first && snap.taken_at < state.snap.taken_at) { state.src = src; state.log = log; state.settings = settings; state.service = service; renderAll(false); return; }
+    state.snap = snap; state.src = src; state.log = log; state.settings = settings; state.service = service;
     pruneGone(snap);
     renderAll(first);
   } catch (e) { document.getElementById("head").innerHTML = `<span class="muted">${esc(String(e))}</span>`; }

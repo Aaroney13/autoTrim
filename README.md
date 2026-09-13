@@ -123,7 +123,8 @@ src/
   trends.rs       rolling series, linear fit, growth and CPU readings
   notify.rs       native notification delivery
   service.rs      launchd install/uninstall/restart/status
-  app.rs          find and launch the menu bar app, for `autotrim open`
+  app.rs          find the menu bar app (for `autotrim open`) and the CLI
+                  binary (for the app's "Run in background")
   watch.rs        live terminal view and log printing
   paths.rs        data directory per platform
   report.rs       text rendering
@@ -186,17 +187,28 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   Every action is appended to `actions.jsonl` in the data directory with
   what it was, what it held, and how to get it back; `autotrim actions`
   prints that log.
-- **Auto mode**, off by default, in the config file. When on, the daemon
-  warns first ("closing N idle targets in 10 minutes", one notification),
-  waits the grace period, and acts only on targets that are still idle
-  then. Its bar is higher than the advice's: a session needs transcript
-  evidence of idleness, a warm quiet window agreeing, a host on the
-  `auto_hosts` allowlist, and it always spares the most recently active
-  session in each project so you keep your place. Servers are only stopped
-  when the owner is a known dev runtime (node, python, ruby, and friends);
-  a VM manager or database left running is reported, never killed.
-  `auto_dry_run = true` logs and notifies what it would have done, and
-  does nothing, which is how to try it for a week.
+- **Auto mode**, off by default. Switch it on from the window (the Auto
+  mode card on the Overview: close stale sessions, stop old servers, dry
+  run), from the menu bar menu, with `autotrim config set
+  auto_close_sessions=true`, or by editing `config.toml`; the daemon
+  re-reads the file when it changes, so nothing needs a restart. When on,
+  the daemon warns first ("closing N idle targets in 10 minutes", one
+  notification), waits the grace period, and acts only on targets that
+  are still idle then. Its bar is higher than the advice's: a session
+  needs transcript evidence of idleness, a warm quiet window agreeing, a
+  host on the `auto_hosts` allowlist, and it always spares the most
+  recently active session in each project so you keep your place. Codex
+  sessions are never targets: the app that owns them restarts them.
+  Servers are only stopped when the owner is a known dev runtime (node,
+  python, ruby, and friends); a VM manager or database left running is
+  reported, never killed. `auto_dry_run = true` logs and notifies what it
+  would have done, and does nothing, which is how to try it for a week;
+  each target is reported once, not again every grace period, until it
+  goes away or the dry run ends. The snapshot carries what auto mode is running with and every target it
+  has warned about, so the window, `autotrim status` and the menu show
+  "closing X in 7 m" rather than leaving the notification as the only
+  trace. Switching auto mode off empties that list, so switching it on
+  again starts every grace period afresh.
 - **Trends.** The daemon keeps a rolling series per app and per session
   (two hours by default, warmed from the history files on restart, so a
   restart forgets nothing) and fits a line through each. Three rules read
@@ -256,7 +268,14 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   every tab, longest untouched first, filterable, with Close per tab, per
   site, and for every stale tab at once; an app's memory, trend, hosted
   sessions and ports, with a Quit. Overview carries the advice (each card
-  links to the view it is about), the largest holders, and trends. Buttons
+  links to the view it is about), the largest holders, and trends. Above
+  them sit two cards. *Auto mode* has the three switches and, once the
+  daemon has picked them up, the targets it has warned about with the
+  time left on each. *In the background* says whether the daemon runs as
+  a login service and has the "Run in background" button that installs it
+  (with the `autotrim` binary next to the app, inside its bundle, or on
+  PATH), a "Hide window" button, and the choice of whether the window
+  opens when the app starts (`open_window_at_launch`). Buttons
   are two-step: first click arms, second click acts, and the result with
   its resume command appears in a toast and in the Actions list. The tray
   reads the daemon's snapshot every five seconds and only scans on its own
@@ -272,6 +291,9 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   every setting, its default, and a comment. Flags override the file, the
   file overrides the defaults. Thresholds, intervals, notification cadence,
   and ignore lists for ports, apps, and projects all live there.
+  `autotrim config set key=value …` changes settings in place and keeps
+  the file's comments; the window's switches go through the same code.
+  The daemon re-reads the file whenever it changes.
 
 Every report also carries whole-machine CPU and load average, CPU per app
 group and per session, and a table of listening TCP/UDP ports with the app
@@ -350,6 +372,15 @@ Known gaps, in the order they should be fixed:
 - **Codex sessions cannot be closed usefully.** The Codex process is a
   server owned by the ChatGPT app or VS Code, which restarts it. Auto mode
   never targets it; `close` will, with `--force`, and it will come back.
+- **Auto mode never closes the only stale session in a project.** Sparing
+  the most recently active session per project is what keeps your place,
+  but a project with one forgotten session keeps it forever. A horizon
+  (spare it only while it is less than a day idle, say) would fix that.
+- **Auto mode's grace restarts on any one-tick wobble.** A target leaves
+  the pending list the moment it fails a single check, and a session whose
+  process tree idles at about 2% CPU (Claude Code with a few MCP servers
+  under it) crosses the quiet threshold now and then. It should take a
+  real burst, or a transcript update, to spare a target.
 - **No quiet hours** for notifications yet; the config file is where they
   will go.
 - **macOS only** for the service and the memory counters beyond swap.
@@ -405,8 +436,12 @@ autotrim open
 `open` launches the app or brings its window forward. The app refuses to
 run twice, and so does the daemon: one per data directory, tracked in
 `daemon.pid`, with a stale file from a crash ignored. The app runs until
-you pick Quit from its menu. Starting it at login and signing the bundle
-are still to do. For a quick unbundled run while developing,
+you pick Quit from its menu. Its window can install the login service
+too ("Run in background" on the Overview; `install-app.sh` puts a copy of
+the command-line binary inside the bundle for that), and
+`open_window_at_launch = false` makes the app start as a menu bar item
+only. Starting the app itself at login and signing the bundle are still
+to do. For a quick unbundled run while developing,
 `cargo run -p autotrim-tray --release` still works.
 
 ## Decisions

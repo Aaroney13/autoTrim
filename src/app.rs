@@ -48,6 +48,45 @@ pub fn find() -> Option<PathBuf> {
     candidates().into_iter().find(|p| p.exists())
 }
 
+/// Where the `autotrim` command-line binary might be, most specific first.
+/// The menu bar app uses this to install the login service, since the
+/// daemon is the command-line binary, not the app.
+pub fn cli_candidates() -> Vec<PathBuf> {
+    let cli = if cfg!(windows) {
+        "autotrim.exe"
+    } else {
+        "autotrim"
+    };
+    let mut out = Vec::new();
+    if let Some(p) = std::env::var_os("AUTOTRIM_CLI") {
+        out.push(PathBuf::from(p));
+    }
+    let exe = std::env::current_exe().ok();
+    if let Some(d) = exe.as_ref().and_then(|e| e.parent()) {
+        // cargo's layout: the CLI sits next to the tray binary.
+        out.push(d.join(cli));
+        // An app bundle: install-app.sh puts a copy of the CLI in Resources.
+        #[cfg(target_os = "macos")]
+        if let Some(contents) = d.parent() {
+            out.push(contents.join("Resources").join(cli));
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        out.extend(std::env::split_paths(&paths).map(|p| p.join(cli)));
+    }
+    if let Some(h) = crate::system::home() {
+        out.push(h.join(".cargo/bin").join(cli));
+    }
+    out.push(PathBuf::from("/usr/local/bin").join(cli));
+    out.push(PathBuf::from("/opt/homebrew/bin").join(cli));
+    out
+}
+
+/// The command-line binary, when one can be found.
+pub fn find_cli() -> Option<PathBuf> {
+    cli_candidates().into_iter().find(|p| p.is_file())
+}
+
 /// Launch the app, or bring it to the front if it is already running.
 pub fn open() -> Result<()> {
     let Some(path) = find() else {

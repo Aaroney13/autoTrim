@@ -5,7 +5,8 @@
 //! No model calls, no arbitrary actions. Everything here is a rule you can read.
 
 use crate::actions;
-use crate::agents::{AgentSession, SessionState};
+use crate::agents::{AgentKind, AgentSession, SessionState};
+use crate::config::Config;
 use crate::fmt::{bytes, date_utc, dur, stamp_utc};
 use crate::notify;
 use crate::paths;
@@ -14,7 +15,7 @@ use crate::trends::History;
 use crate::{Snapshot, take_snapshot_with};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,128 @@ pub struct AutoConfig {
     pub hosts: Vec<String>,
 }
 
+/// Command-line overrides. Everything else comes from the config file,
+/// which the daemon re-reads whenever it changes, so a toggle in the
+/// window or an edit by hand takes effect on the next tick.
+#[derive(Clone, Debug, Default)]
+pub struct Overrides {
+    pub interval_secs: Option<u64>,
+    pub window_secs: Option<u64>,
+    pub retention_days: Option<u64>,
+    pub stale_after_hours: Option<f64>,
+    pub min_quiet_minutes: Option<u64>,
+    pub quiet_cpu: Option<f32>,
+    pub no_notify: bool,
+    pub remind_every_hours: Option<f64>,
+    pub once: bool,
+}
+
+impl DaemonConfig {
+    /// The file's settings with the command line's overrides on top.
+    pub fn from_config(cfg: &Config, o: &Overrides) -> DaemonConfig {
+        let mut thresholds = cfg.thresholds();
+        if let Some(h) = o.stale_after_hours {
+            thresholds.stale_after_secs = (h * 3600.0) as u64;
+        }
+        if let Some(m) = o.min_quiet_minutes {
+            thresholds.min_quiet_secs = m * 60;
+        }
+        if let Some(q) = o.quiet_cpu {
+            thresholds.quiet_cpu = q;
+        }
+        let interval = o.interval_secs.unwrap_or(cfg.interval_secs).max(5);
+        let window = o.window_secs.unwrap_or(cfg.window_secs).max(interval);
+        let remind = o.remind_every_hours.unwrap_or(cfg.remind_every_hours);
+        DaemonConfig {
+            interval: Duration::from_secs(interval),
+            window: Duration::from_secs(window),
+            retention_days: o.retention_days.unwrap_or(cfg.retention_days).max(1),
+            thresholds,
+            once: o.once,
+            notify: cfg.notify && !o.no_notify,
+            remind_every: Duration::from_secs((remind * 3600.0).max(60.0) as u64),
+            auto: AutoConfig {
+                close_sessions: cfg.auto_close_sessions,
+                stop_servers: cfg.auto_stop_servers,
+                grace: Duration::from_secs(cfg.auto_grace_minutes * 60),
+                dry_run: cfg.auto_dry_run,
+                hosts: cfg.auto_hosts.clone(),
+            },
+        }
+    }
+}
+
+impl AutoConfig {
+    /// The same settings in the shape the snapshot carries.
+    pub fn status(&self, pending: Vec<PendingTarget>) -> AutoStatus {
+        AutoStatus {
+            close_sessions: self.close_sessions,
+            stop_servers: self.stop_servers,
+            dry_run: self.dry_run,
+            grace_secs: self.grace.as_secs(),
+            hosts: self.hosts.clone(),
+            pending,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        self.status(Vec::new()).describe()
+    }
+}
+
+/// Auto mode as the daemon is running it, for the window and `status`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct AutoStatus {
+    pub close_sessions: bool,
+    pub stop_servers: bool,
+    pub dry_run: bool,
+    pub grace_secs: u64,
+    pub hosts: Vec<String>,
+    /// Targets warned about and waiting out the grace period.
+    pub pending: Vec<PendingTarget>,
+}
+
+impl AutoStatus {
+    /// One line: what it does and how, or "off".
+    pub fn describe(&self) -> String {
+        if !self.close_sessions && !self.stop_servers {
+            return "off".to_string();
+        }
+        let mut what = Vec::new();
+        if self.close_sessions {
+            what.push("closes stale sessions");
+        }
+        if self.stop_servers {
+            what.push("stops old servers");
+        }
+        let mut s = format!(
+            "{} after a {} warning",
+            what.join(" and "),
+            dur(self.grace_secs)
+        );
+        if self.dry_run {
+            s.push_str(" · dry run, nothing is closed");
+        }
+        s
+    }
+}
+
+/// One target auto mode has warned about.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PendingTarget {
+    /// "session" or "server".
+    pub kind: String,
+    pub pid: u32,
+    pub target: String,
+    /// Why: "idle 9h" or "open 3d".
+    pub detail: String,
+    pub rss: u64,
+    /// Epoch seconds when it was first warned about.
+    pub since: u64,
+    /// Epoch seconds when the grace period runs out.
+    pub due_at: u64,
+}
+
 /// Rolling observations for one session, keyed by pid and start time so a
 /// reused pid is never mistaken for the old session.
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -70,6 +193,11 @@ struct Tracker {
     /// Auto-mode candidates and when they were first warned about.
     #[serde(default)]
     pending: HashMap<String, u64>,
+    /// Targets a dry run has already "closed". Nothing was closed, so they
+    /// stay candidates; this keeps each one to a single report rather
+    /// than a new warning every grace period.
+    #[serde(default)]
+    dry_done: HashSet<String>,
     /// Rolling series per app and session, for growth and CPU trends.
     #[serde(default)]
     history: History,
@@ -465,6 +593,9 @@ fn auto_session_candidates<'a>(
     snap.sessions
         .iter()
         .filter(|s| s.state == SessionState::Stale && !s.is_self)
+        // A Codex session is a server its app restarts on its own, so
+        // closing it frees nothing for long. Only `close --force` will.
+        .filter(|s| s.kind != AgentKind::Codex)
         .filter(|s| s.idle_secs.is_some_and(|i| i >= t.stale_after_secs))
         .filter(|s| s.quiet_for_secs.is_some_and(|q| q >= t.min_quiet_secs))
         .filter(|s| auto.hosts.iter().any(|h| h == &s.host))
@@ -499,36 +630,53 @@ fn auto_server_candidates<'a>(
 }
 
 /// One pass of auto mode: warn about new candidates, act on ones whose
-/// grace has run out, forget ones that went away or woke up.
-fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64) {
+/// grace has run out, forget ones that went away or woke up. Returns what
+/// the snapshot should say about it. With auto mode off the pending list
+/// is emptied, so switching it on later starts every grace period afresh.
+fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64) -> AutoStatus {
     let auto = &cfg.auto;
-    if !auto.close_sessions && !auto.stop_servers {
-        return;
-    }
     let grace = auto.grace.as_secs();
     let mode = if auto.dry_run { "dry-run" } else { "auto" };
     let mut live = std::collections::HashSet::new();
     let mut warned: Vec<String> = Vec::new();
     let mut acted: Vec<actions::ActionRecord> = Vec::new();
+    let mut pending: Vec<PendingTarget> = Vec::new();
 
+    if !auto.dry_run {
+        tracker.dry_done.clear();
+    }
     if auto.close_sessions {
         for s in auto_session_candidates(snap, auto, &cfg.thresholds) {
             let k = format!("s:{}:{}", s.pid, s.start_time);
             live.insert(k.clone());
-            let first = *tracker.pending.entry(k).or_insert_with(|| {
-                warned.push(format!(
-                    "{} · {} (idle {})",
-                    s.kind.label(),
-                    s.session_name
-                        .as_deref()
-                        .or(s.project.as_deref())
-                        .unwrap_or("?"),
-                    dur(s.idle_secs.unwrap_or(0))
-                ));
+            if auto.dry_run && tracker.dry_done.contains(&k) {
+                continue;
+            }
+            let name = s
+                .session_name
+                .as_deref()
+                .or(s.project.as_deref())
+                .unwrap_or("?");
+            let detail = format!("idle {}", dur(s.idle_secs.unwrap_or(0)));
+            let first = *tracker.pending.entry(k.clone()).or_insert_with(|| {
+                warned.push(format!("{} · {} ({})", s.kind.label(), name, detail));
                 now
             });
             if now.saturating_sub(first) >= grace {
                 acted.push(actions::close_session(s, mode, auto.dry_run));
+                if auto.dry_run {
+                    tracker.dry_done.insert(k);
+                }
+            } else {
+                pending.push(PendingTarget {
+                    kind: "session".to_string(),
+                    pid: s.pid,
+                    target: format!("{} · {}", s.kind.label(), name),
+                    detail,
+                    rss: s.rss,
+                    since: first,
+                    due_at: first + grace,
+                });
             }
         }
     }
@@ -536,22 +684,37 @@ fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64
         for p in auto_server_candidates(snap, &cfg.thresholds) {
             let k = format!("p:{}:{}", p.pid, p.port);
             live.insert(k.clone());
-            let first = *tracker.pending.entry(k).or_insert_with(|| {
+            if auto.dry_run && tracker.dry_done.contains(&k) {
+                continue;
+            }
+            let detail = format!("open {}", dur(p.open_for_secs));
+            let first = *tracker.pending.entry(k.clone()).or_insert_with(|| {
                 warned.push(format!(
-                    "{} on {}:{} (open {})",
-                    p.process,
-                    p.addr,
-                    p.port,
-                    dur(p.open_for_secs)
+                    "{} on {}:{} ({})",
+                    p.process, p.addr, p.port, detail
                 ));
                 now
             });
             if now.saturating_sub(first) >= grace {
                 acted.push(actions::stop_server(p, mode, auto.dry_run));
+                if auto.dry_run {
+                    tracker.dry_done.insert(k);
+                }
+            } else {
+                pending.push(PendingTarget {
+                    kind: "server".to_string(),
+                    pid: p.pid,
+                    target: format!("{} on {}:{}", p.process, p.addr, p.port),
+                    detail,
+                    rss: p.owner_rss,
+                    since: first,
+                    due_at: first + grace,
+                });
             }
         }
     }
     tracker.pending.retain(|k, _| live.contains(k));
+    tracker.dry_done.retain(|k| live.contains(k));
 
     if !warned.is_empty() {
         let title = format!(
@@ -608,14 +771,27 @@ fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64
             let _ = notify::send(&title, &format!("freed about {}", bytes(rec.rss)), &body);
         }
     }
+    auto.status(pending)
 }
 
-pub fn run(cfg: DaemonConfig) -> Result<()> {
+/// The config file's modification time and size, or None when there is no
+/// file. Cheap enough to check every tick.
+fn config_stamp() -> Option<(SystemTime, u64)> {
+    let m = fs::metadata(Config::path()?).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// The daemon loop. `file` is the config as loaded at start; the file is
+/// watched and re-read when it changes, with `overrides` re-applied on
+/// top each time.
+pub fn run(file: &Config, overrides: Overrides) -> Result<()> {
     let dir = paths::data_dir().context("no data directory for this platform")?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     claim_lock(&dir)?;
     let state_path = dir.join("state.json");
     let latest_path = dir.join("latest.json");
+    let mut cfg = DaemonConfig::from_config(file, &overrides);
+    let mut stamp = config_stamp();
 
     let mut tracker = Tracker::load(&state_path);
     if tracker.history.series.is_empty() {
@@ -631,12 +807,12 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
     }
     let mut sys = System::new();
     let mut prev_ids: BTreeSet<String> = BTreeSet::new();
-    let window = cfg.window.as_secs();
 
     eprintln!(
-        "autotrim daemon · every {}s · window {}s · data in {}",
+        "autotrim daemon · every {}s · window {}s · auto mode {} · data in {}",
         cfg.interval.as_secs(),
-        window,
+        cfg.window.as_secs(),
+        cfg.auto.describe(),
         dir.display()
     );
 
@@ -645,6 +821,22 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
     let mut first = true;
     loop {
         let now = now_epoch();
+        let seen = config_stamp();
+        if seen != stamp {
+            stamp = seen;
+            match Config::load() {
+                Ok((c, _)) => {
+                    cfg = DaemonConfig::from_config(&c, &overrides);
+                    println!(
+                        "{} = settings reloaded · auto mode {}",
+                        stamp_utc(now),
+                        cfg.auto.describe()
+                    );
+                }
+                Err(e) => eprintln!("{} settings not reloaded: {e}", stamp_utc(now)),
+            }
+        }
+        let window = cfg.window.as_secs();
         let sample = if first {
             Some(Duration::from_millis(1500))
         } else {
@@ -695,7 +887,7 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
         }
         prev_ids = ids;
 
-        run_auto(&mut tracker, &snap, &cfg, now);
+        snap.auto = Some(run_auto(&mut tracker, &snap, &cfg, now));
 
         if cfg.notify {
             for a in tracker.due_for_notification(now, cfg.remind_every.as_secs(), &snap.advice) {
