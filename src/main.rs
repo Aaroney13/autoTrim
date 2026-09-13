@@ -58,13 +58,21 @@ enum Cmd {
     Open,
 }
 
-#[derive(Subcommand, Clone, Copy)]
+#[derive(Subcommand, Clone)]
 enum ConfigCmd {
     /// Write config.toml with every setting and its default, commented.
     Init {
         /// Overwrite an existing file.
         #[arg(long)]
         force: bool,
+    },
+    /// Change settings in config.toml, keeping the rest of the file as it
+    /// is. A running daemon picks the change up on its next tick.
+    Set {
+        /// key=value pairs, values as TOML: auto_close_sessions=true
+        /// auto_grace_minutes=5 auto_hosts='["VS Code"]'
+        #[arg(required = true)]
+        pairs: Vec<String>,
     },
 }
 
@@ -225,35 +233,20 @@ fn scan(args: &ScanArgs, cfg: &Config) -> Result<()> {
 }
 
 fn run_daemon(args: &DaemonArgs, cfg: &Config) -> Result<()> {
-    let mut thresholds = cfg.thresholds();
-    if let Some(h) = args.stale_after_hours {
-        thresholds.stale_after_secs = (h * 3600.0) as u64;
-    }
-    if let Some(m) = args.min_quiet_minutes {
-        thresholds.min_quiet_secs = m * 60;
-    }
-    if let Some(q) = args.quiet_cpu {
-        thresholds.quiet_cpu = q;
-    }
-    let interval = args.interval.unwrap_or(cfg.interval_secs).max(5);
-    let window = args.window.unwrap_or(cfg.window_secs).max(interval);
-    let remind = args.remind_every_hours.unwrap_or(cfg.remind_every_hours);
-    daemon::run(daemon::DaemonConfig {
-        interval: Duration::from_secs(interval),
-        window: Duration::from_secs(window),
-        retention_days: args.retention_days.unwrap_or(cfg.retention_days).max(1),
-        thresholds,
-        once: args.once,
-        notify: cfg.notify && !args.no_notify,
-        remind_every: Duration::from_secs((remind * 3600.0).max(60.0) as u64),
-        auto: daemon::AutoConfig {
-            close_sessions: cfg.auto_close_sessions,
-            stop_servers: cfg.auto_stop_servers,
-            grace: Duration::from_secs(cfg.auto_grace_minutes * 60),
-            dry_run: cfg.auto_dry_run,
-            hosts: cfg.auto_hosts.clone(),
+    daemon::run(
+        cfg,
+        daemon::Overrides {
+            interval_secs: args.interval,
+            window_secs: args.window,
+            retention_days: args.retention_days,
+            stale_after_hours: args.stale_after_hours,
+            min_quiet_minutes: args.min_quiet_minutes,
+            quiet_cpu: args.quiet_cpu,
+            no_notify: args.no_notify,
+            remind_every_hours: args.remind_every_hours,
+            once: args.once,
         },
-    })
+    )
 }
 
 fn close(args: &TargetArgs, cfg: &Config) -> Result<()> {
@@ -448,6 +441,27 @@ fn init_config(force: bool) -> Result<()> {
     Ok(())
 }
 
+fn set_config(pairs: &[String]) -> Result<()> {
+    let mut kv = Vec::new();
+    for p in pairs {
+        let Some((k, v)) = p.split_once('=') else {
+            anyhow::bail!("expected key=value, got {p}");
+        };
+        let k = k.trim();
+        if !Config::has_key(k) {
+            anyhow::bail!("{k} is not a setting; `autotrim config` lists them");
+        }
+        kv.push((k, v.trim().to_string()));
+    }
+    let path = Config::set_values(&kv)?;
+    println!("wrote {}", path.display());
+    for (k, v) in &kv {
+        println!("  {k} = {v}");
+    }
+    println!("A running daemon picks this up on its next tick.");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let (cfg, cfg_path) = Config::load()?;
@@ -470,6 +484,7 @@ fn main() -> Result<()> {
         Cmd::Config { action } => match action {
             None => show_config(&cfg, cfg_path.as_deref()),
             Some(ConfigCmd::Init { force }) => init_config(force),
+            Some(ConfigCmd::Set { pairs }) => set_config(&pairs),
         },
         Cmd::Service { action } => service::run(match action {
             ServiceCmd::Install => service::Action::Install,

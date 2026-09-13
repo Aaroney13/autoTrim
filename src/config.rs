@@ -83,6 +83,10 @@ pub struct Config {
     /// sessions makes closing pointless, so this is an allowlist.
     pub auto_hosts: Vec<String>,
 
+    /// The menu bar app opens its window when it starts. Off leaves only
+    /// the menu bar item, for running in the background.
+    pub open_window_at_launch: bool,
+
     /// Ports never to report.
     pub ignore_ports: Vec<u16>,
     /// App group names never to report (as shown in the report).
@@ -130,6 +134,7 @@ impl Default for Config {
                 "Cursor".to_string(),
                 "terminal".to_string(),
             ],
+            open_window_at_launch: true,
             ignore_ports: Vec::new(),
             ignore_apps: Vec::new(),
             ignore_projects: Vec::new(),
@@ -244,6 +249,9 @@ auto_dry_run = {auto_dry_run}
 auto_hosts = ["Claude app", "VS Code", "Cursor", "terminal"]   # sessions under other hosts are never auto-closed;
                                                               # an app's own agent engine never is
 
+# Menu bar app
+open_window_at_launch = {open_window_at_launch}   # false: start with only the menu bar item
+
 # Never report these
 ignore_ports = []               # e.g. [5432, 6379]
 ignore_apps = []                # e.g. ["Spotify"]
@@ -279,13 +287,173 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             auto_stop_servers = d.auto_stop_servers,
             auto_grace_minutes = d.auto_grace_minutes,
             auto_dry_run = d.auto_dry_run,
+            open_window_at_launch = d.open_window_at_launch,
         )
     }
+
+    /// Whether auto mode does anything at all.
+    pub fn auto_on(&self) -> bool {
+        self.auto_close_sessions || self.auto_stop_servers
+    }
+
+    /// Whether `key` names a setting.
+    pub fn has_key(key: &str) -> bool {
+        toml::to_string(&Config::default())
+            .map(|t| t.lines().any(|l| key_of(l) == Some(key)))
+            .unwrap_or(false)
+    }
+
+    /// Change top-level keys in `config.toml`, keeping every other line as
+    /// it is, comments included. The file is created from the template when
+    /// there is none. The result is parsed before it is written, so a bad
+    /// value never leaves behind a file the daemon cannot read. Values are
+    /// TOML: `true`, `5`, `"name"`, `["a", "b"]`.
+    pub fn set_values(pairs: &[(&str, String)]) -> Result<PathBuf> {
+        let path = Self::path().context("no data directory on this platform")?;
+        let text = if path.is_file() {
+            std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?
+        } else {
+            Self::template()
+        };
+        let edited = set_keys(&text, pairs);
+        toml::from_str::<Config>(&edited).context("the edited settings would not parse")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, edited).with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("renaming into {}", path.display()))?;
+        Ok(path)
+    }
+}
+
+/// The pure text edit behind `set_values`: replace the value on each key's
+/// line, keeping its trailing comment, and append keys the file lacks.
+fn set_keys(text: &str, pairs: &[(&str, String)]) -> String {
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    let mut missing = Vec::new();
+    for (key, value) in pairs {
+        match lines.iter().position(|l| key_of(l) == Some(key)) {
+            Some(i) => {
+                lines[i] = match trailing_comment(&lines[i]) {
+                    Some(c) => format!("{key} = {value}   {c}"),
+                    None => format!("{key} = {value}"),
+                };
+            }
+            None => missing.push(format!("{key} = {value}")),
+        }
+    }
+    if !missing.is_empty() {
+        if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push("# Added by autotrim".to_string());
+        lines.extend(missing);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// The key a line assigns, when it is a top-level `key = value` line.
+fn key_of(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    if t.starts_with('#') || t.starts_with('[') {
+        return None;
+    }
+    let (k, _) = t.split_once('=')?;
+    let k = k.trim();
+    (!k.is_empty()
+        && k.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    .then_some(k)
+}
+
+/// The `# comment` at the end of a value line, ignoring a `#` inside a
+/// quoted string.
+fn trailing_comment(line: &str) -> Option<&str> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(q) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' && q == '"' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                '#' => return Some(line[i..].trim_end()),
+                _ => {}
+            },
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_keys_replaces_value_and_keeps_comment() {
+        let before = Config::template();
+        let after = set_keys(
+            &before,
+            &[
+                ("auto_close_sessions", "true".to_string()),
+                ("auto_grace_minutes", "5".to_string()),
+            ],
+        );
+        assert_eq!(before.lines().count(), after.lines().count());
+        assert!(after.contains("auto_close_sessions = true\n"));
+        assert!(
+            after
+                .contains("auto_grace_minutes = 5   # warning first, then this long before acting")
+        );
+        let parsed: Config = toml::from_str(&after).unwrap();
+        assert!(parsed.auto_close_sessions);
+        assert_eq!(parsed.auto_grace_minutes, 5);
+        assert!(!parsed.auto_dry_run);
+    }
+
+    #[test]
+    fn set_keys_appends_missing_keys() {
+        let after = set_keys(
+            "stale_after_hours = 2   # short\n",
+            &[("auto_dry_run", "true".to_string())],
+        );
+        assert!(after.starts_with("stale_after_hours = 2   # short\n"));
+        assert!(after.ends_with("# Added by autotrim\nauto_dry_run = true\n"));
+        let parsed: Config = toml::from_str(&after).unwrap();
+        assert!(parsed.auto_dry_run);
+        assert_eq!(parsed.stale_after_hours, 2.0);
+    }
+
+    #[test]
+    fn comments_inside_strings_are_not_comments() {
+        assert_eq!(
+            trailing_comment(r#"ignore_apps = ["a#b"]  # c"#),
+            Some("# c")
+        );
+        assert_eq!(trailing_comment(r#"x = "a#b""#), None);
+        assert_eq!(trailing_comment("x = 'it''s #1'  # d"), Some("# d"));
+        assert_eq!(key_of("  auto_dry_run=false"), Some("auto_dry_run"));
+        assert_eq!(key_of("# auto_dry_run = false"), None);
+        assert_eq!(key_of("[table]"), None);
+    }
+
+    #[test]
+    fn has_key_knows_the_settings() {
+        assert!(Config::has_key("auto_close_sessions"));
+        assert!(Config::has_key("open_window_at_launch"));
+        assert!(!Config::has_key("auto_close_session"));
+    }
 
     #[test]
     fn template_parses_to_defaults() {
@@ -307,6 +475,7 @@ mod tests {
             Config::default().tab_stale_after_hours
         );
         assert_eq!(parsed.auto_hosts, Config::default().auto_hosts);
+        assert!(parsed.open_window_at_launch);
     }
 
     #[test]

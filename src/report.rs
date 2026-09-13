@@ -281,6 +281,20 @@ pub fn render(s: &Snapshot) -> String {
         }
     }
 
+    if let Some(a) = &s.auto {
+        let _ = writeln!(o, "\nAuto mode · {}", a.describe());
+        for p in &a.pending {
+            let _ = writeln!(
+                o,
+                "  {} · {} · {} in {}",
+                p.target,
+                p.detail,
+                if a.dry_run { "would close" } else { "closing" },
+                dur(p.due_at.saturating_sub(s.taken_at))
+            );
+        }
+    }
+
     let _ = writeln!(o, "\nAdvice");
     if s.advice.is_empty() {
         let _ = writeln!(o, "  nothing to do");
