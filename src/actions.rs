@@ -11,6 +11,7 @@ use crate::paths;
 use crate::ports::PortInfo;
 use crate::rules::Thresholds;
 use crate::take_snapshot;
+use crate::transcripts;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -74,11 +75,24 @@ pub fn resume_command(s: &AgentSession) -> Option<String> {
             Some(format!("{cd}claude --resume {id}{hint}"))
         }
         AgentKind::Codex => {
-            // rollout-<timestamp>-<uuid>.jsonl: the uuid is the thread id.
-            let file = s.transcript.as_deref()?;
-            let stem = Path::new(file).file_stem()?.to_str()?;
-            let id = stem.get(stem.len().checked_sub(36)?..)?;
-            Some(format!("{cd}codex resume {id}"))
+            let id = s
+                .session_id
+                .clone()
+                .or_else(|| transcripts::rollout_uuid(Path::new(s.transcript.as_deref()?)))?;
+            let hint = if s.engine && s.host != "terminal" {
+                format!("   # or reopen the thread in the {}", s.host)
+            } else {
+                String::new()
+            };
+            Some(format!("{cd}codex resume {id}{hint}"))
+        }
+        AgentKind::Copilot => {
+            let id = s.session_id.as_deref()?;
+            Some(format!("{cd}copilot --resume={id}"))
+        }
+        AgentKind::CursorAgent => {
+            let id = s.session_id.as_deref()?;
+            Some(format!("{cd}agent --resume {id}"))
         }
         _ => None,
     }
@@ -477,6 +491,13 @@ pub fn close_by_pid(
         anyhow::bail!(
             "pid {pid} looks active ({:.0}% CPU); use force to close it anyway",
             s.cpu
+        );
+    }
+    if s.engine && !force {
+        anyhow::bail!(
+            "pid {pid} is the {} engine under {}, which would restart it; close threads in the app, or use force to close them all at once",
+            s.kind.label(),
+            s.host
         );
     }
     let rec = close_session(s, mode, dry_run);

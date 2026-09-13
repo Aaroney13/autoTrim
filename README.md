@@ -105,9 +105,11 @@ src/
   system.rs       memory totals, swap, compressed, wired, cpu, load, uptime
   procs.rs        process snapshot: pid, parent, exe, args, cwd, rss, cpu, age
   groups.rs       roll processes up into app groups; what counts as an app per platform
-  agents.rs       detect agent sessions: host, project, name, idle evidence
+  agents.rs       detect agent sessions: host, project, name, idle evidence,
+                  and which processes are an app's own agent engine
   transcripts.rs  what agents leave on disk: Claude Code session files and
-                  transcripts, Codex rollouts; last activity and session names
+                  transcripts, Codex rollouts, Copilot CLI event logs,
+                  Cursor chat stores; last activity and session names
   openfiles.rs    a process's open files (libproc on macOS, /proc on Linux)
   browser.rs      Chrome/Chromium breakdown: renderers, profile directories
                   per platform, open tabs, sites, stale tabs
@@ -241,6 +243,22 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   to a line, and only then by the agent's own derived label. Transcripts are
   append-only, so each one is read in full once and then only what was
   appended since.
+- **Which agents.** Claude Code (the CLI, under the Claude app, VS Code, or a
+  terminal), Codex (the CLI, and the app server the ChatGPT app and the VS
+  Code extension run), Copilot CLI (from npm or Homebrew, and the copy VS
+  Code bundles and runs as its engine), Cursor's CLI (`agent`, which is a
+  launcher around its own bundled node), plus Gemini CLI, Aider, OpenCode,
+  and OpenClaw by name. Codex, Copilot, and Cursor sessions are tied to
+  their transcripts through the process's own open files: Codex rollouts,
+  Copilot `session-state` event logs, Cursor chat stores. Codex threads are
+  named from its thread index, Copilot sessions from `workspace.yaml`,
+  Cursor chats from the chat store's own name, each falling back to the
+  first prompt. An app's engine (Codex `app-server`, Copilot `--server`) is
+  one session serving every thread the app shows; with nothing open it is
+  part of the app, not a session, and auto mode never closes an engine
+  because the app would restart it. Closing any of them logs the resume
+  command: `claude --resume`, `codex resume`, `copilot --resume=`,
+  `agent --resume`.
 - `autotrim quit <app>` asks an application to quit the way ⌘Q would, so it
   can prompt to save or refuse. It never quits an app that hosts agent
   sessions without `--force`, never the app running the command, and never
