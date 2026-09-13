@@ -9,6 +9,7 @@ use crate::agents::{AgentKind, Detection};
 use crate::procs::{Proc, ProcTable};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +80,13 @@ pub fn app_name(p: &Proc) -> Option<String> {
     }
 }
 
+/// The bundle an executable runs from, as macOS sees it: the outermost
+/// `.app` in the path. Pure, so `actions` can name what to open again and
+/// the rule is tested on every host.
+pub fn bundle_path(exe: &Path) -> Option<PathBuf> {
+    macos::bundle_path(exe)
+}
+
 /// Executable or directory names that stand for a known app, and the name
 /// the rest of the crate uses for it (its macOS bundle name). Matched
 /// case-insensitively, without `.exe`.
@@ -121,7 +129,7 @@ fn known(name: &str) -> Option<String> {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod macos {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     /// Name of the outermost `.app` bundle in the executable path, if any.
     pub fn app_name(exe: &Path) -> Option<String> {
@@ -132,6 +140,22 @@ mod macos {
             }
         }
         None
+    }
+
+    /// The path up to and including the outermost `.app` component. None
+    /// when the executable is not inside a bundle, or is the bundle
+    /// directory itself. Joined as text so the answer is the same on every
+    /// host, which is what lets the test run everywhere.
+    pub fn bundle_path(exe: &Path) -> Option<PathBuf> {
+        let text = exe.to_string_lossy();
+        let parts: Vec<&str> = text.split('/').collect();
+        let at = parts
+            .iter()
+            .position(|s| s.strip_suffix(".app").is_some_and(|stem| !stem.is_empty()))?;
+        if at + 1 >= parts.len() {
+            return None;
+        }
+        Some(PathBuf::from(parts[..=at].join("/")))
     }
 }
 
@@ -351,6 +375,41 @@ mod tests {
             Some("Google Chrome")
         );
         assert_eq!(mac("/usr/bin/ssh"), None);
+    }
+
+    #[test]
+    fn macos_bundle_path() {
+        let b = |p: &str| bundle_path(Path::new(p));
+        let chrome = Some(PathBuf::from("/Applications/Google Chrome.app"));
+        assert_eq!(
+            b("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            chrome
+        );
+        // A helper nested in a framework resolves to the outer bundle.
+        assert_eq!(
+            b(
+                "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/1/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)"
+            ),
+            chrome
+        );
+        assert_eq!(
+            b("/Users/a/Applications/Slack.app/Contents/MacOS/Slack"),
+            Some(PathBuf::from("/Users/a/Applications/Slack.app"))
+        );
+        assert_eq!(
+            b("/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"),
+            Some(PathBuf::from("/System/Applications/Utilities/Terminal.app"))
+        );
+        for bare in [
+            "/usr/bin/ssh",
+            "/Users/a/.cargo/bin/autotrim",
+            "/opt/homebrew/bin/node",
+            "/Applications/Foo.app",
+            "/Users/a/my.app.bak/bin/x",
+            "/Users/a/notes.apple/x",
+        ] {
+            assert_eq!(b(bare), None, "{bare}");
+        }
     }
 
     #[test]

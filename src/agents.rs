@@ -81,7 +81,8 @@ pub struct AgentSession {
     pub start_time: u64,
     /// CPU percent summed over the session's process tree.
     pub cpu: f32,
-    /// Resident bytes summed over the session's process tree.
+    /// Memory summed over the session's process tree: `phys_footprint` on
+    /// macOS, so what closing it returns; resident size elsewhere.
     pub rss: u64,
     pub procs: usize,
     pub state: SessionState,

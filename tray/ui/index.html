@@ -386,7 +386,7 @@ function viewAgents(h) {
   const live = h.sessions.filter(x => !goneSession(x));
   const stale = live.filter(x => x.state === "stale" && !x.is_self && !x.engine);
   return `<h1>${esc(h.name)} <span class="pill">agent</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> resident</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(live.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span></div>
+    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(live.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span></div>
     <h2>Sessions <span class="tools">sort <select data-sess-sort>${["rss","idle","age","name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"memory",idle:"idle",age:"age",name:"name"}[k]}</option>`).join("")}</select>
       <button ${stale.length ? "" : "disabled"} data-close-stale="${esc(h.name)}">Close ${stale.length} stale</button></span></h2>
     <div class="wrap">${sessionTable(h.sessions)}</div>
@@ -417,7 +417,7 @@ function tabTable(b, tabs) {
 function viewBrowser(h) {
   const s = state.snap, b = h.browser, est = b.per_tab_estimate;
   let html = `<h1>${esc(h.name)} <span class="pill">browser</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> resident</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${b.renderers}</b> tab renderers holding <b>${bytes(b.renderer_rss)}</b></span><span><b>${b.extension_renderers}</b> extension</span>${b.profiles != null ? `<span><b>${b.profiles}</b> profiles on disk</span>` : ""}</div>`;
+    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${b.renderers}</b> tab renderers holding <b>${bytes(b.renderer_rss)}</b></span><span><b>${b.extension_renderers}</b> extension</span>${b.profiles != null ? `<span><b>${b.profiles}</b> profiles on disk</span>` : ""}</div>`;
   if (!b.tabs.length) {
     return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + quitBlock(h);
   }
@@ -498,7 +498,8 @@ function quitBlock(h) {
   if (never) why = "this is not something autoTrim quits";
   else if (self) why = "this app is running the session autoTrim is in";
   else if (hosting.length) why = `hosts ${plural(hosting.length, "agent session")}; close those first`;
-  return `<h2>Quit</h2><div class="card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><button ${why ? "disabled" : ""} data-quit="${esc(h.name)}">Quit ${esc(h.name)}</button><span class="muted">${why ? esc(why) : "Asks the app to quit the way ⌘Q would, so it can prompt to save. Logged with the command to reopen it."}</span></div>`;
+  const back = h.kind === "browser" ? "with its last session, so tabs come back as you click them" : "so it comes back holding far less";
+  return `<h2>Quit or restart</h2><div class="card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><button ${why ? "disabled" : ""} data-quit="${esc(h.name)}">Quit ${esc(h.name)}</button><button ${why ? "disabled" : ""} data-restart="${esc(h.name)}">Restart ${esc(h.name)}</button><span class="muted">${why ? esc(why) : `Quit asks the app to quit the way ⌘Q would, so it can prompt to save. Restart does the same, waits for it to exit, and opens it again ${back}. Both are logged with the command to reopen it.`}</span></div>`;
 }
 
 function viewApp(h) {
@@ -507,7 +508,7 @@ function viewApp(h) {
   const trend = (s.trends || []).find(t => t.key === "g:" + h.name && t.span_secs >= 600);
   const ports = s.ports.filter(p => h.pids.includes(p.pid));
   let html = `<h1>${esc(h.name)} <span class="pill">${h.kind === "app" ? "app" : "process"}</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> resident · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>`;
+    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>`;
   if (hosted.length) {
     html += `<h2>Agent sessions it hosts</h2><div class="wrap">${sessionTable(hosted)}</div>`;
   }
@@ -518,7 +519,7 @@ function viewApp(h) {
     html += `<p class="note">A bare executable rather than an app bundle: ${plural(h.procs, "process")} named ${esc(h.name)}, ${bytes(h.rss)} between them. autoTrim only stops these when they are a forgotten local server (see Listening ports).</p>`;
   }
   if (!hosted.length && !ports.length && h.kind === "app") {
-    html += `<p class="note">${plural(h.procs, "process")} under this app bundle, ${bytes(h.rss)} resident between them.</p>`;
+    html += `<p class="note">${plural(h.procs, "process")} under this app bundle, ${bytes(h.rss)} in memory between them.</p>`;
   }
   return html + quitBlock(h);
 }
@@ -574,6 +575,7 @@ function wire(root) {
   root.querySelectorAll("[data-close-tabs]").forEach(b => b.onclick = () => { const ids = b.dataset.closeTabs.split(",").filter(Boolean).map(Number); if (!ids.length) return; twoStep(b, "T" + b.dataset.closeTabs, async () => { const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); const ok = recs.filter(tabOk).length; toast(`closed ${ok} of ${recs.length} tabs` + (ok < recs.length ? "\n" + recs.filter(r => !tabOk(r)).map(r => `${r.target}: ${r.result}`).join("\n") : "")); }); });
   root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); const pids = h ? h.sessions.filter(x => x.state === "stale" && !x.is_self && !x.engine && !goneSession(x)).map(x => x.pid) : []; twoStep(b, "S" + b.dataset.closeStale, async () => { const out = []; for (const pid of pids) { try { const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); out.push(rec); } catch (e) { out.push({ action: "close_session", target: `pid ${pid}`, result: String(e) }); } } report(out); }); });
   root.querySelectorAll("[data-quit]").forEach(b => b.onclick = () => twoStep(b, "q" + b.dataset.quit, async () => report(await invoke("quit_app", { name: b.dataset.quit, force: false }))));
+  root.querySelectorAll("[data-restart]").forEach(b => b.onclick = () => twoStep(b, "r" + b.dataset.restart, async () => report(await invoke("restart_app", { name: b.dataset.restart, force: false }))));
   // The switches write config.toml; the daemon picks it up on its next tick.
   root.querySelectorAll("[data-auto]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_auto", { [cb.dataset.auto]: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });
   root.querySelectorAll("[data-launch-window]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_open_window_at_launch", { value: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });

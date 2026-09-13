@@ -14,7 +14,8 @@ pub struct Proc {
     pub exe: Option<PathBuf>,
     pub cmd: Vec<String>,
     pub cwd: Option<PathBuf>,
-    /// Resident set size in bytes.
+    /// Memory in bytes: `phys_footprint` on macOS, which is what the process
+    /// gives back when it exits; resident size elsewhere. See footprint.rs.
     pub rss: u64,
     /// CPU percent over the sample window (100 = one full core).
     pub cpu: f32,
@@ -80,7 +81,7 @@ impl ProcTable {
                     .map(|a| a.to_string_lossy().into_owned())
                     .collect(),
                 cwd: p.cwd().map(|x| x.to_path_buf()),
-                rss: p.memory(),
+                rss: crate::footprint::footprint(p.pid().as_u32()).unwrap_or_else(|| p.memory()),
                 cpu: p.cpu_usage(),
                 start_time: p.start_time(),
                 run_time: p.run_time(),
