@@ -145,8 +145,18 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
   the `autotrim` binary next to the app, inside its bundle, or on PATH), a
   "Hide window" button, and the choice of whether the window opens when
   the app starts (`open_window_at_launch`). Buttons
-  are two-step: first click arms, second click acts, and the result with
-  its resume command appears in a toast and in the Actions list. The tray
+  that close, quit, or restart are two-step: first click arms, second click
+  acts, and the result with its resume command appears in a toast and in
+  the Actions list. Click a recovery command in Actions to copy it to the
+  clipboard; the Copy control also works with Enter or Space. A successful
+  copy turns the command green with white text, pulses its outline, and
+  shows “✓ Copied!” for 2.5 seconds before fading back to its normal color;
+  reduced-motion settings keep the highlight and label without the pulse.
+  Background refresh waits for the feedback to finish. Recovery commands
+  are copied as displayed. For browser tabs, the alternative ⌘⇧T shortcut
+  appears as helper text below the command and is excluded from copying,
+  including for existing log entries. Hints about missing server arguments
+  or how to reopen an agent session are retained. The tray
   reads the daemon's snapshot every five seconds and only scans on its own
   when no daemon is running. No Dock icon. Launching it again only brings
   the window forward. The window is created when you open it and destroyed
