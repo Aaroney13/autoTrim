@@ -38,8 +38,9 @@ In scope:
   Reminders are the product.
 - **Reclaim.** A small set of narrow, logged, reversible actions: close an idle
   agent session (its transcript stays on disk and the resume command is logged),
-  discard browser tabs, quit an app. An opt-in auto mode runs these on a fixed
-  policy with a notify-first grace period.
+  close browser tabs, quit an app, restart an app so it comes back fresh. An
+  opt-in auto mode runs the first two on a fixed policy with a notify-first
+  grace period.
 - **Expose.** A local interface (MCP over localhost) so any agent can read the
   snapshot and history and call the same safe actions. A `scan` command that
   prints a shareable one-shot report.
@@ -63,8 +64,9 @@ Out of scope, deliberately:
 
 ## Principles
 
-- **Tiny footprint.** The daemon stays under 20 MB resident and negligible CPU,
-  or it undermines its own pitch. This is a public budget.
+- **Tiny footprint.** The daemon stays under 20 MB, as Activity Monitor's
+  Memory column counts it, and negligible CPU, or it undermines its own
+  pitch. This is a public budget, and the daemon logs its own number.
 - **Deterministic.** Same snapshot, same advice. Thresholds live in one config
   file with sane defaults.
 - **Reversible and logged.** Every action writes what it did and how to undo
@@ -100,10 +102,12 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
 ```
 src/
   main.rs         CLI entry: scan | daemon | status | watch | log | tabs |
-                  close | stop | close-tab | quit | actions | config |
-                  service | open
+                  close | stop | close-tab | quit | restart | actions |
+                  config | service | open
   system.rs       memory totals, swap, compressed, wired, cpu, load, uptime
-  procs.rs        process snapshot: pid, parent, exe, args, cwd, rss, cpu, age
+  procs.rs        process snapshot: pid, parent, exe, args, cwd, memory, cpu, age
+  footprint.rs    per-process memory as what exiting would return: phys_footprint
+                  via proc_pid_rusage on macOS, resident size elsewhere
   groups.rs       roll processes up into app groups; what counts as an app per platform
   agents.rs       detect agent sessions: host, project, name, idle evidence
   transcripts.rs  what agents leave on disk: Claude Code session files and
@@ -113,8 +117,8 @@ src/
                   per platform, open tabs, sites, stale tabs
   snss.rs         reader for Chromium session files (windows, tabs, titles,
                   last-viewed times)
-  automation.rs   asking another app to do something: close a tab, quit
-                  (Apple Events on macOS)
+  automation.rs   asking another app to do something: close a tab, quit,
+                  open again (Apple Events and `open` on macOS)
   actions.rs      the reclaim verbs and the action log
   ports.rs        listening ports and their owners
   portlabel.rs    what a port is: known table, command line, HTTP fingerprint
@@ -146,8 +150,9 @@ library. `cargo build --release` at the root builds the CLI; the tray is
 Everything upstream of `rules.rs` produces one `Snapshot` struct, serialized
 to JSON. The daemon, the tray, the MCP server, and the `scan` command all
 consume that struct. Platform-specific code stays behind `cfg` in `system.rs`,
-`browser.rs`, `paths.rs`, `openfiles.rs`, `service.rs`, and `groups.rs`; the
-path rules in `groups.rs` are plain functions tested on every host.
+`browser.rs`, `paths.rs`, `openfiles.rs`, `footprint.rs`, `service.rs`, and
+`groups.rs`; the path rules in `groups.rs` are plain functions tested on
+every host.
 
 ## Status
 
@@ -156,7 +161,7 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
 - `autotrim scan`: one-shot report. System totals, top holders, browser
   breakdown, agent sessions, and the first four rules (restart, stale
   sessions, browser sprawl, heavy app). Text and `--json`. Release binary is
-  under 2 MB and a scan peaks around 10 MB resident.
+  about 3 MB and a scan peaks under 8 MB footprint.
 - `autotrim daemon`: samples every 30 s with one long-lived system handle, so
   each CPU reading is a 30 s average rather than an instant. Keeps a rolling
   window (default 10 min) per session, keyed by pid and start time, and
@@ -246,6 +251,16 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   sessions without `--force`, never the app running the command, and never
   the Finder or the tray itself. Like the other verbs it is logged with the
   command to reopen the app.
+- `autotrim restart <app>` quits the same way, waits until every process of
+  the app is gone, then opens the bundle again, so a browser or an Electron
+  app that has been up for days comes back holding a fraction of what it
+  did. Chrome, Chromium, Brave, Edge and Vivaldi are opened with
+  `--restore-last-session`, so the tabs come back as you click them rather
+  than all at once. An app still running after thirty seconds (a save
+  dialog, a refusal) is not relaunched, and the log says so; an executable
+  that does not live in an application bundle is refused, since there is
+  nothing to open again. macOS only, like the other Apple Event verbs. The
+  same checks as `quit`, and the same log entry, with the `open` command.
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
   menu bar item showing free memory, with a menu that carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".
@@ -255,7 +270,7 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   with a Close on each and "Close N stale"; a browser's worst sites and
   every tab, longest untouched first, filterable, with Close per tab, per
   site, and for every stale tab at once; an app's memory, trend, hosted
-  sessions and ports, with a Quit. Overview carries the advice (each card
+  sessions and ports, with Quit and Restart. Overview carries the advice (each card
   links to the view it is about), the largest holders, and trends. Buttons
   are two-step: first click arms, second click acts, and the result with
   its resume command appears in a toast and in the Actions list. The tray
@@ -264,7 +279,8 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   the window forward. The window is created when you open it and destroyed
   when you close it, so an idle tray is only the menu item. Built with
   Tauri on the system web view: measured at about 60 MB resident idle on
-  macOS, which is the runtime's price, against the daemon's 7 MB. A future
+  macOS, which is the runtime's price, against the daemon's 13 MB footprint
+  after eight hours with notifications on. A future
   pure-tray build without a web view could get that under 15 MB; the
   dashboard would then open in the browser instead.
 - `autotrim config`: print the effective settings and where they came from.
@@ -324,7 +340,14 @@ How "idle" is decided, strongest evidence first:
 
 Memory counters on macOS come from `host_statistics64` and the
 `kern.memorystatus_level` sysctl, the same sources `vm_stat` and
-`memory_pressure` print, with no subprocesses.
+`memory_pressure` print, with no subprocesses. Per-process memory on macOS
+is `phys_footprint` from `proc_pid_rusage`, the number Activity Monitor's
+Memory column and `footprint(1)` show: private, compressed and IOKit
+memory, not the pages shared with every other process. That is what a
+process gives back when it exits, so a session's figure, and the recovery
+on an advice card, is what closing it returns. Linux and Windows use
+resident size from sysinfo, which charges shared pages to every process
+and over-counts a tree.
 
 Data lives in `~/Library/Application Support/autotrim` on macOS,
 `$XDG_DATA_HOME/autotrim` on Linux, `%LOCALAPPDATA%\autotrim` on Windows.
@@ -344,9 +367,9 @@ Known gaps, in the order they should be fixed:
   not reachable from outside; closing is. The daemon does follow each
   renderer's growth on its own, which shows a leaking page without naming
   it.
-- **Tab closing is macOS only** for now: it is an Apple Event to the
-  browser, the same as pressing ⌘W in that tab. Linux and Windows list tabs
-  but cannot close them yet.
+- **Tab closing, quitting and restarting are macOS only** for now: Apple
+  Events to the app, the same as pressing ⌘W or ⌘Q, and `open` to bring it
+  back. Linux and Windows list tabs but cannot close them yet.
 - **Codex sessions cannot be closed usefully.** The Codex process is a
   server owned by the ChatGPT app or VS Code, which restarts it. Auto mode
   never targets it; `close` will, with `--force`, and it will come back.
@@ -440,6 +463,15 @@ Things that came up and where they landed.
   MCP interface is for: your own agent, with the snapshot in hand, can go
   and look.
 
+- **Footprint, not resident size.** Resident size charges the shared
+  cache and every framework's text to each process that maps them, and
+  never counts the pages the compressor is holding. So a tiny helper looked
+  like 30 MB and a stale session on a swapping machine looked small, and
+  summing a process tree double-counted the shared part. `phys_footprint`
+  is what the kernel actually frees when a process exits, it is the column
+  Activity Monitor shows, and the libc crate already bound the call. The
+  field is still called `rss` in the JSON, because four on-disk formats and
+  the tray read it by that name.
 - **Closing a Claude Code session is clean.** Tested on a VS Code-hosted
   session that had been idle for 54 days: the polite signal was enough, the
   process exited within a second, Claude Code removed its own session file,

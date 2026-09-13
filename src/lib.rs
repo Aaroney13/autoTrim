@@ -11,6 +11,7 @@ pub mod browser;
 pub mod config;
 pub mod daemon;
 pub mod fmt;
+pub mod footprint;
 pub mod groups;
 pub mod notify;
 pub mod openfiles;

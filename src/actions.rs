@@ -1,12 +1,13 @@
 //! The reclaim verbs. Narrow on purpose: close an agent session, stop an
-//! unmanaged local server, close a browser tab, ask an app to quit. Every
-//! action is logged with how to undo it.
+//! unmanaged local server, close a browser tab, ask an app to quit, or
+//! restart it so it comes back fresh. Every action is logged with how to
+//! undo it.
 
 use crate::agents::{AgentKind, AgentSession, SessionState};
 use crate::automation;
 use crate::browser::{self, BrowserInfo, TabInfo};
 use crate::fmt::{self, stamp_utc};
-use crate::groups::{AppGroup, GroupKind};
+use crate::groups::{self, AppGroup, GroupKind};
 use crate::paths;
 use crate::ports::PortInfo;
 use crate::rules::Thresholds;
@@ -15,7 +16,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
 
@@ -24,7 +25,7 @@ pub struct ActionRecord {
     pub ts: u64,
     /// manual, auto, or dry-run
     pub mode: String,
-    /// close_session, stop_server, close_tab, or quit_app
+    /// close_session, stop_server, close_tab, quit_app, or restart_app
     pub action: String,
     /// The process acted on. Zero for a tab, which is not a process.
     pub pid: u32,
@@ -34,7 +35,8 @@ pub struct ActionRecord {
     pub transcript: Option<String>,
     /// How to get it back.
     pub resume: Option<String>,
-    /// Resident bytes the target held when acted on.
+    /// Memory the target held when acted on: footprint on macOS, resident
+    /// size elsewhere.
     pub rss: u64,
     pub result: String,
 }
@@ -54,6 +56,20 @@ fn shell_quote(s: &str) -> String {
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
+}
+
+/// The command that opens an app again from its bundle, with any arguments
+/// after `--args`.
+fn reopen_command(bundle: &Path, args: &[&str]) -> String {
+    let mut s = format!("open {}", shell_quote(&bundle.to_string_lossy()));
+    if !args.is_empty() {
+        s.push_str(" --args");
+        for a in args {
+            s.push(' ');
+            s.push_str(&shell_quote(a));
+        }
+    }
+    s
 }
 
 /// The command that brings a closed session back, when the agent has one.
@@ -288,13 +304,14 @@ pub fn close_tabs_by_id(
     Ok(out)
 }
 
-fn wait_gone(pid: u32, wait: Duration) -> bool {
+/// True once none of `pids` is running, false if any still is after `wait`.
+fn wait_gone(pids: &[u32], wait: Duration) -> bool {
     let mut sys = System::new();
-    let target = [Pid::from_u32(pid)];
+    let targets: Vec<Pid> = pids.iter().map(|p| Pid::from_u32(*p)).collect();
     let started = Instant::now();
     loop {
-        sys.refresh_processes(ProcessesToUpdate::Some(&target), true);
-        if sys.process(target[0]).is_none() {
+        sys.refresh_processes(ProcessesToUpdate::Some(&targets), true);
+        if targets.iter().all(|p| sys.process(*p).is_none()) {
             return true;
         }
         if started.elapsed() >= wait {
@@ -313,7 +330,7 @@ pub fn quit_app(g: &AppGroup, root: u32, mode: &str, dry_run: bool) -> ActionRec
     } else {
         match automation::quit_app(&g.name) {
             Ok(msg) => {
-                if wait_gone(root, Duration::from_secs(10)) {
+                if wait_gone(&[root], Duration::from_secs(10)) {
                     "quit".to_string()
                 } else {
                     format!("{msg}; still running after 10 s")
@@ -341,6 +358,79 @@ pub fn quit_app(g: &AppGroup, root: u32, mode: &str, dry_run: bool) -> ActionRec
     }
 }
 
+/// How long a restart waits for the app to be gone. Longer than quit's
+/// wait: a browser flushes its session state on the way out, and a false
+/// "still running" here costs the person a manual reopen.
+const RESTART_WAIT: Duration = Duration::from_secs(30);
+/// A moment for the app to release its singleton lock before it is opened
+/// again.
+const RESTART_SETTLE: Duration = Duration::from_secs(1);
+
+/// Quit the way `quit_app` does, wait until every process of the app is
+/// gone, then open `bundle` again with `args`. Never opens something that
+/// is still running; the record says which way it went and the resume line
+/// is always the command that opens it.
+pub fn restart_app(
+    g: &AppGroup,
+    root: u32,
+    bundle: &Path,
+    args: &[&str],
+    mode: &str,
+    dry_run: bool,
+) -> ActionRecord {
+    let reopen = reopen_command(bundle, args);
+    let (result, hint) = if dry_run {
+        (
+            "dry run, nothing done".to_string(),
+            "not relaunched; this is what would open it",
+        )
+    } else {
+        match automation::quit_app(&g.name) {
+            Err(e) => (
+                format!("failed: {e}"),
+                "not relaunched; run this once it has quit",
+            ),
+            Ok(msg) if !wait_gone(&g.pids, RESTART_WAIT) => (
+                format!(
+                    "{msg}; still running after {} s; not relaunched",
+                    RESTART_WAIT.as_secs()
+                ),
+                "not relaunched; run this once it has quit",
+            ),
+            Ok(_) => {
+                std::thread::sleep(RESTART_SETTLE);
+                match automation::relaunch_app(bundle, args) {
+                    Ok(_) => (
+                        "quit and relaunched".to_string(),
+                        "already relaunched; run this if it did not come back",
+                    ),
+                    Err(e) => (
+                        format!("quit, but could not open it again: {e}"),
+                        "not relaunched; run this to open it",
+                    ),
+                }
+            }
+        }
+    };
+    ActionRecord {
+        ts: now_epoch(),
+        mode: if dry_run {
+            "dry-run".to_string()
+        } else {
+            mode.to_string()
+        },
+        action: "restart_app".to_string(),
+        pid: root,
+        target: g.name.clone(),
+        project: None,
+        session_id: None,
+        transcript: None,
+        resume: Some(format!("{reopen}   # {hint}")),
+        rss: g.rss,
+        result,
+    }
+}
+
 /// Apps that are part of the desk, not something to quit.
 const NEVER_QUIT: &[&str] = &[
     "Finder",
@@ -355,16 +445,44 @@ const NEVER_QUIT: &[&str] = &[
     "Notification Center",
 ];
 
-/// Quit an app by its group name with the checks every interface shares:
-/// only application bundles, never the desk itself, never the app running
-/// this, and never one that hosts agent sessions without `force`.
-pub fn quit_app_by_name(
-    name: &str,
-    t: &Thresholds,
-    dry_run: bool,
-    force: bool,
-    mode: &str,
-) -> Result<ActionRecord> {
+/// What the app verbs act on once the shared checks pass.
+pub struct AppTarget {
+    pub group: AppGroup,
+    /// The app's main process: the one whose parent is outside the group.
+    pub root: u32,
+    /// The bundle the app runs from, when it runs from one.
+    pub bundle: Option<PathBuf>,
+}
+
+/// The judgement the app verbs share, kept pure so it is tested:
+/// `self_chain` is this process and its ancestors, `hosting` how many agent
+/// sessions name the app as their host.
+fn check_app_target(g: &AppGroup, self_chain: &[u32], hosting: usize, force: bool) -> Result<()> {
+    if g.kind != GroupKind::App {
+        anyhow::bail!(
+            "{} is not an application bundle; only apps can be asked to quit",
+            g.name
+        );
+    }
+    // Quitting our own host would cut the branch we are sitting on.
+    if self_chain.iter().any(|pid| g.pids.contains(pid)) {
+        anyhow::bail!("{} is running this command", g.name);
+    }
+    if hosting > 0 && !force {
+        anyhow::bail!(
+            "{} hosts {hosting} agent session{}; close those first, or use force",
+            g.name,
+            if hosting == 1 { "" } else { "s" }
+        );
+    }
+    Ok(())
+}
+
+/// The checks every app verb makes: never the desk itself (decided before
+/// sampling anything), then a fresh snapshot, only application bundles,
+/// never the app running this, and never one that hosts agent sessions
+/// without `force`. Also finds the app's main process and its bundle.
+fn app_target(name: &str, t: &Thresholds, force: bool) -> Result<AppTarget> {
     if NEVER_QUIT.contains(&name) {
         anyhow::bail!("{name} is not something autoTrim will quit");
     }
@@ -373,16 +491,12 @@ pub fn quit_app_by_name(
     let Some(g) = snap.groups.iter().find(|g| g.name == name) else {
         anyhow::bail!("{name} is not running");
     };
-    if g.kind != GroupKind::App {
-        anyhow::bail!("{name} is not an application bundle; only apps can be asked to quit");
-    }
-    let in_group = |pid: Pid| g.pids.contains(&pid.as_u32());
-    // Walk up from this process: quitting our own host would cut the branch
-    // we are sitting on.
+    let mut self_chain = Vec::new();
     let mut cur = Some(Pid::from_u32(std::process::id()));
     while let Some(pid) = cur {
-        if in_group(pid) {
-            anyhow::bail!("{name} is running this command");
+        self_chain.push(pid.as_u32());
+        if self_chain.len() > 64 {
+            break;
         }
         cur = sys.process(pid).and_then(|p| p.parent());
     }
@@ -391,12 +505,8 @@ pub fn quit_app_by_name(
         .iter()
         .filter(|s| s.host_app.as_deref() == Some(name))
         .count();
-    if hosting > 0 && !force {
-        anyhow::bail!(
-            "{name} hosts {hosting} agent session{}; close those first, or use force",
-            if hosting == 1 { "" } else { "s" }
-        );
-    }
+    check_app_target(g, &self_chain, hosting, force)?;
+    let in_group = |pid: Pid| g.pids.contains(&pid.as_u32());
     let root = g
         .pids
         .iter()
@@ -407,7 +517,56 @@ pub fn quit_app_by_name(
                 .is_none_or(|pp| !in_group(pp))
         })
         .unwrap_or(g.pids[0]);
-    let rec = quit_app(g, root, mode, dry_run);
+    // Helpers live inside the same outer bundle as the main process, so any
+    // member's executable names it.
+    let bundle = std::iter::once(root)
+        .chain(g.pids.iter().copied())
+        .filter_map(|pid| sys.process(Pid::from_u32(pid)).and_then(|p| p.exe()))
+        .find_map(groups::bundle_path);
+    Ok(AppTarget {
+        group: g.clone(),
+        root,
+        bundle,
+    })
+}
+
+/// Quit an app by its group name with the checks every interface shares:
+/// only application bundles, never the desk itself, never the app running
+/// this, and never one that hosts agent sessions without `force`.
+pub fn quit_app_by_name(
+    name: &str,
+    t: &Thresholds,
+    dry_run: bool,
+    force: bool,
+    mode: &str,
+) -> Result<ActionRecord> {
+    let tgt = app_target(name, t, force)?;
+    let rec = quit_app(&tgt.group, tgt.root, mode, dry_run);
+    log(&rec)?;
+    Ok(rec)
+}
+
+/// Restart an app by its group name with the checks `quit` makes, plus two
+/// of its own: macOS only, and only an app that runs from a bundle, since
+/// that is the only thing autoTrim knows how to open again.
+pub fn restart_app_by_name(
+    name: &str,
+    t: &Thresholds,
+    dry_run: bool,
+    force: bool,
+    mode: &str,
+) -> Result<ActionRecord> {
+    if !automation::AVAILABLE {
+        anyhow::bail!("restarting an app is only implemented on macOS so far");
+    }
+    let tgt = app_target(name, t, force)?;
+    let Some(bundle) = tgt.bundle.as_deref() else {
+        anyhow::bail!(
+            "{name} does not run from an application bundle, so autoTrim cannot open it again; use quit"
+        );
+    };
+    let args = browser::relaunch_args(name);
+    let rec = restart_app(&tgt.group, tgt.root, bundle, args, mode, dry_run);
     log(&rec)?;
     Ok(rec)
 }
@@ -525,4 +684,52 @@ pub fn session_line(s: &AgentSession) -> String {
         },
         fmt::bytes(s.rss)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(kind: GroupKind) -> AppGroup {
+        AppGroup {
+            name: "Slack".to_string(),
+            kind,
+            rss: 0,
+            cpu: 0.0,
+            procs: 1,
+            pids: vec![100],
+        }
+    }
+
+    #[test]
+    fn app_target_checks() {
+        // Only application bundles.
+        assert!(check_app_target(&app(GroupKind::Other), &[7], 0, false).is_err());
+        // Never the app this command is running inside.
+        assert!(check_app_target(&app(GroupKind::App), &[7, 100, 1], 0, false).is_err());
+        // Hosted sessions need force.
+        let err = check_app_target(&app(GroupKind::App), &[7], 2, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("hosts 2 agent sessions"), "{err}");
+        assert!(check_app_target(&app(GroupKind::App), &[7], 2, true).is_ok());
+        assert!(check_app_target(&app(GroupKind::App), &[7], 0, false).is_ok());
+    }
+
+    #[test]
+    fn reopen_commands() {
+        let chrome = Path::new("/Applications/Google Chrome.app");
+        assert_eq!(
+            reopen_command(chrome, &[]),
+            "open '/Applications/Google Chrome.app'"
+        );
+        assert_eq!(
+            reopen_command(chrome, &["--restore-last-session"]),
+            "open '/Applications/Google Chrome.app' --args --restore-last-session"
+        );
+        assert_eq!(
+            reopen_command(Path::new("/Applications/Slack.app"), &[]),
+            "open /Applications/Slack.app"
+        );
+    }
 }

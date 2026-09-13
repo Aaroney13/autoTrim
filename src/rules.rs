@@ -25,7 +25,9 @@ pub struct Advice {
     pub title: String,
     pub evidence: Vec<String>,
     pub action: String,
-    /// Bytes expected back if the action is taken, where that is honest to estimate.
+    /// Bytes back if the action is taken, where that is honest to say. On
+    /// macOS the numbers are footprint, so this is what exiting returns,
+    /// not a guess.
     pub recovery: Option<u64>,
 }
 
@@ -411,7 +413,7 @@ pub fn evaluate(
                     format!("{} processes", g.procs),
                     format!("swap is {} full", fmt::pct(sys.used_swap, sys.total_swap)),
                 ],
-                action: "Quit it if you are not using it right now.".to_string(),
+                action: "Quit it if you are not using it right now, or restart it to get the memory back and keep your windows.".to_string(),
                 recovery: Some(g.rss),
             });
         }

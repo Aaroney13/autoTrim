@@ -24,6 +24,8 @@ pub struct PortInfo {
     /// server started from a terminal or script, the kind that gets forgotten.
     #[serde(default)]
     pub owner_managed: bool,
+    /// Memory the owning process holds: footprint on macOS, resident size
+    /// elsewhere.
     #[serde(default)]
     pub owner_rss: u64,
     #[serde(default)]

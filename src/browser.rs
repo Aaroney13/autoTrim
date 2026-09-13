@@ -87,6 +87,18 @@ const CLOSE_BY_ID: &[&str] = &[
     "Vivaldi",
 ];
 
+/// Arguments to open a browser with again after a restart. The Chromium
+/// family restores the last session when asked and loads the tabs lazily,
+/// which is the point of restarting it. Other apps restore their own
+/// windows unasked.
+pub fn relaunch_args(name: &str) -> &'static [&'static str] {
+    if CLOSE_BY_ID.contains(&name) {
+        &["--restore-last-session"]
+    } else {
+        &[]
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BrowserInfo {
     pub name: String,
@@ -106,7 +118,8 @@ pub struct BrowserInfo {
     pub utility: usize,
     /// Number of user profiles on disk. None where not implemented.
     pub profiles: Option<usize>,
-    /// Resident bytes summed over the tab renderers.
+    /// Memory summed over the tab renderers: footprint on macOS, resident
+    /// size elsewhere.
     #[serde(default)]
     pub renderer_rss: u64,
     /// Every open tab in every running profile, window order.
@@ -152,6 +165,7 @@ pub struct BrowserInfo {
 pub struct RendererProc {
     pub pid: u32,
     pub start_time: u64,
+    /// Footprint on macOS, resident size elsewhere.
     pub rss: u64,
     pub cpu: f32,
 }

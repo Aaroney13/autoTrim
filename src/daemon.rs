@@ -7,6 +7,7 @@
 use crate::actions;
 use crate::agents::{AgentSession, SessionState};
 use crate::fmt::{bytes, date_utc, dur, stamp_utc};
+use crate::footprint;
 use crate::notify;
 use crate::paths;
 use crate::rules::{self, Advice, Thresholds};
@@ -643,6 +644,9 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
     // The first tick needs a real CPU delta, so it samples briefly. Every
     // later tick measures CPU since the previous tick.
     let mut first = true;
+    // The footprint budget is a public promise; the log checks it after
+    // the first tick and once an hour after that.
+    let mut last_self = 0u64;
     loop {
         let now = now_epoch();
         let sample = if first {
@@ -712,6 +716,13 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
         tracker.save(&state_path)?;
         rotate_history(&dir, now, cfg.retention_days);
 
+        if cfg.once || now.saturating_sub(last_self) >= 3600 {
+            if let Some(line) = self_line() {
+                eprintln!("{} {line}", stamp_utc(now));
+            }
+            last_self = now;
+        }
+
         if cfg.once {
             eprintln!(
                 "one tick · {} sessions · swap {} · wrote {}",
@@ -725,6 +736,19 @@ pub fn run(cfg: DaemonConfig) -> Result<()> {
     }
     let _ = fs::remove_file(dir.join("daemon.pid"));
     Ok(())
+}
+
+/// The daemon's own footprint, now and at its peak, in the column a person
+/// would check it against. None where the platform has no such counter.
+fn self_line() -> Option<String> {
+    let me = std::process::id();
+    let now = footprint::footprint(me)?;
+    let peak = footprint::peak_footprint(me)?;
+    Some(format!(
+        "self: {} footprint, {} peak",
+        bytes(now),
+        bytes(peak)
+    ))
 }
 
 /// Read the daemon's latest snapshot without sampling anything.

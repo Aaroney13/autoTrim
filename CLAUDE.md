@@ -16,7 +16,7 @@ orchestrator and the daemon never calls a model.
 - One `Snapshot` struct (src/lib.rs) feeds every consumer. Add fields there
   and keep them serde round-trippable; `status` deserializes `latest.json`.
 - Platform-specific code stays behind `cfg` in system.rs, browser.rs, paths.rs,
-  openfiles.rs, service.rs, groups.rs, automation.rs. Pure path rules
+  openfiles.rs, footprint.rs, service.rs, groups.rs, automation.rs. Pure path rules
   (groups.rs) are compiled and unit-tested on every host; only the
   dispatcher is `cfg`-selected.
 - Cross-check before pushing: `cargo clippy -p autotrim --target
@@ -29,10 +29,11 @@ orchestrator and the daemon never calls a model.
   `tray/` (`autotrim-tray`, Tauri). Lint with `cargo clippy --workspace`.
   The tray never depends on sysinfo directly; it goes through the library.
 - Any interface that acts goes through `actions::close_by_pid`,
-  `actions::stop_by_pid`, `actions::close_tabs_by_id`, or
-  `actions::quit_app_by_name` so the safety checks and the action log are
-  shared.
+  `actions::stop_by_pid`, `actions::close_tabs_by_id`,
+  `actions::quit_app_by_name`, or `actions::restart_app_by_name` so the
+  safety checks and the action log are shared.
 - The tray window (tray/ui/index.html) is embedded at compile time; rebuild
   the tray after editing it.
-- The daemon's footprint is a public promise (under 20 MB resident). Check it
-  when adding dependencies.
+- The daemon's footprint is a public promise (under 20 MB, as Activity
+  Monitor's Memory column counts it). Check it when adding dependencies; the
+  daemon logs its own `self:` line after the first tick and hourly.

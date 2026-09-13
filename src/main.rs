@@ -41,6 +41,8 @@ enum Cmd {
     CloseTab(CloseTabArgs),
     /// Ask an app to quit, the way ⌘Q would.
     Quit(QuitArgs),
+    /// Quit an app the way ⌘Q would, wait for it to exit, and open it again fresh.
+    Restart(QuitArgs),
     /// Print the action log: what was closed, when, and how to get it back.
     Actions(ActionsArgs),
     /// Show the effective settings, or write a commented config file.
@@ -386,6 +388,18 @@ fn quit(args: &QuitArgs, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+fn restart(args: &QuitArgs, cfg: &Config) -> Result<()> {
+    let rec = actions::restart_app_by_name(
+        &args.app,
+        &cfg.thresholds(),
+        args.dry_run,
+        args.force,
+        "manual",
+    )?;
+    println!("{}", actions::describe(&rec));
+    Ok(())
+}
+
 fn print_actions(n: usize) -> Result<()> {
     let recs = actions::read_log(n)?;
     if recs.is_empty() {
@@ -466,6 +480,7 @@ fn main() -> Result<()> {
         Cmd::Tabs(args) => tabs(&args, &cfg),
         Cmd::CloseTab(args) => close_tab(&args, &cfg),
         Cmd::Quit(args) => quit(&args, &cfg),
+        Cmd::Restart(args) => restart(&args, &cfg),
         Cmd::Actions(args) => print_actions(args.lines),
         Cmd::Config { action } => match action {
             None => show_config(&cfg, cfg_path.as_deref()),

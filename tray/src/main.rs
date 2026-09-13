@@ -330,6 +330,16 @@ async fn quit_app(
 }
 
 #[tauri::command]
+async fn restart_app(
+    name: String,
+    force: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<actions::ActionRecord, String> {
+    let t = state.thresholds.clone();
+    off_thread(move || actions::restart_app_by_name(&name, &t, false, force, "manual")).await
+}
+
+#[tauri::command]
 fn action_log() -> Result<Vec<actions::ActionRecord>, String> {
     actions::read_log(30).map_err(|e| e.to_string())
 }
@@ -352,6 +362,7 @@ fn main() {
             stop_server,
             close_tabs,
             quit_app,
+            restart_app,
             action_log
         ])
         .setup(|app| {

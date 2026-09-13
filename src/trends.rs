@@ -5,7 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
-/// One observation: seconds since the epoch, resident bytes, CPU percent.
+/// One observation: seconds since the epoch, memory bytes (footprint on
+/// macOS, resident size elsewhere), CPU percent.
 pub type Sample = (u64, u64, f32);
 
 #[derive(Serialize, Deserialize, Default, Clone)]
