@@ -30,41 +30,45 @@
   .muted { color: var(--muted); } .faint { color: var(--faint); }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-  header { padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; background: var(--bg); }
-  header .stat b { font-size: 15px; font-variant-numeric: tabular-nums; font-weight: 600; }
-  header .stat span { color: var(--muted); margin-left: 4px; }
-  header .sync { margin-left: auto; align-self: center; display: flex; align-items: center; gap: 12px; }
-  header .sync .col { display: grid; gap: 5px; min-width: 220px; }
-  header .sync .txt { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
-  header .sync .cycle { height: 3px; border-radius: 2px; background: var(--barbg); overflow: hidden; }
-  header .sync .cycle i { display: block; height: 100%; background: var(--accent); transition: width 1s linear; }
-  header .sync .cycle.due i { animation: pulse 1.2s ease-in-out infinite; }
-  header .sync .cycle.busy i { width: 30% !important; transition: none; animation: sweep 1.1s ease-in-out infinite; }
-  header .sync button { padding: 2px 10px; font-size: 12px; }
-  @keyframes pulse { 50% { opacity: .35; } }
-  @keyframes sweep { from { margin-left: -30%; } to { margin-left: 100%; } }
-  header .meter { flex-basis: 100%; height: 5px; border-radius: 3px; background: var(--barbg); overflow: hidden; display: flex; }
+
+  header { padding: 12px 18px; border-bottom: 1px solid var(--line); display: flex; gap: 24px; align-items: center; background: var(--bg); }
+  header .mem { display: grid; gap: 6px; width: 340px; max-width: 42%; }
+  header .mem .lbl { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  header .mem .lbl b { font-weight: 600; }
+  header .meter { height: 6px; border-radius: 3px; background: var(--barbg); overflow: hidden; display: flex; }
   header .meter i { display: block; height: 100%; }
   header .meter .used { background: var(--k-app); } header .meter .comp { background: var(--med); } header .meter .swapi { background: var(--high); }
+  header .stat { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  header .stat b { font-weight: 600; }
+  header .stat span { color: var(--muted); margin-left: 4px; }
+  header .sync { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  header .sync .txt { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  header .sync svg { width: 14px; height: 14px; flex: none; transform: rotate(-90deg); }
+  header .sync svg .track { fill: none; stroke: var(--barbg); stroke-width: 2.5; }
+  header .sync svg .arc { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+  header .sync svg.due .arc { animation: pulse 1.2s ease-in-out infinite; }
+  header .sync svg.busy { animation: spin 1s linear infinite; }
+  header .sync svg.busy .arc { stroke-dashoffset: 24 !important; transition: none; }
+  header .sync button { padding: 2px 10px; font-size: 12px; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes spin { to { transform: rotate(270deg); } }
 
   .body { flex: 1; display: flex; min-height: 0; }
-  nav { width: 264px; flex: none; overflow-y: auto; background: var(--side); border-right: 1px solid var(--line); padding: 8px 0 24px; }
-  nav h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 14px 4px; font-weight: 600; }
-  nav .item { display: grid; grid-template-columns: 8px 1fr auto; grid-template-areas: "dot name mem" ". bar cnt"; column-gap: 8px; row-gap: 4px; align-items: center; padding: 5px 14px 6px; cursor: pointer; }
+
+  nav { width: 248px; flex: none; overflow-y: auto; background: var(--side); border-right: 1px solid var(--line); padding: 8px 0 24px; }
+  nav h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 14px 4px; font-weight: 600; }
+  nav .item { display: grid; grid-template-columns: 8px 1fr auto; grid-template-areas: "dot name mem" ". cnt cnt"; column-gap: 8px; row-gap: 1px; align-items: center; padding: 5px 14px; cursor: pointer; }
   nav .item:hover { background: var(--hover); }
   nav .item.sel { background: var(--sel); }
   nav .item .dot { grid-area: dot; width: 8px; height: 8px; border-radius: 50%; background: var(--k-other); }
   nav .item .dot.agent { background: var(--k-agent); } nav .item .dot.browser { background: var(--k-browser); } nav .item .dot.app { background: var(--k-app); }
   nav .item .name { grid-area: name; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  nav .item .cnt { grid-area: cnt; color: var(--muted); font-size: 11px; white-space: nowrap; line-height: 1; text-align: right; }
-  nav .item .mem { grid-area: mem; font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 56px; text-align: right; }
-  nav .item .bar { grid-area: bar; height: 3px; background: var(--barbg); border-radius: 2px; overflow: hidden; }
-  nav .item .bar i { display: block; height: 100%; background: var(--k-other); }
-  nav .item .bar i.agent { background: var(--k-agent); } nav .item .bar i.browser { background: var(--k-browser); } nav .item .bar i.app { background: var(--k-app); }
-  nav .item.plain { grid-template-columns: 8px 1fr auto auto; grid-template-areas: "dot name cnt mem"; }
+  nav .item .cnt { grid-area: cnt; color: var(--muted); font-size: 11px; white-space: nowrap; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; }
+  nav .item .mem { grid-area: mem; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+  nav .item.plain { grid-template-columns: 1fr auto; grid-template-areas: "name mem"; padding: 6px 14px 6px 30px; }
+  nav .item.plain .mem { color: var(--muted); font-size: 12px; }
   nav .badge { background: var(--high); color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 600; }
-  nav .badge.ok { background: var(--barbg); color: var(--muted); }
-  nav .more { display: block; padding: 6px 14px; color: var(--muted); cursor: pointer; }
+  nav .more { display: block; padding: 6px 14px 6px 30px; color: var(--muted); cursor: pointer; }
 
   main { flex: 1; overflow-y: auto; padding: 16px 22px 40px; min-width: 0; }
   main h1 { font-size: 17px; margin: 0; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -83,7 +87,7 @@
   .card .a { margin: 6px 0 0 20px; }
   .note { color: var(--muted); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
   .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px; }
-  @media (max-width: 980px) { .duo { grid-template-columns: 1fr; } }
+  @media (max-width: 1100px) { .duo { grid-template-columns: 1fr; } }
   .card .h { font-weight: 600; display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
   .card .h .tag { margin-left: 0; }
   .card .h a { margin-left: auto; color: var(--blue); font-weight: 500; font-size: 12px; cursor: pointer; }
@@ -111,12 +115,16 @@
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
   .chip { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 2px 10px; cursor: pointer; }
   .chip.sel { border-color: var(--accent); color: var(--accent); }
-  .mini { display: grid; gap: 4px; }
-  .mini .row { display: grid; grid-template-columns: 1fr 70px; gap: 10px; align-items: center; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
-  .mini .row:hover { background: var(--hover); }
-  .mini .bar { height: 4px; background: var(--barbg); border-radius: 2px; overflow: hidden; margin-top: 3px; }
-  .mini .bar i { display: block; height: 100%; background: var(--k-other); }
-  .mini .bar i.agent { background: var(--k-agent); } .mini .bar i.browser { background: var(--k-browser); } .mini .bar i.app { background: var(--k-app); }
+
+  .sub a { margin-left: auto; color: var(--blue); cursor: pointer; font-size: 12px; }
+  .sub .tag { margin-left: 4px; }
+  .kbar { height: 8px; border-radius: 4px; background: var(--barbg); overflow: hidden; display: flex; }
+  .kbar i { display: block; height: 100%; background: var(--k-other); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--k-other); margin-right: 6px; }
+  .legend b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kbar i.agent, .legend i.agent { background: var(--k-agent); } .kbar i.browser, .legend i.browser { background: var(--k-browser); } .kbar i.app, .legend i.app { background: var(--k-app); }
+  h2 small { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }
   .log div { padding: 5px 0; border-bottom: 1px solid var(--line); }
   .log div:last-child { border-bottom: 0; }
   .log code { font-size: 12px; }
@@ -195,19 +203,22 @@ function holders(s) {
 }
 const holderByKey = key => holders(state.snap).find(h => h.key === key);
 
+
 function renderHeader() {
-  const s = state.snap, sys = s.system;
-  const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
-  const head = [stat(bytes(sys.used_mem), `of ${bytes(sys.total_mem)} used`)];
-  if (sys.free_pct != null) head.push(stat(sys.free_pct + "%", "free"));
-  head.push(stat(`${bytes(sys.used_swap)}`, `swap · ${pct(sys.used_swap, sys.total_swap)} of ${bytes(sys.total_swap)}`));
-  if (sys.compressed != null) head.push(stat(bytes(sys.compressed), "compressed"));
-  head.push(stat(Math.round(sys.cpu_pct) + "%", `cpu · load ${sys.load_one.toFixed(1)}`), stat(dur(sys.uptime_secs), "up"));
-  head.push(syncMarkup());
-  const used = Math.min(100, sys.used_mem * 100 / sys.total_mem);
-  const comp = sys.compressed != null ? Math.min(100 - used, sys.compressed * 100 / sys.total_mem) : 0;
-  head.push(`<div class="meter" title="used · compressed"><i class="used" style="width:${used - comp}%"></i><i class="comp" style="width:${comp}%"></i></div>`);
-  document.getElementById("head").innerHTML = head.join("");
+  const sys = state.snap.system, total = sys.total_mem;
+  const used = Math.min(100, sys.used_mem * 100 / total);
+  const comp = sys.compressed != null ? Math.min(used, sys.compressed * 100 / total) : 0;
+  const swap = sys.used_swap > 0 ? Math.min(100 - used, sys.used_swap * 100 / total) : 0;
+  const detail = [sys.compressed != null ? `${bytes(sys.compressed)} compressed` : "", sys.wired != null ? `${bytes(sys.wired)} wired` : "", sys.free_pct != null ? `${sys.free_pct}% free` : "",
+    sys.total_swap ? `swap ${bytes(sys.used_swap)} of ${bytes(sys.total_swap)}` : "no swap", `up ${dur(sys.uptime_secs)}`].filter(Boolean).join(" · ");
+  // The one figure beside the total: swap when any is in use, since that is
+  // the pressure signal; otherwise how much is compressed.
+  const side = sys.used_swap > 0 ? `<span class="state stale">${bytes(sys.used_swap)} swapped</span>` : sys.compressed != null ? `<span class="muted">${bytes(sys.compressed)} compressed</span>` : "";
+  document.getElementById("head").innerHTML = `
+    <div class="mem" title="${esc(detail)}"><div class="lbl"><span><b>${bytes(sys.used_mem)}</b> <span class="muted">of ${bytes(total)} in use</span></span>${side}</div>
+      <div class="meter"><i class="used" style="width:${(used - comp).toFixed(1)}%"></i><i class="comp" style="width:${comp.toFixed(1)}%"></i><i class="swapi" style="width:${swap.toFixed(1)}%"></i></div></div>
+    <div class="stat" title="load ${sys.load_one.toFixed(1)} · ${sys.load_five.toFixed(1)} · ${sys.load_fifteen.toFixed(1)}"><b>${Math.round(sys.cpu_pct)}%</b><span>cpu</span></div>
+    ${syncMarkup()}`;
   document.getElementById("sync-btn").onclick = () => refresh({ fresh: true });
 }
 
@@ -226,47 +237,53 @@ function syncInfo() {
   const age = running && src.snapshot_taken_at != null ? Math.max(0, nowSecs() - src.snapshot_taken_at) : shown;
   return { running, shown, period, age, left: Math.max(0, period - age), due: age >= period, busy: sync.scans > 0 };
 }
+
 function syncText(i) {
-  const ago = `snapshot ${dur(i.shown)} ago`;
-  if (i.busy) return `${ago} · scanning…`;
-  if (!i.running) return `${ago} · daemon not running · scanning every ${dur(i.period)}`;
-  return i.due ? `${ago} · daemon snapshot due` : `${ago} · next in ${dur(i.left)}`;
+  if (i.busy) return "scanning…";
+  const ago = `updated ${dur(i.shown)} ago`;
+  return i.running ? ago : `${ago} · no daemon, scanning every ${dur(i.period)}`;
 }
+
+// The daemon's cycle is a small ring next to the age: it fills as the next
+// snapshot approaches, pulses when one is due, and spins while scanning.
+const RING = 2 * Math.PI * 5.5;
+const ringOffset = i => (RING * (1 - Math.min(1, i.age / i.period))).toFixed(2);
 function syncMarkup() {
   const i = syncInfo();
-  const tip = i.running ? `the daemon samples every ${dur(i.period)}; this window picks up each new snapshot within ${dur(POLL_MS / 1000)}` : "no daemon snapshot to read, so this window scans on its own";
-  return `<div class="sync"><div class="col"><div class="txt" id="sync-txt">${esc(syncText(i))}</div><div class="cycle${i.busy ? " busy" : i.due ? " due" : ""}" id="sync-bar" title="${esc(tip)}"><i style="width:${Math.min(100, i.age * 100 / i.period)}%"></i></div></div><button id="sync-btn" ${i.busy ? "disabled" : ""} title="scan now instead of waiting for the daemon's next tick">${i.busy ? "Scanning…" : "Refresh"}</button></div>`;
+  const tip = i.running ? `the daemon samples every ${dur(i.period)}${i.due ? " and its next snapshot is due" : `; the next lands in ${dur(i.left)}`}, and this window picks it up within ${dur(POLL_MS / 1000)}` : "no daemon snapshot to read, so this window scans on its own";
+  return `<div class="sync" title="${esc(tip)}"><svg id="sync-ring" class="${i.busy ? "busy" : i.due ? "due" : ""}" viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5.5"/><circle class="arc" cx="7" cy="7" r="5.5" stroke-dasharray="${RING.toFixed(2)}" stroke-dashoffset="${ringOffset(i)}"/></svg><span class="txt" id="sync-txt">${esc(syncText(i))}</span><button id="sync-btn" ${i.busy ? "disabled" : ""} title="scan now instead of waiting for the daemon's next tick">Refresh</button></div>`;
 }
-// Once a second: move the text and the bar along, and poll on the usual
-// cadence, or every second once the daemon's next snapshot is due so the bar
+// Once a second: move the text and the ring along, and poll on the usual
+// cadence, or every second once the daemon's next snapshot is due so the ring
 // resets the moment it lands.
 function tickSync() {
   if (!state.snap || !state.src) return;
   const i = syncInfo();
-  const txt = document.getElementById("sync-txt"), bar = document.getElementById("sync-bar");
+  const txt = document.getElementById("sync-txt"), ring = document.getElementById("sync-ring");
   if (txt) txt.textContent = syncText(i);
-  if (bar) { bar.classList.toggle("due", i.due && !i.busy); bar.firstElementChild.style.width = Math.min(100, i.age * 100 / i.period) + "%"; }
+  if (ring) { ring.classList.toggle("due", i.due && !i.busy); ring.lastElementChild.style.strokeDashoffset = ringOffset(i); }
   const since = Date.now() - sync.lastPoll;
   if (!i.busy && (since >= POLL_MS || (i.running && i.due && since >= 1000))) refresh();
 }
 
+
 function renderSide() {
-  const s = state.snap, total = s.system.total_mem;
+  const s = state.snap;
   const hs = holders(s);
   const sel = k => state.view === k ? " sel" : "";
-  const adviceBadge = s.advice.length ? `<span class="badge">${s.advice.length}</span>` : `<span class="badge ok">0</span>`;
   const unmanaged = s.ports.filter(p => !p.owner_managed).length;
   let html = `
-    <a class="item plain${sel("overview")}" data-view="overview"><span class="dot" style="background:var(--accent)"></span><span class="name">Overview</span><span class="cnt">advice</span><span class="mem">${adviceBadge}</span></a>
-    <a class="item plain${sel("ports")}" data-view="ports"><span class="dot"></span><span class="name">Listening ports</span><span class="cnt">${unmanaged} unmanaged</span><span class="mem muted">${s.ports.length}</span></a>
-    <a class="item plain${sel("actions")}" data-view="actions"><span class="dot"></span><span class="name">Actions</span><span class="cnt">log</span><span class="mem muted">${state.log.length}</span></a>
-    <h3>Holding memory · largest first</h3>`;
-  const shown = state.showAll ? hs : hs.slice(0, 28);
-  html += shown.map(h => `<a class="item${sel(h.key)}" data-view="${esc(h.key)}" title="${esc(h.name)} · ${plural(h.procs, "process")} · ${h.cpu.toFixed(1)}% cpu">
-      <span class="dot ${h.kind}"></span><span class="name">${esc(h.name)}</span><span class="cnt">${esc(h.count)}</span><span class="mem">${bytes(h.rss)}</span>
-      <span class="bar"><i class="${h.kind}" style="width:${Math.max(1, h.rss * 100 / total).toFixed(1)}%"></i></span></a>`).join("");
+    <a class="item plain${sel("overview")}" data-view="overview"><span class="name">Overview</span><span class="mem">${s.advice.length ? `<span class="badge">${s.advice.length}</span>` : ""}</span></a>
+    <a class="item plain${sel("ports")}" data-view="ports"><span class="name">Listening ports</span><span class="mem">${unmanaged ? `${unmanaged} unmanaged` : s.ports.length || ""}</span></a>
+    <a class="item plain${sel("actions")}" data-view="actions"><span class="name">Actions</span><span class="mem"></span></a>
+    <a class="item plain${sel("settings")}" data-view="settings"><span class="name">Settings</span><span class="mem">${autoModeWord()}</span></a>
+    <h3>Largest holders</h3>`;
+  const LIMIT = 20;
+  const shown = state.showAll ? hs : hs.slice(0, LIMIT);
+  html += shown.map(h => `<a class="item${sel(h.key)}" data-view="${esc(h.key)}" title="${esc(h.name)} · ${plural(h.procs, "process")} · ${pct(h.rss, s.system.total_mem)} of RAM · ${h.cpu.toFixed(1)}% cpu">
+      <span class="dot ${h.kind}"></span><span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="cnt">${esc(h.count)}</span></a>`).join("");
   if (hs.length > shown.length) html += `<span class="more" data-more="1">${hs.length - shown.length} more…</span>`;
-  else if (state.showAll && hs.length > 28) html += `<span class="more" data-more="0">show fewer</span>`;
+  else if (state.showAll && hs.length > LIMIT) html += `<span class="more" data-more="0">show fewer</span>`;
   const nav = document.getElementById("side");
   const scroll = nav.scrollTop;
   nav.innerHTML = html;
@@ -295,15 +312,34 @@ function adviceCards(list) {
 
 function trendsTable(list) {
   if (!list.length) return "";
-  return `<h2>Trends <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">last ${dur(Math.max(...list.map(t => t.span_secs)))}</span></h2><div class="wrap"><table>
-    <tr><th>Name</th><th class="num">Now</th><th class="num">Change</th><th class="num">Rate / h</th><th class="num">CPU</th><th class="num">Steady</th></tr>` +
-    list.map(t => { const sg = t.growth >= 0 ? "+" : "−"; return `<tr><td>${esc(t.name)}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">${sg}${bytes(Math.abs(t.growth))}</td><td class="num">${sg}${bytes(Math.abs(t.bytes_per_hour))}</td><td class="num">${t.cpu_mean.toFixed(0)}%</td><td class="num">${Math.round(t.rising_frac * 100)}%</td></tr>`; }).join("") + `</table></div>`;
+  return `<h2>Trends <small class="muted">over the last ${dur(Math.max(...list.map(t => t.span_secs)))}</small></h2><div class="wrap"><table>
+    <tr><th>Name</th><th class="num">Now</th><th class="num">Change</th><th class="num">Rate / h</th><th class="num">CPU</th></tr>` +
+    list.map(t => { const sg = t.growth >= 0 ? "+" : "−"; return `<tr><td>${esc(t.name)}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">${sg}${bytes(Math.abs(t.growth))}</td><td class="num">${sg}${bytes(Math.abs(t.bytes_per_hour))}</td><td class="num" title="mean over the window; ${Math.round(t.rising_frac * 100)}% of samples rising">${t.cpu_mean.toFixed(0)}%</td></tr>`; }).join("") + `</table></div>`;
 }
 
 // ---- the two switches: auto mode, and running in the background ----
 function controlCards() {
-  if (!state.settings || !state.service) return "";
+  if (!state.settings || !state.service) return `<p class="note">Settings could not be read from the app.</p>`;
   return `<div class="duo">${autoCard()}${backgroundCard()}</div>`;
+}
+const autoModeWord = () => { const c = state.settings; return !c ? "" : !(c.auto_close_sessions || c.auto_stop_servers) ? "" : c.auto_dry_run ? "dry run" : "auto"; };
+
+// What auto mode has warned about and is waiting on, with the time left.
+function pendingList(a) {
+  const now = epochNow();
+  return `<div class="pending">${a.pending.map(p => `<div><span class="l1" title="${esc(p.target + " · " + p.detail)}">${esc(p.target)} <span class="muted">· ${esc(p.detail)} · ${bytes(p.rss)}</span></span><span class="num state stale">${a.dry_run ? "would close" : "closing"} in ${dur(Math.max(0, p.due_at - now))}</span></div>`).join("")}</div>`;
+}
+
+// The overview's one line about the switches: their state, and anything
+// auto mode is about to close. The switches themselves are in Settings.
+function statusLine() {
+  const c = state.settings, sv = state.service, src = state.src, a = state.snap.auto;
+  if (!c || !sv) return "";
+  const on = c.auto_close_sessions || c.auto_stop_servers;
+  const mode = !on ? "off" : c.auto_dry_run ? "dry run" : "on";
+  const daemon = sv.installed && sv.running ? ["login service", "on"] : src.daemon_running ? ["foreground", ""] : ["not running", ""];
+  const pending = a && a.pending.length ? `<span class="state stale">${plural(a.pending.length, "pending close")}</span>` : "";
+  return `<span>auto mode<span class="tag ${on && !c.auto_dry_run ? "on" : ""}">${mode}</span></span><span>daemon<span class="tag ${daemon[1]}">${daemon[0]}</span></span>${pending}<a data-goto="settings">Settings ›</a>`;
 }
 
 // The file's settings are the switches; what the daemon is running with
@@ -324,10 +360,8 @@ function autoCard() {
   else if (a) {
     const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.dry_run === c.auto_dry_run;
     if (!applied) html += `<div class="muted" style="margin-top:6px">Applying… the daemon picks changes up on its next tick.</div>`;
-    else if (a.pending.length) {
-      const now = epochNow();
-      html += `<div class="pending">${a.pending.map(p => `<div><span class="l1" title="${esc(p.target + " · " + p.detail)}">${esc(p.target)} <span class="muted">· ${esc(p.detail)} · ${bytes(p.rss)}</span></span><span class="num state stale">${a.dry_run ? "would close" : "closing"} in ${dur(Math.max(0, p.due_at - now))}</span></div>`).join("")}</div>`;
-    } else if (on) html += `<div class="muted" style="margin-top:6px">Nothing is waiting to be closed.</div>`;
+    else if (a.pending.length) html += pendingList(a);
+    else if (on) html += `<div class="muted" style="margin-top:6px">Nothing is waiting to be closed.</div>`;
   }
   const dry = state.log.filter(r => r.mode === "dry-run");
   if (dry.length) html += `<div class="muted" style="margin-top:6px">Dry run so far: ${plural(dry.length, "would-be close")} among the last ${state.log.length} logged actions, about ${bytes(dry.reduce((n, r) => n + (r.rss || 0), 0))}.</div>`;
@@ -350,18 +384,33 @@ function backgroundCard() {
     <div class="row2"><button data-hide>Hide window</button><span class="muted">The menu bar item stays. The daemon keeps working with the window closed, and with the app quit.</span></div></div>`;
 }
 
+
 function viewOverview() {
-  const s = state.snap;
+  const s = state.snap, a = s.auto;
   const trends = (s.trends || []).filter(t => t.kind !== "renderer" && t.span_secs >= 600).slice(0, 8);
-  const top = holders(s).slice(0, 8);
   return `<h1>Overview</h1>
-    <div class="sub"><span><b>${plural(s.sessions.filter(x => !goneSession(x)).length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span><span><b>${plural(s.groups.length, "holder")}</b> of memory</span></div>
-    ${controlCards()}
+    <div class="sub"><span><b>${plural(s.sessions.filter(x => !goneSession(x)).length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span>${statusLine()}</div>
+    ${a && a.pending.length ? `<div class="card">${pendingList(a)}</div>` : ""}
     <h2>Advice</h2><div class="cards">${adviceCards(s.advice)}</div>
-    <h2>Largest holders <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">click one for detail</span></h2>
-    <div class="card mini">${top.map(h => `<div class="row" data-goto="${esc(h.key)}"><div><div>${esc(h.name)} <span class="muted">· ${esc(h.count)}</span></div><div class="bar"><i class="${h.kind}" style="width:${(h.rss * 100 / s.system.total_mem).toFixed(1)}%"></i></div></div><div class="num">${bytes(h.rss)}</div></div>`).join("")}</div>
+    ${kindBar()}
     ${trendsTable(trends)}
-    ${!state.src.daemon_running ? `<p class="note" style="margin-top:16px">The daemon is not running, so this window is scanning on its own and there are no trends. Start it with <code>autotrim service install</code>.</p>` : (trends.length ? "" : `<p class="note" style="margin-top:16px">Trends appear once the daemon has about ten minutes of history.</p>`)}`;
+    ${!state.src.daemon_running ? `<p class="note" style="margin-top:16px">The daemon is not running, so this window is scanning on its own and there are no trends. Start it from Settings.</p>` : (trends.length ? "" : `<p class="note" style="margin-top:16px">Trends appear once the daemon has about ten minutes of history.</p>`)}`;
+}
+
+// One bar for what the sidebar lists, added up by kind.
+function kindBar() {
+  const sum = {};
+  for (const h of holders(state.snap)) sum[h.kind] = (sum[h.kind] || 0) + h.rss;
+  const total = Object.values(sum).reduce((n, v) => n + v, 0);
+  if (!total) return "";
+  const kinds = [["agent", "Agent sessions"], ["browser", "Browsers"], ["app", "Apps"], ["other", "Other processes"]].filter(([k]) => sum[k]);
+  return `<h2>By kind <small class="muted">${plural(state.snap.groups.length, "holder")}, as the sidebar lists them</small></h2><div class="card">
+    <div class="kbar">${kinds.map(([k]) => `<i class="${k}" style="width:${(sum[k] * 100 / total).toFixed(1)}%"></i>`).join("")}</div>
+    <div class="legend">${kinds.map(([k, l]) => `<span><i class="${k}"></i>${l} <b>${bytes(sum[k])}</b></span>`).join("")}</div></div>`;
+}
+
+function viewSettings() {
+  return `<h1>Settings</h1><div class="sub"><span>Auto mode and running in the background. Everything else is in config.toml.</span></div>${controlCards()}`;
 }
 
 function sessionRows(list) {
@@ -425,7 +474,7 @@ function tabTable(b, tabs) {
 function viewBrowser(h) {
   const s = state.snap, b = h.browser, est = b.per_tab_estimate;
   let html = `<h1>${esc(h.name)} <span class="pill">browser</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${b.renderers}</b> tab renderers holding <b>${bytes(b.renderer_rss)}</b></span><span><b>${b.extension_renderers}</b> extension</span>${b.profiles != null ? `<span><b>${b.profiles}</b> profiles on disk</span>` : ""}</div>`;
+    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span title="${b.extension_renderers} more renderers serve extensions${b.profiles != null ? `; ${b.profiles} profiles on disk` : ""}"><b>${bytes(b.renderer_rss)}</b> in <b>${b.renderers}</b> page renderers</span></div>`;
   if (!b.tabs.length) {
     return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + quitBlock(h);
   }
@@ -434,17 +483,18 @@ function viewBrowser(h) {
   const staleChat = stale.filter(t => t.kind === "chat" && !t.pinned);
   const staleChatIds = staleChat.map(t => t.id);
   const chat = live.filter(t => t.kind === "chat").length;
+  const profiles = b.open_profiles.length > 1;
   const profileTabs = p => live.filter(t => t.profile === p.dir).length;
-  html += `<div class="chips">${b.open_profiles.map(p => `<span class="chip ${state.tabProfile === p.dir ? "sel" : ""}" data-profile="${esc(p.dir)}">${esc(p.label)} · ${profileTabs(p)}</span>`).join("")}
-    <span class="chip" style="cursor:default"><b>${live.length}</b> tabs · <b>${stale.length}</b> not looked at in over a day${est ? ` · ≈${bytes(est)} per tab` : ""}</span>${chat ? `<span class="chip" style="cursor:default" title="chatgpt.com, claude.ai, gemini.google.com and friends: pages that keep the whole conversation in memory and grow with it"><b>${chat}</b> conversation${chat === 1 ? "" : "s"} · <b>${staleChat.length}</b> stale</span>` : ""}</div>`;
+  html += `<p class="muted" style="margin:0 0 10px"><b>${live.length}</b> tabs, <b>${stale.length}</b> not looked at in over a day${est ? `, about ${bytes(est)} each` : ""}${chat ? `. <span title="chatgpt.com, claude.ai, gemini.google.com and friends: pages that keep the whole conversation in memory and grow with it"><b>${chat}</b> ${chat === 1 ? "is a conversation" : "are conversations"}, <b>${staleChat.length}</b> of them stale</span>` : ""}.</p>`;
+  if (profiles) html += `<div class="chips">${b.open_profiles.map(p => `<span class="chip ${state.tabProfile === p.dir ? "sel" : ""}" data-profile="${esc(p.dir)}">${esc(p.label)} · ${profileTabs(p)}</span>`).join("")}</div>`;
   const growing = (s.trends || []).filter(t => t.kind === "renderer" && t.growth > 0 && t.span_secs >= 600 && (b.renderer_procs || []).some(r => `r:${r.pid}:${r.start_time}` === t.key)).sort((x, y) => y.growth - x.growth).slice(0, 5);
   if (growing.length) {
-    html += `<h2>Pages growing <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">one renderer process each; Chrome does not say which tab</span></h2>
+    html += `<h2>Pages growing <small class="muted">one renderer process each; Chrome does not say which tab</small></h2>
       <div class="wrap"><table><tr><th>Process</th><th class="num">Now</th><th class="num">Change</th><th class="num">Rate / h</th><th class="num">Over</th><th class="num">CPU</th></tr>` +
       growing.map(t => `<tr><td>${esc(t.name.replace(b.name, "").trim())}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">+${bytes(t.growth)}</td><td class="num">+${bytes(Math.max(0, t.bytes_per_hour))}</td><td class="num">${dur(t.span_secs)}</td><td class="num">${t.cpu_mean.toFixed(0)}%</td></tr>`).join("") + `</table></div>
       <p class="muted" style="margin:6px 0 12px">A page that grows steadily and never comes back down is usually a long-lived web app: a conversation, mail, an editor, a local dev UI. Close it if you are done with it, or reload it to start the page over.</p>`;
   }
-  html += `<h2>Worst offenders <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">by tabs you have not looked at</span></h2>
+  html += `<h2>Worst offenders <small class="muted">by tabs you have not looked at</small></h2>
     <div class="wrap"><table class="fixed"><colgroup><col><col style="width:56px"><col style="width:56px"><col style="width:72px"><col style="width:90px"><col style="width:236px"></colgroup><tr><th>Site</th><th class="num">Tabs</th><th class="num">Stale</th><th class="num">Oldest</th><th class="num">≈ Memory</th><th></th></tr>` +
     sitesOf(b, live).slice(0, 12).map(st => {
       const closable = b.tabs.filter(t => t.site === st.site && !t.pinned && !t.active && !goneTab(t));
@@ -464,7 +514,7 @@ function viewBrowser(h) {
       <button ${b.can_close_tabs && staleUnpinned.length ? "" : "disabled"} data-close-tabs="${staleUnpinned.join(",")}" data-browser="${esc(b.name)}" title="every unpinned tab not looked at in over a day, in every open profile">Close all ${staleUnpinned.length} stale</button>
       ${chat ? `<button ${b.can_close_tabs && staleChatIds.length ? "" : "disabled"} data-close-tabs="${staleChatIds.join(",")}" data-browser="${esc(b.name)}" title="unpinned conversation tabs (chatgpt.com, claude.ai, …) not looked at in over a day; the service keeps the conversation">Close ${staleChatIds.length} stale conversation${staleChatIds.length === 1 ? "" : "s"}</button>` : ""}</span></h2>
     <div class="wrap">${tabTable(b, tabs)}</div>
-    <p class="muted" style="margin-top:8px">Idle is how long since the tab was last the one you were looking at, from the browser's own session records. ${b.can_close_tabs ? "Close asks the browser to close that exact tab (matched by id and URL); ⌘⇧T brings it back and the URL is in the action log." : "Closing tabs is not available on this platform yet."} Chrome does not publish per-tab memory; the ≈ figures divide renderer memory evenly across open tabs. Conversation pages (chatgpt.com, claude.ai and friends) keep the whole exchange in the page and grow with it, so they usually sit well above that average; the services keep the history, so closing one loses nothing.</p>`;
+    <p class="muted" style="margin-top:8px">Idle is how long since the tab was last in front, from the browser's own session records. ${b.can_close_tabs ? "Close asks the browser to close that exact tab; ⌘⇧T brings it back and the URL is in the action log." : "Closing tabs is not available on this platform yet."} Chrome does not publish per-tab memory, so the ≈ figures split renderer memory evenly across tabs; conversation pages usually sit well above that, and the service keeps the history when one is closed.</p>`;
   return html + quitBlock(h);
 }
 
@@ -560,6 +610,7 @@ function renderMain(viewChanged) {
   if (v === "overview") html = viewOverview();
   else if (v === "ports") html = viewPorts();
   else if (v === "actions") html = viewActions();
+  else if (v === "settings") html = viewSettings();
   else {
     const h = holderByKey(v);
     if (!h) { state.view = "overview"; html = viewOverview(); renderSide(); }
