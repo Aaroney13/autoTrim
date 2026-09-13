@@ -334,6 +334,7 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
 
 /// The window is built on first open and destroyed on close, so an idle
 /// tray is only the menu item: no web view sitting in memory for nothing.
+/// `main` keeps the app alive once the last window is gone.
 fn show_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -634,6 +635,18 @@ fn main() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("autoTrim tray failed to start");
+        .build(tauri::generate_context!())
+        .expect("autoTrim tray failed to start")
+        .run(|_app, event| {
+            // Tauri exits when its last window is destroyed, which would take
+            // the menu bar item with the window. That request carries no exit
+            // code; "Quit autoTrim" calls `exit(0)`, which does, and goes
+            // through.
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+            }
+        });
 }
