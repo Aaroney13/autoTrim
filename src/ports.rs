@@ -147,17 +147,22 @@ pub fn listening(table: &ProcTable, det: &Detection, groups: &[AppGroup]) -> Vec
             .map(|e| e.to_string_lossy().into_owned());
         let group = by_pid.get(&pid).copied();
         let in_session = session_owner.contains_key(&pid);
+        // A pid in an agent group that is not in any session tree is the
+        // folded-in app's: name the app, not "Claude Code sessions".
         let owner = session_owner
             .get(&pid)
             .cloned()
-            .or_else(|| group.map(|g| g.name.clone()))
+            .or_else(|| group.map(|g| g.app.clone().unwrap_or_else(|| g.name.clone())))
             .unwrap_or_else(|| process.clone());
         let system = exe
             .as_deref()
             .map(|e| SYSTEM_PREFIXES.iter().any(|p| e.starts_with(p)))
             .unwrap_or(true);
-        let owner_managed =
-            in_session || system || group.map(|g| g.kind == GroupKind::App).unwrap_or(false);
+        let owner_managed = in_session
+            || system
+            || group
+                .map(|g| g.kind == GroupKind::App || g.app.is_some())
+                .unwrap_or(false);
         let owner_age_secs = proc_.map(|p| p.run_time).unwrap_or(0);
         let dev_runtime = {
             let n = process.to_ascii_lowercase();

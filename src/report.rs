@@ -42,9 +42,21 @@ pub fn render(s: &Snapshot) -> String {
 
     let _ = writeln!(o, "\nTop holders");
     for g in s.groups.iter().take(12) {
-        let unit = match g.kind {
-            crate::groups::GroupKind::Agent => "sessions",
-            _ => "procs",
+        let (count, unit) = match g.kind {
+            crate::groups::GroupKind::Agent => {
+                let n = s
+                    .sessions
+                    .iter()
+                    .filter(|x| g.pids.contains(&x.pid))
+                    .count();
+                let noun = if n == 1 { "session" } else { "sessions" };
+                let unit = match &g.app {
+                    Some(a) => format!("{noun} + the {a} app"),
+                    None => noun.to_string(),
+                };
+                (n, unit)
+            }
+            _ => (g.procs, "procs".to_string()),
         };
         let _ = writeln!(
             o,
@@ -52,7 +64,7 @@ pub fn render(s: &Snapshot) -> String {
             bytes(g.rss),
             g.cpu,
             fit_right(&g.name, 28),
-            g.procs,
+            count,
             unit
         );
     }
