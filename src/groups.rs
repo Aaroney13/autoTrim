@@ -5,10 +5,10 @@
 //! platform's rule is a pure function of the executable path, compiled and
 //! tested everywhere; `cfg` only picks which one `app_name` uses.
 
-use crate::agents::{AgentKind, Detection};
+use crate::agents::{AgentKind, AgentSession, Detection};
 use crate::procs::{Proc, ProcTable};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,8 +27,18 @@ pub struct AppGroup {
     /// CPU percent summed over the group's processes.
     #[serde(default)]
     pub cpu: f32,
+    /// Process count. For an agent group, every process in every session
+    /// tree, plus the folded-in app's.
     pub procs: usize,
+    /// Root pids: one per process for an app, one per session for an
+    /// agent group, plus the folded-in app's processes.
     pub pids: Vec<u32>,
+    /// For an agent group, the agent's own desktop client folded into it:
+    /// the Claude app under "Claude Code sessions", ChatGPT under "Codex
+    /// sessions". Its memory and processes count here, and quitting it is
+    /// offered from this group instead of a second one.
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 /// Terminal emulators do not absorb their children: a dev server started
@@ -323,6 +333,7 @@ pub fn group(table: &ProcTable, det: &Detection) -> Vec<AppGroup> {
             cpu: 0.0,
             procs: 0,
             pids: Vec::new(),
+            app: None,
         });
         g.rss += p.rss;
         g.cpu += p.cpu;
@@ -339,16 +350,71 @@ pub fn group(table: &ProcTable, det: &Detection) -> Vec<AppGroup> {
             cpu: 0.0,
             procs: 0,
             pids: Vec::new(),
+            app: None,
         });
         g.rss += s.rss;
         g.cpu += s.cpu;
-        g.procs += 1;
+        g.procs += s.procs;
         g.pids.push(s.pid);
     }
+    fold_home_apps(&mut map, &mut by_kind);
 
     let mut out: Vec<AppGroup> = map.into_values().chain(by_kind.into_values()).collect();
     out.sort_by_key(|g| std::cmp::Reverse(g.rss));
     out
+}
+
+/// "Claude" next to "Claude Code sessions" is one thing listed twice: the
+/// app exists to run the sessions, and quitting it takes them along. Fold
+/// each agent's own client into its sessions group. The sessions group
+/// keeps the name, because sessions also run in terminals the app knows
+/// nothing about. An app with no sessions of its agent stays a plain app.
+fn fold_home_apps(
+    apps: &mut HashMap<String, AppGroup>,
+    by_kind: &mut HashMap<AgentKind, AppGroup>,
+) {
+    for (kind, g) in by_kind.iter_mut() {
+        let Some(home) = kind.home_app() else {
+            continue;
+        };
+        let Some(app) = apps.remove(home) else {
+            continue;
+        };
+        g.rss += app.rss;
+        g.cpu += app.cpu;
+        g.procs += app.procs;
+        g.pids.extend(app.pids);
+        g.app = Some(app.name);
+    }
+}
+
+/// The app's own share of the agent group it was folded into: what
+/// `fold_home_apps` added, taken back out. The app verbs act on this, so
+/// "quit Claude" still means the app and only the app.
+pub fn unfold_app(g: &AppGroup, sessions: &[AgentSession]) -> AppGroup {
+    let mine: Vec<&AgentSession> = sessions
+        .iter()
+        .filter(|s| g.pids.contains(&s.pid))
+        .collect();
+    let roots: HashSet<u32> = mine.iter().map(|s| s.pid).collect();
+    AppGroup {
+        name: g.app.clone().unwrap_or_else(|| g.name.clone()),
+        kind: GroupKind::App,
+        rss: g
+            .rss
+            .saturating_sub(mine.iter().map(|s| s.rss).sum::<u64>()),
+        cpu: (g.cpu - mine.iter().map(|s| s.cpu).sum::<f32>()).max(0.0),
+        procs: g
+            .procs
+            .saturating_sub(mine.iter().map(|s| s.procs).sum::<usize>()),
+        pids: g
+            .pids
+            .iter()
+            .copied()
+            .filter(|p| !roots.contains(p))
+            .collect(),
+        app: None,
+    }
 }
 
 /// Keep the platform rules honest on every host; the Windows one parses
@@ -366,6 +432,136 @@ mod tests {
     }
     fn win(p: &str) -> Option<String> {
         windows::app_name(Path::new(p))
+    }
+
+    fn app(name: &str, rss: u64, pids: &[u32]) -> AppGroup {
+        AppGroup {
+            name: name.to_string(),
+            kind: GroupKind::App,
+            rss,
+            cpu: 1.0,
+            procs: pids.len(),
+            pids: pids.to_vec(),
+            app: None,
+        }
+    }
+
+    fn sessions(kind: AgentKind, rss: u64, pids: &[u32]) -> AppGroup {
+        AppGroup {
+            name: format!("{} sessions", kind.label()),
+            kind: GroupKind::Agent,
+            rss,
+            cpu: 2.0,
+            procs: pids.len() * 3,
+            pids: pids.to_vec(),
+            app: None,
+        }
+    }
+
+    #[test]
+    fn home_app_folds_into_its_sessions() {
+        let mut apps = HashMap::new();
+        apps.insert("Claude".to_string(), app("Claude", 1_000, &[10, 11]));
+        apps.insert("ChatGPT".to_string(), app("ChatGPT", 500, &[20]));
+        apps.insert("Code".to_string(), app("Code", 700, &[30]));
+        let mut by_kind = HashMap::new();
+        by_kind.insert(
+            AgentKind::ClaudeCode,
+            sessions(AgentKind::ClaudeCode, 300, &[40, 41]),
+        );
+        by_kind.insert(AgentKind::Codex, sessions(AgentKind::Codex, 100, &[50]));
+        by_kind.insert(AgentKind::Copilot, sessions(AgentKind::Copilot, 50, &[60]));
+        fold_home_apps(&mut apps, &mut by_kind);
+
+        let cc = &by_kind[&AgentKind::ClaudeCode];
+        assert_eq!(cc.name, "Claude Code sessions");
+        assert_eq!(cc.app.as_deref(), Some("Claude"));
+        assert_eq!(cc.rss, 1_300);
+        assert_eq!(cc.cpu, 3.0);
+        assert_eq!(cc.procs, 6 + 2);
+        assert_eq!(cc.pids, vec![40, 41, 10, 11]);
+        assert!(!apps.contains_key("Claude"));
+
+        let codex = &by_kind[&AgentKind::Codex];
+        assert_eq!(codex.app.as_deref(), Some("ChatGPT"));
+        assert_eq!(codex.rss, 600);
+        assert!(!apps.contains_key("ChatGPT"));
+
+        // An editor hosting an agent is not that agent's client.
+        assert!(apps.contains_key("Code"));
+        assert_eq!(by_kind[&AgentKind::Copilot].app, None);
+    }
+
+    fn session(pid: u32, kind: AgentKind, rss: u64, procs: usize) -> AgentSession {
+        AgentSession {
+            pid,
+            kind,
+            host: "app".to_string(),
+            host_app: kind.home_app().map(str::to_string),
+            cwd: None,
+            project: None,
+            age_secs: 0,
+            start_time: 0,
+            cpu: 2.0,
+            rss,
+            procs,
+            state: crate::agents::SessionState::Idle,
+            is_self: false,
+            cpu_window_mean: None,
+            quiet_for_secs: None,
+            session_id: None,
+            session_name: None,
+            title: None,
+            first_prompt: None,
+            transcript: None,
+            last_activity: None,
+            idle_secs: None,
+            pids: vec![pid],
+            ports: Vec::new(),
+            engine: false,
+        }
+    }
+
+    #[test]
+    fn unfold_returns_the_app_alone() {
+        let mut apps = HashMap::new();
+        apps.insert("Claude".to_string(), app("Claude", 1_000, &[10, 11]));
+        let mut by_kind = HashMap::new();
+        let mut g = sessions(AgentKind::ClaudeCode, 0, &[]);
+        g.cpu = 0.0;
+        let sess = [
+            session(40, AgentKind::ClaudeCode, 200, 3),
+            session(41, AgentKind::ClaudeCode, 100, 3),
+        ];
+        for s in &sess {
+            g.rss += s.rss;
+            g.cpu += s.cpu;
+            g.procs += s.procs;
+            g.pids.push(s.pid);
+        }
+        by_kind.insert(AgentKind::ClaudeCode, g);
+        fold_home_apps(&mut apps, &mut by_kind);
+
+        let back = unfold_app(&by_kind[&AgentKind::ClaudeCode], &sess);
+        assert_eq!(back.name, "Claude");
+        assert_eq!(back.kind, GroupKind::App);
+        assert_eq!(back.rss, 1_000);
+        assert_eq!(back.cpu, 1.0);
+        assert_eq!(back.procs, 2);
+        assert_eq!(back.pids, vec![10, 11]);
+        assert_eq!(back.app, None);
+    }
+
+    #[test]
+    fn app_without_sessions_stays_an_app() {
+        let mut apps = HashMap::new();
+        apps.insert("Claude".to_string(), app("Claude", 1_000, &[10]));
+        let mut by_kind = HashMap::new();
+        by_kind.insert(AgentKind::Codex, sessions(AgentKind::Codex, 100, &[50]));
+        fold_home_apps(&mut apps, &mut by_kind);
+        assert_eq!(apps["Claude"].rss, 1_000);
+        assert_eq!(by_kind[&AgentKind::Codex].app, None);
+        assert_eq!(by_kind[&AgentKind::Codex].rss, 100);
     }
 
     #[test]

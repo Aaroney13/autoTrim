@@ -26,7 +26,9 @@ In scope:
   rolled up under their parent. Keep a rolling history.
 - **Attribute.** Treat AI agent sessions as a first-class group: which agent,
   which host (desktop app, editor, terminal), which project, how old, how idle,
-  how much memory. Treat browsers as a first-class group: renderer count,
+  how much memory. The agent's own client (the Claude app for Claude Code,
+  ChatGPT for Codex) is folded into that group, so the app is not listed
+  beside its sessions as a second holder. Treat browsers as a first-class group: renderer count,
   profiles, memory, every open tab by site and age, and which of those
   pages are conversation UIs or local apps.
 - **Advise.** A deterministic rule set that turns observations into a short
@@ -297,7 +299,8 @@ Early, but the loop is closed on macOS: observe, judge, notify, install.
   The window is a sidebar of everything holding memory, largest first, with
   a bar for its share of RAM and a count of what it contains (sessions,
   tabs, processes). Click one for the detail: an agent's sessions by name
-  with a Close on each and "Close N stale"; a browser's worst sites and
+  with a Close on each and "Close N stale", plus the ports and Quit and
+  Restart of the agent's own app when it is running; a browser's worst sites and
   every tab, longest untouched first, filterable, with Close per tab, per
   site, and for every stale tab at once; an app's memory, trend, hosted
   sessions and ports, with Quit and Restart. Overview carries the advice

@@ -42,6 +42,19 @@ impl AgentKind {
         }
     }
 
+    /// The agent's own desktop client, by the name `groups::app_name`
+    /// reports it. To the person deciding what to quit, the Claude app and
+    /// the Claude Code sessions inside it are one thing, so the app is
+    /// folded into the sessions group. Editors that happen to host an agent
+    /// (VS Code, Cursor) are not this: they are quit for their own reasons.
+    pub fn home_app(self) -> Option<&'static str> {
+        match self {
+            AgentKind::ClaudeCode => Some("Claude"),
+            AgentKind::Codex => Some("ChatGPT"),
+            _ => None,
+        }
+    }
+
     /// What the agent calls one conversation, for "3 open threads".
     pub fn thread_noun(self) -> &'static str {
         match self {

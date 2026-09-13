@@ -67,7 +67,7 @@ impl ProcTable {
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
         sys.refresh_cpu_usage();
 
-        let mut procs: Vec<Proc> = sys
+        let procs: Vec<Proc> = sys
             .processes()
             .values()
             .map(|p| Proc {
@@ -87,8 +87,13 @@ impl ProcTable {
                 run_time: p.run_time(),
             })
             .collect();
-        procs.sort_by_key(|p| p.pid);
+        ProcTable::from_procs(procs)
+    }
 
+    /// Index a process list. `collect` uses it; tests build tables from
+    /// hand-written processes with it.
+    pub fn from_procs(mut procs: Vec<Proc>) -> ProcTable {
+        procs.sort_by_key(|p| p.pid);
         let mut index = HashMap::with_capacity(procs.len());
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for (i, p) in procs.iter().enumerate() {

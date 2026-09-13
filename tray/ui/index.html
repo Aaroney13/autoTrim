@@ -190,7 +190,7 @@ function holders(s) {
     if (kind === "agent") { const live = sessions.filter(x => !goneSession(x)), stale = live.filter(x => x.state === "stale").length; count = plural(live.length, "session") + (stale ? ` · ${stale} stale` : ""); }
     else if (browser) { const live = browser.tabs.filter(t => !goneTab(t)), stale = live.filter(t => isStale(browser, t)).length; count = live.length ? plural(live.length, "tab") + (stale ? ` · ${stale} stale` : "") : plural(g.procs, "proc"); }
     else count = plural(g.procs, "proc");
-    return { key: "g:" + g.name, name: g.name, kind, rss: g.rss, cpu: g.cpu, procs: g.procs, pids: g.pids, count, group: g, browser, sessions };
+    return { key: "g:" + g.name, name: g.name, kind, rss: g.rss, cpu: g.cpu, procs: g.procs, pids: g.pids, app: g.app || null, count, group: g, browser, sessions };
   });
 }
 const holderByKey = key => holders(state.snap).find(h => h.key === key);
@@ -383,14 +383,22 @@ function sessionRows(list) {
 }
 
 function viewAgents(h) {
+  const s = state.snap;
   const live = h.sessions.filter(x => !goneSession(x));
   const stale = live.filter(x => x.state === "stale" && !x.is_self && !x.engine);
-  return `<h1>${esc(h.name)} <span class="pill">agent</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(live.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span></div>
+  const trend = (s.trends || []).find(t => t.key === "g:" + h.name && t.span_secs >= 600);
+  // The group's memory less its sessions' is the folded-in app's own.
+  const appRss = h.app ? Math.max(0, h.rss - h.sessions.reduce((n, x) => n + x.rss, 0)) : 0;
+  const ports = s.ports.filter(p => h.pids.includes(p.pid) && !h.sessions.some(x => (x.pids || []).includes(p.pid)));
+  let html = `<h1>${esc(h.name)} <span class="pill">agent</span></h1>
+    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span>${h.app ? `<span>the <b>${esc(h.app)}</b> app is <b>${bytes(appRss)}</b> of it</span>` : ""}<span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(live.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>
     <h2>Sessions <span class="tools">sort <select data-sess-sort>${["rss","idle","age","name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"memory",idle:"idle",age:"age",name:"name"}[k]}</option>`).join("")}</select>
       <button ${stale.length ? "" : "disabled"} data-close-stale="${esc(h.name)}">Close ${stale.length} stale</button></span></h2>
     <div class="wrap">${sessionTable(h.sessions)}</div>
-    <p class="muted" style="margin-top:8px">Names come from the session's own title when it has one, otherwise the first thing you asked. Closing keeps the transcript on disk; the resume command is written to the action log. An app engine (Codex under the ChatGPT app or VS Code, Copilot under VS Code) is one process serving every thread the app shows; close those in the app.</p>`;
+    <p class="muted" style="margin-top:8px">Names come from the session's own title when it has one, otherwise the first thing you asked. Closing keeps the transcript on disk; the resume command is written to the action log. An app engine (Codex under the ChatGPT app or VS Code, Copilot under VS Code) is one process serving every thread the app shows; close those in the app.${h.app ? ` The ${esc(h.app)} app itself is counted here rather than as a holder of its own: it exists to run these sessions, and the ones in a terminal belong with them.` : ""}</p>`;
+  if (ports.length) html += `<h2>Listening</h2>` + portsTable(ports);
+  html += quitBlock(h);
+  return html;
 }
 
 const SESSION_COLS = `<colgroup><col><col style="width:130px"><col style="width:76px"><col style="width:62px"><col style="width:74px"><col style="width:64px"><col style="width:90px"></colgroup>`;
@@ -490,16 +498,18 @@ function pruneGone(snap) {
 
 function quitBlock(h) {
   const s = state.snap;
-  if (h.kind !== "app" && h.kind !== "browser") return "";
-  const hosting = s.sessions.filter(x => x.host_app === h.name);
-  const self = s.sessions.some(x => x.is_self && x.host_app === h.name);
-  const never = ["Finder", "autoTrim", "autotrim-tray"].includes(h.name);
+  // An agent group quits the app folded into it; anything else quits itself.
+  const app = h.kind === "agent" ? h.app : h.kind === "app" || h.kind === "browser" ? h.name : null;
+  if (!app) return "";
+  const hosting = s.sessions.filter(x => x.host_app === app);
+  const self = s.sessions.some(x => x.is_self && x.host_app === app);
+  const never = ["Finder", "autoTrim", "autotrim-tray"].includes(app);
   let why = "";
   if (never) why = "this is not something autoTrim quits";
   else if (self) why = "this app is running the session autoTrim is in";
   else if (hosting.length) why = `hosts ${plural(hosting.length, "agent session")}; close those first`;
   const back = h.kind === "browser" ? "with its last session, so tabs come back as you click them" : "so it comes back holding far less";
-  return `<h2>Quit or restart</h2><div class="card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><button ${why ? "disabled" : ""} data-quit="${esc(h.name)}">Quit ${esc(h.name)}</button><button ${why ? "disabled" : ""} data-restart="${esc(h.name)}">Restart ${esc(h.name)}</button><span class="muted">${why ? esc(why) : `Quit asks the app to quit the way ⌘Q would, so it can prompt to save. Restart does the same, waits for it to exit, and opens it again ${back}. Both are logged with the command to reopen it.`}</span></div>`;
+  return `<h2>Quit or restart</h2><div class="card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><button ${why ? "disabled" : ""} data-quit="${esc(app)}">Quit ${esc(app)}</button><button ${why ? "disabled" : ""} data-restart="${esc(app)}">Restart ${esc(app)}</button><span class="muted">${why ? esc(why) : `Quit asks the app to quit the way ⌘Q would, so it can prompt to save. Restart does the same, waits for it to exit, and opens it again ${back}. Both are logged with the command to reopen it.`}</span></div>`;
 }
 
 function viewApp(h) {

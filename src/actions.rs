@@ -502,9 +502,17 @@ fn app_target(name: &str, t: &Thresholds, force: bool) -> Result<AppTarget> {
     }
     let mut sys = System::new();
     let snap = take_snapshot(&mut sys, Some(Duration::from_millis(300)), t);
-    let Some(g) = snap.groups.iter().find(|g| g.name == name) else {
-        anyhow::bail!("{name} is not running");
+    // The agent's own client is folded into its sessions group ("Claude"
+    // under "Claude Code sessions"); take the app's share back out so the
+    // checks and the verb see the app alone.
+    let g = match snap.groups.iter().find(|g| g.name == name) {
+        Some(g) => g.clone(),
+        None => match snap.groups.iter().find(|g| g.app.as_deref() == Some(name)) {
+            Some(g) => groups::unfold_app(g, &snap.sessions),
+            None => anyhow::bail!("{name} is not running"),
+        },
     };
+    let g = &g;
     let mut self_chain = Vec::new();
     let mut cur = Some(Pid::from_u32(std::process::id()));
     while let Some(pid) = cur {
@@ -719,6 +727,7 @@ mod tests {
             cpu: 0.0,
             procs: 1,
             pids: vec![100],
+            app: None,
         }
     }
 
