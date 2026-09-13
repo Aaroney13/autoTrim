@@ -475,4 +475,7 @@ Things that came up and where they landed.
   AppleScript dictionary reports, verified against a running Chrome, which
   is what lets a close target one exact tab; the browser re-checks the URL
   before closing, so a tab that moved on since the snapshot is left alone.
+  One trap: Chrome hands that id over as text, and AppleScript's integer
+  stops at 2^29, so an id near two billion coerced to integer silently
+  becomes a real and matches nothing. The script compares ids as text.
 

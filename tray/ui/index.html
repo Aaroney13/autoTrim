@@ -325,7 +325,7 @@ function viewBrowser(h) {
   }
   html += `<h2>Worst offenders <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">by tabs you have not looked at</span></h2>
     <div class="wrap"><table class="fixed"><colgroup><col><col style="width:56px"><col style="width:56px"><col style="width:72px"><col style="width:90px"><col style="width:236px"></colgroup><tr><th>Site</th><th class="num">Tabs</th><th class="num">Stale</th><th class="num">Oldest</th><th class="num">≈ Memory</th><th></th></tr>` +
-    b.sites.slice(0, 12).map(st => {
+    sitesOf(b, live).slice(0, 12).map(st => {
       const closable = b.tabs.filter(t => t.site === st.site && !t.pinned && !t.active && !goneTab(t));
       const staleIds = closable.filter(t => isStale(b, t)).map(t => t.id);
       const allIds = closable.map(t => t.id);
@@ -348,6 +348,20 @@ function viewBrowser(h) {
 }
 
 function isStale(b, t) { return !t.active && !goneTab(t) && t.idle_secs != null && t.idle_secs >= 86400; }
+
+// Tabs rolled up by site, worst first, from the tabs given (the live ones),
+// so the table follows a close at once instead of waiting for a snapshot.
+function sitesOf(b, tabs) {
+  const by = new Map();
+  for (const t of tabs) {
+    const s = by.get(t.site) || { site: t.site, kind: t.kind, tabs: 0, stale_tabs: 0, oldest_idle_secs: null, est_rss: 0 };
+    s.tabs++; if (isStale(b, t)) s.stale_tabs++;
+    if (!t.active && t.idle_secs != null && (s.oldest_idle_secs == null || t.idle_secs > s.oldest_idle_secs)) s.oldest_idle_secs = t.idle_secs;
+    s.est_rss = s.tabs * (b.per_tab_estimate || 0);
+    by.set(t.site, s);
+  }
+  return [...by.values()].sort((a, c) => c.stale_tabs - a.stale_tabs || c.tabs - a.tabs || (c.oldest_idle_secs ?? -1) - (a.oldest_idle_secs ?? -1) || a.site.localeCompare(c.site));
+}
 
 // Remember what was closed from here until a snapshot no longer lists it.
 function markGone(kind, ids, recs, ok) {

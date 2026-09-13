@@ -49,18 +49,21 @@ mod platform {
         Ok(stdout)
     }
 
+    /// Tab ids are compared as text on both sides. Chrome hands them over
+    /// as text, and AppleScript's integer stops at 2^29, so an id near two
+    /// billion coerced to integer silently becomes a real and never matches.
     pub fn close_tab(app: &str, tab_id: i32, url: &str) -> anyhow::Result<String> {
         let app = app.replace('"', "");
         let script = format!(
             r#"on run argv
-  set wantId to (item 1 of argv) as integer
+  set wantId to (item 1 of argv) as text
   set wantUrl to item 2 of argv
   with timeout of 15 seconds
     tell application "{app}"
       repeat with w in windows
         set ids to id of tabs of w
         repeat with i from 1 to count of ids
-          if item i of ids is wantId then
+          if ((item i of ids) as text) is wantId then
             set t to tab i of w
             if (URL of t) is wantUrl then
               close t

@@ -35,8 +35,8 @@ const WINDOW_DEVTOOLS: i32 = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     /// The tab's session id. The same number the browser's AppleScript
-    /// dictionary reports as the tab `id`, which is what makes closing by id
-    /// possible.
+    /// dictionary reports as the tab `id` (as text there), which is what
+    /// makes closing by id possible.
     pub id: i32,
     pub window_id: i32,
     /// Position in its window.
