@@ -3,7 +3,9 @@
 Rust CLI/daemon that monitors memory holders (apps, browsers, AI agent
 sessions) and advises or reclaims. Scope and principles are in README.md;
 read the "Out of scope" list before adding features. It is not an agent
-orchestrator and the daemon never calls a model.
+orchestrator and the daemon never calls a model. Design rationale, the fine
+print on each part, and known gaps live in docs/design.md; keep that current
+when behaviour changes, and keep README.md short.
 
 ## Working here
 
