@@ -127,6 +127,7 @@ impl Default for Config {
             auto_hosts: vec![
                 "Claude app".to_string(),
                 "VS Code".to_string(),
+                "Cursor".to_string(),
                 "terminal".to_string(),
             ],
             ignore_ports: Vec::new(),
@@ -240,7 +241,8 @@ auto_close_sessions = {auto_close_sessions}
 auto_stop_servers = {auto_stop_servers}
 auto_grace_minutes = {auto_grace_minutes}           # warning first, then this long before acting
 auto_dry_run = {auto_dry_run}
-auto_hosts = ["Claude app", "VS Code", "terminal"]   # sessions under other hosts are never auto-closed
+auto_hosts = ["Claude app", "VS Code", "Cursor", "terminal"]   # sessions under other hosts are never auto-closed;
+                                                              # an app's own agent engine never is
 
 # Never report these
 ignore_ports = []               # e.g. [5432, 6379]

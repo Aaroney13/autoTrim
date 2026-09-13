@@ -446,8 +446,9 @@ fn warm_start(h: &mut History, dir: &Path, now: u64, window: u64) -> usize {
 
 /// Sessions auto mode may close this tick. Stricter than the advice: it
 /// needs transcript evidence of idleness, a warm quiet window agreeing,
-/// an allowed host, and it spares the most recently active session in each
-/// project so a person always keeps their place.
+/// an allowed host, never an app's own engine (the app would restart it),
+/// and it spares the most recently active session in each project so a
+/// person always keeps their place.
 fn auto_session_candidates<'a>(
     snap: &'a Snapshot,
     auto: &AutoConfig,
@@ -464,7 +465,7 @@ fn auto_session_candidates<'a>(
     }
     snap.sessions
         .iter()
-        .filter(|s| s.state == SessionState::Stale && !s.is_self)
+        .filter(|s| s.state == SessionState::Stale && !s.is_self && !s.engine)
         .filter(|s| s.idle_secs.is_some_and(|i| i >= t.stale_after_secs))
         .filter(|s| s.quiet_for_secs.is_some_and(|q| q >= t.min_quiet_secs))
         .filter(|s| auto.hosts.iter().any(|h| h == &s.host))

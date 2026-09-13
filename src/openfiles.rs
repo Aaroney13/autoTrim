@@ -3,6 +3,13 @@
 
 use std::path::PathBuf;
 
+/// Whether this platform can list a process's open files at all. Where it
+/// cannot, agents whose transcripts are found that way fall back to CPU
+/// evidence, and an app's agent engine is reported even with nothing open.
+pub const fn supported() -> bool {
+    cfg!(any(target_os = "macos", target_os = "linux"))
+}
+
 #[cfg(target_os = "macos")]
 pub fn open_files(pid: u32) -> Vec<PathBuf> {
     macos::open_files(pid)

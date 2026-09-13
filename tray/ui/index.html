@@ -311,22 +311,23 @@ function sessionRows(list) {
     const name = x.session_name || x.project || "?";
     const sub = [x.project, x.host, `pid ${x.pid}`].filter(Boolean);
     if (x.first_prompt && x.first_prompt !== name) sub.unshift(x.first_prompt);
-    const can = !x.is_self && x.state !== "active" && !gone;
-    return `<tr class="${gone ? "gone" : x.state}"><td class="main"><div class="l1" title="${esc(name)}">${esc(name)}${x.is_self ? `<span class="tag on">this app</span>` : ""}</div><div class="l2" title="${esc(sub.join(" · "))}">${esc(sub.join(" · "))}</div></td>
+    const can = !x.is_self && x.state !== "active" && !gone && !x.engine;
+    const engineNote = `${x.host}'s own agent engine: it serves the threads the app shows and the app restarts it if closed. Close threads in the app instead.`;
+    return `<tr class="${gone ? "gone" : x.state}"><td class="main"><div class="l1" title="${esc(name)}">${esc(name)}${x.is_self ? `<span class="tag on">this app</span>` : ""}${x.engine ? `<span class="tag" title="${esc(engineNote)}">app engine</span>` : ""}</div><div class="l2" title="${esc(sub.join(" · "))}">${esc(sub.join(" · "))}</div></td>
       <td class="state ${gone ? "idle" : x.state}">${esc(st)}</td><td class="num">${dur(x.age_secs)}</td><td class="num">${(x.cpu_window_mean ?? x.cpu).toFixed(1)}%</td><td class="num">${bytes(x.rss)}</td><td class="num muted">${x.ports.join(", ") || "–"}</td>
-      <td class="num"><button ${can ? "" : "disabled"} data-close-session="${x.pid}" title="${x.is_self ? "this is the session running autoTrim" : x.state === "active" ? "busy right now" : "close it; the transcript stays and the resume command is logged"}">Close</button></td></tr>`;
+      <td class="num"><button ${can ? "" : "disabled"} data-close-session="${x.pid}" title="${x.is_self ? "this is the session running autoTrim" : x.engine ? esc(engineNote) : x.state === "active" ? "busy right now" : "close it; the transcript stays and the resume command is logged"}">Close</button></td></tr>`;
   }).join("");
 }
 
 function viewAgents(h) {
   const live = h.sessions.filter(x => !goneSession(x));
-  const stale = live.filter(x => x.state === "stale" && !x.is_self);
+  const stale = live.filter(x => x.state === "stale" && !x.is_self && !x.engine);
   return `<h1>${esc(h.name)} <span class="pill">agent</span></h1>
     <div class="sub"><span><b>${bytes(h.rss)}</b> resident</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(live.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span></div>
     <h2>Sessions <span class="tools">sort <select data-sess-sort>${["rss","idle","age","name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"memory",idle:"idle",age:"age",name:"name"}[k]}</option>`).join("")}</select>
       <button ${stale.length ? "" : "disabled"} data-close-stale="${esc(h.name)}">Close ${stale.length} stale</button></span></h2>
     <div class="wrap">${sessionTable(h.sessions)}</div>
-    <p class="muted" style="margin-top:8px">Names come from the session's own title when it has one, otherwise the first thing you asked. Closing keeps the transcript on disk; the resume command is written to the action log.</p>`;
+    <p class="muted" style="margin-top:8px">Names come from the session's own title when it has one, otherwise the first thing you asked. Closing keeps the transcript on disk; the resume command is written to the action log. An app engine (Codex under the ChatGPT app or VS Code, Copilot under VS Code) is one process serving every thread the app shows; close those in the app.</p>`;
 }
 
 const SESSION_COLS = `<colgroup><col><col style="width:130px"><col style="width:76px"><col style="width:62px"><col style="width:74px"><col style="width:64px"><col style="width:90px"></colgroup>`;
@@ -508,7 +509,7 @@ function wire(root) {
   root.querySelectorAll("[data-stop]").forEach(b => b.onclick = () => twoStep(b, "p" + b.dataset.stop, async () => report(await invoke("stop_server", { pid: +b.dataset.stop, force: false }))));
   root.querySelectorAll("[data-close-tab]").forEach(b => b.onclick = () => twoStep(b, "t" + b.dataset.closeTab, async () => { const ids = [+b.dataset.closeTab]; const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); report(recs); }));
   root.querySelectorAll("[data-close-tabs]").forEach(b => b.onclick = () => { const ids = b.dataset.closeTabs.split(",").filter(Boolean).map(Number); if (!ids.length) return; twoStep(b, "T" + b.dataset.closeTabs, async () => { const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); const ok = recs.filter(tabOk).length; toast(`closed ${ok} of ${recs.length} tabs` + (ok < recs.length ? "\n" + recs.filter(r => !tabOk(r)).map(r => `${r.target}: ${r.result}`).join("\n") : "")); }); });
-  root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); const pids = h ? h.sessions.filter(x => x.state === "stale" && !x.is_self && !goneSession(x)).map(x => x.pid) : []; twoStep(b, "S" + b.dataset.closeStale, async () => { const out = []; for (const pid of pids) { try { const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); out.push(rec); } catch (e) { out.push({ action: "close_session", target: `pid ${pid}`, result: String(e) }); } } report(out); }); });
+  root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); const pids = h ? h.sessions.filter(x => x.state === "stale" && !x.is_self && !x.engine && !goneSession(x)).map(x => x.pid) : []; twoStep(b, "S" + b.dataset.closeStale, async () => { const out = []; for (const pid of pids) { try { const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); out.push(rec); } catch (e) { out.push({ action: "close_session", target: `pid ${pid}`, result: String(e) }); } } report(out); }); });
   root.querySelectorAll("[data-quit]").forEach(b => b.onclick = () => twoStep(b, "q" + b.dataset.quit, async () => report(await invoke("quit_app", { name: b.dataset.quit, force: false }))));
   root.querySelectorAll("[data-profile]").forEach(c => c.onclick = () => { state.tabProfile = state.tabProfile === c.dataset.profile ? "" : c.dataset.profile; renderMain(true); });
   root.querySelectorAll("[data-tab-sort]").forEach(sel => sel.onchange = () => { state.tabSort = sel.value; renderMain(true); });

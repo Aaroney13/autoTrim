@@ -1,9 +1,14 @@
 //! Read what agents leave on disk to learn when a session last did anything
-//! real, and what to call it. Today: Claude Code, which keeps
-//! `~/.claude/sessions/<pid>.json` with the session id and working
-//! directory, and appends every message to
-//! `~/.claude/projects/<encoded cwd>/<session id>.jsonl`; and Codex, which
-//! keeps one rollout file per thread under `~/.codex/sessions`.
+//! real, and what to call it.
+//!
+//! Claude Code keeps `~/.claude/sessions/<pid>.json` with the session id and
+//! working directory, and appends every message to
+//! `~/.claude/projects/<encoded cwd>/<session id>.jsonl`. The others are
+//! found through the process's own file table (`openfiles`), so nothing is
+//! guessed: Codex holds one rollout file per thread open under
+//! `~/.codex/sessions`, Copilot CLI one `events.jsonl` per session under
+//! `~/.copilot/session-state`, and Cursor's CLI the per-chat SQLite store
+//! under `~/.cursor/chats`.
 //!
 //! Nothing here writes. Beyond entry types and timestamps, the only message
 //! content read is the first thing the user typed, shortened to one line,
@@ -17,6 +22,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone)]
 pub struct ClaudeSession {
@@ -74,18 +80,18 @@ pub fn claude_session(pid: u32) -> Option<ClaudeSession> {
         transcript = find_transcript(&projects, &session_id);
     }
     let last_activity = transcript.as_deref().and_then(last_activity_in);
-    let (title, first_prompt) = transcript
+    let names = transcript
         .as_deref()
-        .map(|p| names_in(p, claude_title, claude_prompt))
-        .unwrap_or((None, None));
+        .map(|p| names_in(p, &CLAUDE_LINES))
+        .unwrap_or_default();
     Some(ClaudeSession {
         session_id,
         name,
         name_source,
         transcript,
         last_activity,
-        title,
-        first_prompt,
+        title: names.title,
+        first_prompt: names.first_prompt,
     })
 }
 
@@ -100,70 +106,223 @@ fn find_transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
     None
 }
 
-#[derive(Debug, Clone)]
-pub struct CodexSession {
-    /// Rollout files the process currently holds open: its live threads.
-    pub threads: usize,
-    /// The most recently active of those rollouts.
+/// The threads an agent process is serving, read from the transcripts it
+/// holds open. One process can serve several: an app's engine does.
+#[derive(Debug, Clone, Default)]
+pub struct Threads {
+    /// Live threads a person opened, not counting helpers the agent started
+    /// for itself (a Codex guardian review, a sub-agent).
+    pub count: usize,
+    /// The most recently active thread's transcript. What a close action
+    /// logs next to the resume command.
     pub transcript: Option<PathBuf>,
-    /// Working directory recorded in that rollout's metadata.
+    /// That thread's id, the thing a resume command takes.
+    pub session_id: Option<String>,
+    /// Working directory recorded for that thread, when the agent keeps one.
     pub cwd: Option<String>,
-    /// Newest response or event timestamp across the open rollouts.
+    /// Newest real activity across every open transcript.
     pub last_activity: Option<u64>,
-    /// The first thing the user asked in the newest thread, shortened.
+    /// The agent's own name for the thread, when it keeps one.
+    pub name: Option<String>,
+    /// The first thing the user asked in that thread, shortened.
     pub first_prompt: Option<String>,
 }
 
-/// Codex keeps one rollout file per thread under `~/.codex/sessions` and
-/// holds the live ones open, so the process's own file table is the map.
-/// Returns None when the process has no rollout open; the caller falls back
-/// to CPU evidence.
-pub fn codex_session(pid: u32) -> Option<CodexSession> {
-    let rollouts: Vec<PathBuf> = open_files(pid)
-        .into_iter()
-        .filter(|p| {
-            p.file_name()
-                .map(|f| {
-                    let f = f.to_string_lossy();
-                    f.starts_with("rollout-") && f.ends_with(".jsonl")
-                })
-                .unwrap_or(false)
-        })
-        .collect();
-    if rollouts.is_empty() {
-        return None;
-    }
-    let mut best: Option<(u64, PathBuf)> = None;
-    for r in &rollouts {
-        if let Some(ts) = last_activity_with(r, codex_activity_timestamp)
-            && best.as_ref().is_none_or(|(b, _)| ts > *b)
-        {
-            best = Some((ts, r.clone()));
+/// Files matching `keep` that the process tree holds open, from the first
+/// process (root first) that holds any. The root usually does; the loop is
+/// for agents that hand their transcript to a worker.
+fn open_in_tree(pids: &[u32], keep: fn(&Path) -> bool) -> Vec<PathBuf> {
+    for pid in pids {
+        let mut found: Vec<PathBuf> = open_files(*pid).into_iter().filter(|p| keep(p)).collect();
+        if !found.is_empty() {
+            found.sort();
+            found.dedup();
+            return found;
         }
     }
-    let transcript = best
-        .as_ref()
-        .map(|(_, p)| p.clone())
-        .or_else(|| rollouts.first().cloned());
-    let cwd = transcript.as_deref().and_then(codex_meta_cwd);
-    let first_prompt = transcript
-        .as_deref()
-        .and_then(|p| names_in(p, |_| None, codex_prompt).1);
-    Some(CodexSession {
-        threads: rollouts.len(),
-        transcript,
-        cwd,
-        last_activity: best.map(|(ts, _)| ts),
-        first_prompt,
+    Vec::new()
+}
+
+/// The session directory an open file belongs to: the directory `depth`
+/// levels below the nearest ancestor called `marker`. So
+/// `session-state/<id>/events.jsonl` at depth 1 gives `session-state/<id>`,
+/// and `chats/<hash>/<id>/store.db-wal` at depth 2 gives `chats/<hash>/<id>`.
+fn session_dir_below(p: &Path, marker: &str, depth: usize) -> Option<PathBuf> {
+    let ancestors: Vec<&Path> = p.ancestors().collect();
+    let k = ancestors
+        .iter()
+        .position(|a| a.file_name().is_some_and(|f| f == marker))?;
+    Some(ancestors[k.checked_sub(depth)?].to_path_buf())
+}
+
+/// Session directories the process tree holds any file open in, from the
+/// first process (root first) that holds one. The transcript, an in-use
+/// lock, a database and its write-ahead log all count: what matters is
+/// that the process has the session open, not which file it is holding.
+fn open_session_dirs(pids: &[u32], marker: &str, depth: usize) -> Vec<PathBuf> {
+    for pid in pids {
+        let mut found: Vec<PathBuf> = open_files(*pid)
+            .into_iter()
+            .filter_map(|p| session_dir_below(&p, marker, depth))
+            .collect();
+        if !found.is_empty() {
+            found.sort();
+            found.dedup();
+            return found;
+        }
+    }
+    Vec::new()
+}
+
+fn mtime_secs(m: &fs::Metadata) -> u64 {
+    m.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn mtime_of(p: &Path) -> Option<u64> {
+    fs::metadata(p).ok().map(|m| mtime_secs(&m))
+}
+
+// ---------------------------------------------------------------- Codex
+
+#[derive(Debug, Clone, Default)]
+struct CodexMeta {
+    id: Option<String>,
+    cwd: Option<String>,
+    /// A thread Codex started for itself (a guardian review, a sub-agent)
+    /// rather than one a person opened.
+    helper: bool,
+}
+
+static CODEX_META: LazyLock<Mutex<HashMap<PathBuf, CodexMeta>>> = LazyLock::new(Default::default);
+
+/// A rollout's first line is its session metadata and never changes, so it
+/// is read once per file.
+fn codex_meta(path: &Path) -> CodexMeta {
+    let mut cache = CODEX_META.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = cache.get(path) {
+        return m.clone();
+    }
+    let meta = fs::File::open(path)
+        .ok()
+        .and_then(|f| BufReader::new(f).lines().next()?.ok())
+        .and_then(|l| codex_meta_line(&l))
+        .unwrap_or_default();
+    if meta.id.is_some() {
+        cache.insert(path.to_path_buf(), meta.clone());
+    }
+    meta
+}
+
+fn codex_meta_line(line: &str) -> Option<CodexMeta> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "session_meta" {
+        return None;
+    }
+    let p = v.get("payload")?;
+    // A person's thread has a plain `source` ("cli", "vscode", "exec"); a
+    // helper's is an object naming the sub-agent, and it has a parent.
+    let helper = p.get("parent_thread_id").is_some_and(|x| x.is_string())
+        || p.get("source").is_some_and(|s| s.is_object());
+    Some(CodexMeta {
+        id: p.get("id").and_then(|x| x.as_str()).map(str::to_string),
+        cwd: p.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
+        helper,
     })
 }
 
-/// The `cwd` field of a rollout's first line, its session metadata.
-fn codex_meta_cwd(path: &Path) -> Option<String> {
-    let f = fs::File::open(path).ok()?;
-    let first = BufReader::new(f).lines().next()?.ok()?;
-    let v: serde_json::Value = serde_json::from_str(&first).ok()?;
-    v.get("payload")?.get("cwd")?.as_str().map(str::to_string)
+/// `rollout-<timestamp>-<uuid>.jsonl`: the uuid is the thread id.
+pub fn rollout_uuid(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let id = stem.get(stem.len().checked_sub(36)?..)?;
+    Some(id.to_string())
+}
+
+/// Codex keeps one rollout file per thread under `~/.codex/sessions` and
+/// holds the live ones open. Returns None when the process has no rollout
+/// open; the caller falls back to CPU evidence, or drops an app server
+/// with nothing loaded.
+pub fn codex_threads(pids: &[u32]) -> Option<Threads> {
+    let rollouts = open_in_tree(pids, |p| {
+        p.file_name()
+            .map(|f| {
+                let f = f.to_string_lossy();
+                f.starts_with("rollout-") && f.ends_with(".jsonl")
+            })
+            .unwrap_or(false)
+    });
+    if rollouts.is_empty() {
+        return None;
+    }
+    let scanned: Vec<(Option<u64>, &PathBuf, bool)> = rollouts
+        .iter()
+        .map(|r| {
+            (
+                last_activity_with(r, codex_activity_timestamp),
+                r,
+                codex_meta(r).helper,
+            )
+        })
+        .collect();
+    // Helpers still count as activity (a review running means the thread is
+    // busy) but not as threads. Only helpers open would mean their thread
+    // just closed; count them rather than nothing.
+    let mut own: Vec<&(Option<u64>, &PathBuf, bool)> = scanned.iter().filter(|s| !s.2).collect();
+    if own.is_empty() {
+        own = scanned.iter().collect();
+    }
+    let newest = own.iter().max_by_key(|s| s.0)?;
+    let transcript = newest.1.clone();
+    let meta = codex_meta(&transcript);
+    let id = meta.id.clone().or_else(|| rollout_uuid(&transcript));
+    Some(Threads {
+        count: own.len(),
+        last_activity: scanned.iter().filter_map(|s| s.0).max(),
+        name: id
+            .as_deref()
+            .and_then(|i| codex_thread_name(&transcript, i)),
+        first_prompt: names_in(&transcript, &CODEX_LINES).first_prompt,
+        cwd: meta.cwd,
+        session_id: id,
+        transcript: Some(transcript),
+    })
+}
+
+type IndexCache = HashMap<PathBuf, ((u64, u64), HashMap<String, String>)>;
+static CODEX_INDEX: LazyLock<Mutex<IndexCache>> = LazyLock::new(Default::default);
+
+/// Codex names every thread after its first exchange and records the name
+/// in `session_index.jsonl` beside the sessions directory, wherever that
+/// lives (`CODEX_HOME` moves it). Re-read only when the file changes.
+fn codex_thread_name(rollout: &Path, id: &str) -> Option<String> {
+    let home = rollout
+        .ancestors()
+        .find(|a| a.file_name().is_some_and(|f| f == "sessions"))?
+        .parent()?;
+    let index = home.join("session_index.jsonl");
+    let meta = fs::metadata(&index).ok()?;
+    let sig = (meta.len(), mtime_secs(&meta));
+    let mut cache = CODEX_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = cache.entry(index.clone()).or_default();
+    if entry.0 != sig {
+        entry.1 = fs::read_to_string(&index)
+            .ok()?
+            .lines()
+            .filter_map(codex_index_line)
+            .collect();
+        entry.0 = sig;
+    }
+    entry.1.get(id).cloned()
+}
+
+fn codex_index_line(line: &str) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let id = v.get("id")?.as_str()?.to_string();
+    let name = v.get("thread_name")?.as_str()?.trim();
+    (!name.is_empty()).then(|| (id, truncate_chars(name, 80)))
 }
 
 fn codex_activity_timestamp(line: &str) -> Option<u64> {
@@ -179,6 +338,405 @@ fn codex_activity_timestamp(line: &str) -> Option<u64> {
         .and_then(|t| t.as_str())
         .and_then(parse_iso8601)
 }
+
+fn codex_prompt(line: &str) -> Option<String> {
+    if !line.contains("\"role\":\"user\"") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "response_item" {
+        return None;
+    }
+    let payload = v.get("payload")?;
+    if payload.get("type")?.as_str()? != "message" || payload.get("role")?.as_str()? != "user" {
+        return None;
+    }
+    let text = payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_text"))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+        // Codex prepends the repo's AGENTS.md and an environment block as
+        // user messages of their own; neither is the person.
+        .filter(|t| !t.starts_with("# AGENTS.md") && !t.trim_start().starts_with('<'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    tidy_prompt(&text)
+}
+
+// -------------------------------------------------------------- Copilot
+
+/// Copilot CLI keeps one directory per session at `session-state/<id>`
+/// under `~/.copilot` (or `COPILOT_HOME`): `events.jsonl` for the
+/// transcript, `workspace.yaml` for the session's name, and an in-use lock
+/// while a process has it open. VS Code runs the same CLI as its engine,
+/// so one process may serve several.
+pub fn copilot_threads(pids: &[u32]) -> Option<Threads> {
+    let dirs: Vec<PathBuf> = open_session_dirs(pids, "session-state", 1)
+        .into_iter()
+        .filter(|d| d.join("events.jsonl").is_file() || d.join("workspace.yaml").is_file())
+        .collect();
+    if dirs.is_empty() {
+        return None;
+    }
+    let scanned: Vec<(Option<u64>, &PathBuf, Option<PathBuf>)> = dirs
+        .iter()
+        .map(|d| {
+            let log = Some(d.join("events.jsonl")).filter(|l| l.is_file());
+            let ts = log
+                .as_deref()
+                .and_then(|l| last_activity_with(l, copilot_activity_timestamp));
+            (ts, d, log)
+        })
+        .collect();
+    let newest = scanned.iter().max_by_key(|s| s.0)?;
+    let dir = newest.1;
+    let yaml = fs::read_to_string(dir.join("workspace.yaml")).unwrap_or_default();
+    let names = newest
+        .2
+        .as_deref()
+        .map(|l| names_in(l, &COPILOT_LINES))
+        .unwrap_or_default();
+    Some(Threads {
+        count: dirs.len(),
+        last_activity: scanned.iter().filter_map(|s| s.0).max(),
+        name: yaml_top_level(&yaml, "name"),
+        cwd: yaml_top_level(&yaml, "cwd").or(names.cwd),
+        first_prompt: names.first_prompt,
+        session_id: dir.file_name().map(|f| f.to_string_lossy().into_owned()),
+        transcript: newest.2.clone().or_else(|| Some(dir.clone())),
+    })
+}
+
+/// User turns, assistant turns, and tool runs are activity; session
+/// bookkeeping (`session.start`, model changes, shutdown) is not.
+fn copilot_activity_timestamp(line: &str) -> Option<u64> {
+    if !(line.contains("\"type\":\"user.")
+        || line.contains("\"type\":\"assistant.")
+        || line.contains("\"type\":\"tool."))
+    {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let t = v.get("type")?.as_str()?;
+    if !(t.starts_with("user.") || t.starts_with("assistant.") || t.starts_with("tool.")) {
+        return None;
+    }
+    timestamp_of(v.get("timestamp")?)
+}
+
+fn copilot_prompt(line: &str) -> Option<String> {
+    if !line.contains("\"type\":\"user.message\"") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "user.message" {
+        return None;
+    }
+    tidy_prompt(v.get("data")?.get("content")?.as_str()?)
+}
+
+/// The working directory, from the session start when it records one, else
+/// from the folder-trust notice ("Folder /x has been added to trusted
+/// folders.").
+fn copilot_cwd(line: &str) -> Option<String> {
+    if !line.contains("\"type\":\"session.") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let d = v.get("data")?;
+    match v.get("type")?.as_str()? {
+        "session.start" => d
+            .get("cwd")
+            .or_else(|| d.get("context").and_then(|c| c.get("cwd")))
+            .and_then(|c| c.as_str())
+            .map(str::to_string),
+        "session.info" => {
+            if d.get("infoType")?.as_str()? != "folder_trust" {
+                return None;
+            }
+            let m = d.get("message")?.as_str()?;
+            let rest = m.split_once("Folder ")?.1;
+            let path = rest.split(" has been").next()?.trim();
+            (!path.is_empty()).then(|| path.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The value of a top-level `key:` line in a small YAML file: plain,
+/// quoted, or a block scalar (`key: |-` with the text indented below),
+/// which is how Copilot writes session names.
+fn yaml_top_level(text: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let i = lines
+        .iter()
+        .position(|l| l.strip_prefix(key).is_some_and(|r| r.starts_with(':')))?;
+    let value = lines[i][key.len() + 1..].trim();
+    let value = match value {
+        "|" | "|-" | "|+" | ">" | ">-" | ">+" => lines[i + 1..]
+            .iter()
+            .take_while(|l| l.starts_with([' ', '\t']) || l.trim().is_empty())
+            .map(|l| l.trim())
+            .find(|l| !l.is_empty())?
+            .to_string(),
+        v if v.len() >= 2
+            && ((v.starts_with('"') && v.ends_with('"'))
+                || (v.starts_with('\'') && v.ends_with('\''))) =>
+        {
+            v[1..v.len() - 1].to_string()
+        }
+        v => v.to_string(),
+    };
+    let value = value.trim();
+    (!value.is_empty()).then(|| truncate_chars(value, 80))
+}
+
+// --------------------------------------------------------------- Cursor
+
+/// Cursor's CLI keeps one SQLite store per chat at
+/// `~/.cursor/chats/<hash of cwd>/<id>/store.db` and holds it (and its
+/// write-ahead log) open, and writes a plain transcript under
+/// `~/.cursor/projects`. The transcript has no timestamps and only ever
+/// gains messages, so its modification time is the idle signal.
+pub fn cursor_threads(pids: &[u32], cwd: Option<&str>) -> Option<Threads> {
+    let dirs: Vec<PathBuf> = open_session_dirs(pids, "chats", 2)
+        .into_iter()
+        .filter(|d| d.join("store.db").is_file())
+        .collect();
+    if dirs.is_empty() {
+        return None;
+    }
+    let mut newest: Option<(Option<u64>, PathBuf, Option<PathBuf>)> = None;
+    let mut last_activity = None;
+    for d in &dirs {
+        let Some(id) = d.file_name() else {
+            continue;
+        };
+        // <root>/chats/<hash>/<id>
+        let Some(root) = d.ancestors().nth(3) else {
+            continue;
+        };
+        let transcript = cursor_transcript(root, cwd, &id.to_string_lossy());
+        let ts = transcript.as_deref().and_then(mtime_of);
+        last_activity = last_activity.max(ts);
+        if newest.as_ref().is_none_or(|n| ts >= n.0) {
+            newest = Some((ts, d.clone(), transcript));
+        }
+    }
+    let (_, dir, transcript) = newest?;
+    let id = dir.file_name()?.to_string_lossy().into_owned();
+    let store = dir.join("store.db");
+    Some(Threads {
+        count: dirs.len(),
+        last_activity,
+        name: cursor_chat_name(&store, &id),
+        first_prompt: transcript
+            .as_deref()
+            .and_then(|t| names_in(t, &CURSOR_LINES).first_prompt),
+        cwd: None,
+        session_id: Some(id),
+        transcript: transcript.or(Some(store)),
+    })
+}
+
+/// Cursor files transcripts under the project path with `/` as `-` and no
+/// leading separator: `/Users/a/code/x` becomes `Users-a-code-x`.
+fn cursor_project_dir(cwd: &str) -> String {
+    cwd.trim_start_matches(['/', '\\'])
+        .replace(['/', '\\'], "-")
+}
+
+/// `<root>/projects/<project>/agent-transcripts/<id>/<id>.jsonl`, or the
+/// older flat `agent-transcripts/<id>.jsonl`. Tried under the process's own
+/// directory first, then wherever the id turns up.
+fn cursor_transcript(root: &Path, cwd: Option<&str>, id: &str) -> Option<PathBuf> {
+    let projects = root.join("projects");
+    let file = format!("{id}.jsonl");
+    let in_project = |dir: &Path| -> Option<PathBuf> {
+        let t = dir.join("agent-transcripts");
+        [t.join(id).join(&file), t.join(&file)]
+            .into_iter()
+            .find(|p| p.is_file())
+    };
+    if let Some(cwd) = cwd
+        && let Some(p) = in_project(&projects.join(cursor_project_dir(cwd)))
+    {
+        return Some(p);
+    }
+    fs::read_dir(&projects)
+        .ok()?
+        .flatten()
+        .find_map(|e| in_project(&e.path()))
+}
+
+fn cursor_prompt(line: &str) -> Option<String> {
+    if !line.contains("\"role\":\"user\"") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("role")?.as_str()? != "user" {
+        return None;
+    }
+    let text = v
+        .get("message")?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    tidy_prompt(
+        &text
+            .replace("<user_query>", " ")
+            .replace("</user_query>", " "),
+    )
+}
+
+type ChatNameCache = HashMap<PathBuf, ((u64, u64, u64, u64), Option<String>)>;
+static CURSOR_NAMES: LazyLock<Mutex<ChatNameCache>> = LazyLock::new(Default::default);
+
+/// The chat's own name from its SQLite store, read without SQLite: the
+/// `meta` row is one small JSON document, hex-encoded, and the newest copy
+/// of its page is at the end of the write-ahead log or in the main file.
+/// The name is only accepted beside an `agentId` matching the chat's
+/// directory. Re-read only when either file changes.
+fn cursor_chat_name(store: &Path, id: &str) -> Option<String> {
+    let wal = store.with_extension("db-wal");
+    let sig_of = |p: &Path| {
+        fs::metadata(p)
+            .map(|m| (m.len(), mtime_secs(&m)))
+            .unwrap_or((0, 0))
+    };
+    let (a, b) = (sig_of(store), sig_of(&wal));
+    let sig = (a.0, a.1, b.0, b.1);
+    let mut cache = CURSOR_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((s, n)) = cache.get(store)
+        && *s == sig
+    {
+        return n.clone();
+    }
+    let name = read_tail(&wal, 4 << 20)
+        .and_then(|b| meta_name_in(&b, id))
+        .or_else(|| read_head(store, 256 << 10).and_then(|b| meta_name_in(&b, id)));
+    cache.insert(store.to_path_buf(), (sig, name.clone()));
+    name
+}
+
+fn read_head(p: &Path, max: u64) -> Option<Vec<u8>> {
+    let f = fs::File::open(p).ok()?;
+    let mut buf = Vec::new();
+    f.take(max).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+fn read_tail(p: &Path, max: u64) -> Option<Vec<u8>> {
+    let mut f = fs::File::open(p).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(max))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// The `name` of the JSON document holding `"agentId":"<id>"` somewhere in
+/// `bytes`, whether the document is stored as text or hex-encoded. The last
+/// copy wins, which in a write-ahead log is the newest.
+fn meta_name_in(bytes: &[u8], id: &str) -> Option<String> {
+    let anchor = format!("\"agentId\":\"{id}\"");
+    let key = "\"name\":\"";
+    for hex in [true, false] {
+        let (anchor, key) = if hex {
+            (hex_of(&anchor), hex_of(key))
+        } else {
+            (anchor.clone().into_bytes(), key.as_bytes().to_vec())
+        };
+        let Some(at) = find_last(bytes, &anchor) else {
+            continue;
+        };
+        // The document is a few hundred bytes; look around the anchor only,
+        // and in hex only at pair-aligned offsets.
+        let lo = at.saturating_sub(4096);
+        let hi = (at + 4096).min(bytes.len());
+        let window = &bytes[lo..hi];
+        let parity = (at - lo) % 2;
+        let Some(k) = find_last_where(window, &key, |i| !hex || i % 2 == parity) else {
+            continue;
+        };
+        let Some(raw) = json_string_at(window, k + key.len(), hex) else {
+            continue;
+        };
+        let Ok(s) = serde_json::from_str::<String>(&format!("\"{raw}\"")) else {
+            continue;
+        };
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(truncate_chars(s, 80));
+        }
+    }
+    None
+}
+
+fn hex_of(s: &str) -> Vec<u8> {
+    s.bytes()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+fn find_last(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    find_last_where(hay, needle, |_| true)
+}
+
+fn find_last_where(hay: &[u8], needle: &[u8], ok: impl Fn(usize) -> bool) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len())
+        .rev()
+        .find(|&i| ok(i) && &hay[i..i + needle.len()] == needle)
+}
+
+/// The body of a JSON string that starts at `at` (just past its opening
+/// quote), up to its closing quote, escapes left in place. Hex-encoded input
+/// is decoded pairwise first.
+fn json_string_at(bytes: &[u8], at: usize, hex: bool) -> Option<String> {
+    let mut out = Vec::new();
+    let mut i = at;
+    let mut escaped = false;
+    loop {
+        let b = if hex {
+            let pair = std::str::from_utf8(bytes.get(i..i + 2)?).ok()?;
+            i += 2;
+            u8::from_str_radix(pair, 16).ok()?
+        } else {
+            let b = *bytes.get(i)?;
+            i += 1;
+            b
+        };
+        if escaped {
+            out.push(b);
+            escaped = false;
+        } else {
+            match b {
+                b'\\' => {
+                    out.push(b);
+                    escaped = true;
+                }
+                b'"' => break,
+                _ => out.push(b),
+            }
+        }
+        if out.len() > 4096 {
+            return None;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+// --------------------------------------------------------------- shared
 
 /// Last user/assistant timestamp in a transcript, reading from the tail so a
 /// multi-megabyte file costs a few hundred kilobytes at most. Entries with
@@ -228,6 +786,58 @@ fn activity_timestamp(line: &str) -> Option<u64> {
         .and_then(parse_iso8601)
 }
 
+/// An ISO 8601 UTC string, or epoch seconds or milliseconds.
+fn timestamp_of(v: &serde_json::Value) -> Option<u64> {
+    match v {
+        serde_json::Value::String(s) => parse_iso8601(s),
+        serde_json::Value::Number(n) => {
+            let f = n.as_f64()?;
+            if f < 0.0 {
+                return None;
+            }
+            Some(if f > 1e11 {
+                (f / 1000.0) as u64
+            } else {
+                f as u64
+            })
+        }
+        _ => None,
+    }
+}
+
+/// How to read one line of a transcript: what a title looks like, what a
+/// person's prompt looks like, and where the working directory is noted.
+struct LineReaders {
+    title: fn(&str) -> Option<String>,
+    prompt: fn(&str) -> Option<String>,
+    cwd: fn(&str) -> Option<String>,
+}
+
+fn nothing(_: &str) -> Option<String> {
+    None
+}
+
+const CLAUDE_LINES: LineReaders = LineReaders {
+    title: claude_title,
+    prompt: claude_prompt,
+    cwd: nothing,
+};
+const CODEX_LINES: LineReaders = LineReaders {
+    title: nothing,
+    prompt: codex_prompt,
+    cwd: nothing,
+};
+const COPILOT_LINES: LineReaders = LineReaders {
+    title: nothing,
+    prompt: copilot_prompt,
+    cwd: copilot_cwd,
+};
+const CURSOR_LINES: LineReaders = LineReaders {
+    title: nothing,
+    prompt: cursor_prompt,
+    cwd: nothing,
+};
+
 /// What a transcript says a session is called. Transcripts are append-only,
 /// so each file is read once in full and then only what was appended since,
 /// which keeps a daemon tick to a stat per session.
@@ -235,20 +845,17 @@ fn activity_timestamp(line: &str) -> Option<u64> {
 struct Names {
     /// Bytes scanned so far, always at a line boundary.
     scanned_to: u64,
+    /// The last title written.
     title: Option<String>,
+    /// The first prompt found.
     first_prompt: Option<String>,
+    /// The first working directory noted.
+    cwd: Option<String>,
 }
 
 static NAMES: LazyLock<Mutex<HashMap<PathBuf, Names>>> = LazyLock::new(Default::default);
 
-/// (title, first prompt) for a transcript, using `title_of` and `prompt_of`
-/// to read one line each. The title is the last one written; the prompt is
-/// the first one found.
-fn names_in(
-    path: &Path,
-    title_of: fn(&str) -> Option<String>,
-    prompt_of: fn(&str) -> Option<String>,
-) -> (Option<String>, Option<String>) {
+fn names_in(path: &Path, r: &LineReaders) -> Names {
     let mut cache = NAMES.lock().unwrap_or_else(|e| e.into_inner());
     let entry = cache.entry(path.to_path_buf()).or_default();
     let len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -259,11 +866,11 @@ fn names_in(
         && let Ok(mut f) = fs::File::open(path)
         && f.seek(SeekFrom::Start(entry.scanned_to)).is_ok()
     {
-        let mut r = BufReader::with_capacity(64 * 1024, f);
+        let mut reader = BufReader::with_capacity(64 * 1024, f);
         let mut line = String::new();
         loop {
             line.clear();
-            let n = match r.read_line(&mut line) {
+            let n = match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
@@ -271,15 +878,18 @@ fn names_in(
                 break; // still being written; pick it up next time
             }
             entry.scanned_to += n as u64;
-            if let Some(t) = title_of(&line) {
+            if let Some(t) = (r.title)(&line) {
                 entry.title = Some(t);
             }
             if entry.first_prompt.is_none() {
-                entry.first_prompt = prompt_of(&line);
+                entry.first_prompt = (r.prompt)(&line);
+            }
+            if entry.cwd.is_none() {
+                entry.cwd = (r.cwd)(&line);
             }
         }
     }
-    (entry.title.clone(), entry.first_prompt.clone())
+    entry.clone()
 }
 
 /// Drop the host's own `<system-reminder>` blocks from a prompt.
@@ -357,32 +967,6 @@ fn claude_prompt(line: &str) -> Option<String> {
     tidy_prompt(&text)
 }
 
-fn codex_prompt(line: &str) -> Option<String> {
-    if !line.contains("\"role\":\"user\"") {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    if v.get("type")?.as_str()? != "response_item" {
-        return None;
-    }
-    let payload = v.get("payload")?;
-    if payload.get("type")?.as_str()? != "message" || payload.get("role")?.as_str()? != "user" {
-        return None;
-    }
-    let text = payload
-        .get("content")?
-        .as_array()?
-        .iter()
-        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_text"))
-        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-        // Codex prepends the repo's AGENTS.md and an environment block as
-        // user messages of their own; neither is the person.
-        .filter(|t| !t.starts_with("# AGENTS.md") && !t.trim_start().starts_with('<'))
-        .collect::<Vec<_>>()
-        .join(" ");
-    tidy_prompt(&text)
-}
-
 /// `YYYY-MM-DDTHH:MM:SS[.fff]Z` to epoch seconds. Only the UTC form the
 /// transcripts use; anything else returns None.
 pub fn parse_iso8601(s: &str) -> Option<u64> {
@@ -446,12 +1030,191 @@ mod tests {
     }
 
     #[test]
+    fn codex_meta_tells_threads_from_helpers() {
+        let own = codex_meta_line(
+            r#"{"type":"session_meta","payload":{"id":"01a0-own","cwd":"/w/x","source":"vscode","thread_source":"user"}}"#,
+        )
+        .unwrap();
+        assert_eq!(own.id.as_deref(), Some("01a0-own"));
+        assert_eq!(own.cwd.as_deref(), Some("/w/x"));
+        assert!(!own.helper);
+        let helper = codex_meta_line(
+            r#"{"type":"session_meta","payload":{"id":"01a0-h","parent_thread_id":"01a0-own","cwd":"/w/x","source":{"subagent":{"other":"guardian"}}}}"#,
+        )
+        .unwrap();
+        assert!(helper.helper);
+        assert!(codex_meta_line(r#"{"type":"event_msg","payload":{}}"#).is_none());
+        assert_eq!(
+            rollout_uuid(Path::new(
+                "/h/.codex/sessions/2026/09/13/rollout-2026-09-13T07-59-25-01a09aa2-f2fc-79f1-a218-5182ef537138.jsonl"
+            ))
+            .as_deref(),
+            Some("01a09aa2-f2fc-79f1-a218-5182ef537138")
+        );
+    }
+
+    #[test]
+    fn codex_index_names_threads() {
+        assert_eq!(
+            codex_index_line(
+                r#"{"id":"01a0","thread_name":"Check low trade volume","updated_at":"2026-09-13T11:59:38Z"}"#
+            ),
+            Some(("01a0".to_string(), "Check low trade volume".to_string()))
+        );
+        assert!(codex_index_line(r#"{"id":"01a0","thread_name":"  "}"#).is_none());
+    }
+
+    #[test]
     fn picks_last_real_entry() {
         assert!(activity_timestamp(r#"{"type":"bridge-session","x":1}"#).is_none());
         assert_eq!(
             activity_timestamp(r#"{"type":"assistant","timestamp":"1970-01-02T00:00:00Z"}"#),
             Some(86_400)
         );
+    }
+
+    #[test]
+    fn copilot_entries() {
+        assert_eq!(
+            copilot_activity_timestamp(
+                r#"{"type":"user.message","timestamp":"1970-01-02T00:00:00Z","data":{"content":"fix the build"}}"#
+            ),
+            Some(86_400)
+        );
+        assert_eq!(
+            copilot_activity_timestamp(
+                r#"{"type":"tool.execution_complete","timestamp":1757000000000,"data":{}}"#
+            ),
+            Some(1_757_000_000)
+        );
+        assert!(
+            copilot_activity_timestamp(
+                r#"{"type":"session.shutdown","timestamp":"1970-01-02T00:00:00Z","data":{}}"#
+            )
+            .is_none()
+        );
+        assert_eq!(
+            copilot_prompt(
+                r#"{"type":"user.message","timestamp":"1970-01-02T00:00:00Z","data":{"content":"fix the\n build"}}"#
+            ),
+            Some("fix the build".to_string())
+        );
+        assert_eq!(
+            copilot_cwd(
+                r#"{"type":"session.info","data":{"infoType":"folder_trust","message":"Folder /Users/a/code/x has been added to trusted folders."}}"#
+            ),
+            Some("/Users/a/code/x".to_string())
+        );
+        assert_eq!(
+            copilot_cwd(r#"{"type":"session.start","data":{"sessionId":"s","cwd":"/w"}}"#),
+            Some("/w".to_string())
+        );
+        assert!(copilot_cwd(r#"{"type":"session.start","data":{"sessionId":"s"}}"#).is_none());
+    }
+
+    #[test]
+    fn copilot_workspace_names() {
+        assert_eq!(
+            yaml_top_level("id: x\nname: Fix the build\ncwd: /w\n", "name"),
+            Some("Fix the build".to_string())
+        );
+        assert_eq!(
+            yaml_top_level("name: \"Quoted: yes\"\n", "name"),
+            Some("Quoted: yes".to_string())
+        );
+        assert_eq!(
+            yaml_top_level(
+                "id: x\nname: |-\n  Block scalar title\n  second line\ncwd: /w\n",
+                "name"
+            ),
+            Some("Block scalar title".to_string())
+        );
+        assert_eq!(
+            yaml_top_level("id: x\nname: |-\n  Block scalar title\ncwd: /w\n", "cwd"),
+            Some("/w".to_string())
+        );
+        assert!(yaml_top_level("name: |-\n", "name").is_none());
+        assert!(yaml_top_level("  name: nested\n", "name").is_none());
+    }
+
+    #[test]
+    fn session_dirs_from_open_files() {
+        let dir = |p: &str, m: &str, d: usize| {
+            session_dir_below(Path::new(p), m, d).map(|p| p.to_string_lossy().into_owned())
+        };
+        assert_eq!(
+            dir(
+                "/h/.copilot/session-state/abc/events.jsonl",
+                "session-state",
+                1
+            )
+            .as_deref(),
+            Some("/h/.copilot/session-state/abc")
+        );
+        assert_eq!(
+            dir(
+                "/h/.copilot/session-state/abc/checkpoints/1.md",
+                "session-state",
+                1
+            )
+            .as_deref(),
+            Some("/h/.copilot/session-state/abc")
+        );
+        assert_eq!(
+            dir("/h/.cursor/chats/9f8e/0084fd6c/store.db-wal", "chats", 2).as_deref(),
+            Some("/h/.cursor/chats/9f8e/0084fd6c")
+        );
+        // Nothing below the marker, or the marker missing: not a session.
+        assert!(dir("/h/.copilot/session-state", "session-state", 1).is_none());
+        assert!(dir("/h/.cursor/chats/9f8e", "chats", 2).is_none());
+        assert!(dir("/h/.codex/sessions/x.jsonl", "chats", 2).is_none());
+    }
+
+    #[test]
+    fn cursor_prompts_and_paths() {
+        assert_eq!(
+            cursor_prompt(
+                r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nrun ls command\n</user_query>"}]}}"#
+            ),
+            Some("run ls command".to_string())
+        );
+        assert!(
+            cursor_prompt(
+                r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Running it."}]}}"#
+            )
+            .is_none()
+        );
+        assert_eq!(
+            cursor_project_dir("/Users/alexm/Repository/Codex-History"),
+            "Users-alexm-Repository-Codex-History"
+        );
+    }
+
+    #[test]
+    fn cursor_chat_name_from_store_bytes() {
+        let id = "0084fd6c-3541-418e-a5eb-0b704e2882f5";
+        let doc = format!(
+            r#"{{"agentId":"{id}","name":"Fix the \"login\" bug","mode":"default","createdAt":1757000000000}}"#
+        );
+        let mut hex = b"SQLite format 3\0junk".to_vec();
+        hex.extend(hex_of(&doc));
+        hex.extend(b"\0more junk");
+        assert_eq!(
+            meta_name_in(&hex, id).as_deref(),
+            Some("Fix the \"login\" bug")
+        );
+        // A newer copy later in the buffer (a WAL frame) wins.
+        let newer = doc.replace("Fix the \\\"login\\\" bug", "Renamed chat");
+        hex.extend(hex_of(&newer));
+        assert_eq!(meta_name_in(&hex, id).as_deref(), Some("Renamed chat"));
+        // Plain text is accepted too, but only beside the matching agentId.
+        let plain = format!("xx{doc}yy").into_bytes();
+        assert_eq!(
+            meta_name_in(&plain, id).as_deref(),
+            Some("Fix the \"login\" bug")
+        );
+        assert!(meta_name_in(&plain, "other-id").is_none());
+        assert!(meta_name_in(b"nothing here", id).is_none());
     }
 
     #[test]
@@ -516,16 +1279,18 @@ mod tests {
             "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"first ask\"}}\n",
         )
         .unwrap();
+        let n = names_in(&path, &CLAUDE_LINES);
         assert_eq!(
-            names_in(&path, claude_title, claude_prompt),
+            (n.title, n.first_prompt),
             (None, Some("first ask".to_string()))
         );
         let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
         use std::io::Write;
         f.write_all(b"{\"type\":\"custom-title\",\"customTitle\":\"Named\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"second\"}}\n{\"partial")
             .unwrap();
+        let n = names_in(&path, &CLAUDE_LINES);
         assert_eq!(
-            names_in(&path, claude_title, claude_prompt),
+            (n.title, n.first_prompt),
             (Some("Named".to_string()), Some("first ask".to_string()))
         );
         let _ = fs::remove_dir_all(&dir);
