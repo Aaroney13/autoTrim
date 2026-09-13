@@ -33,7 +33,16 @@
   header { padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; background: var(--bg); }
   header .stat b { font-size: 15px; font-variant-numeric: tabular-nums; font-weight: 600; }
   header .stat span { color: var(--muted); margin-left: 4px; }
-  header .src { margin-left: auto; color: var(--muted); font-size: 12px; }
+  header .sync { margin-left: auto; align-self: center; display: flex; align-items: center; gap: 12px; }
+  header .sync .col { display: grid; gap: 5px; min-width: 220px; }
+  header .sync .txt { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+  header .sync .cycle { height: 3px; border-radius: 2px; background: var(--barbg); overflow: hidden; }
+  header .sync .cycle i { display: block; height: 100%; background: var(--accent); transition: width 1s linear; }
+  header .sync .cycle.due i { animation: pulse 1.2s ease-in-out infinite; }
+  header .sync .cycle.busy i { width: 30% !important; transition: none; animation: sweep 1.1s ease-in-out infinite; }
+  header .sync button { padding: 2px 10px; font-size: 12px; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes sweep { from { margin-left: -30%; } to { margin-left: 100%; } }
   header .meter { flex-basis: 100%; height: 5px; border-radius: 3px; background: var(--barbg); overflow: hidden; display: flex; }
   header .meter i { display: block; height: 100%; }
   header .meter .used { background: var(--k-app); } header .meter .comp { background: var(--med); } header .meter .swapi { background: var(--high); }
@@ -175,18 +184,58 @@ function holders(s) {
 const holderByKey = key => holders(state.snap).find(h => h.key === key);
 
 function renderHeader() {
-  const s = state.snap, sys = s.system, src = state.src;
+  const s = state.snap, sys = s.system;
   const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
   const head = [stat(bytes(sys.used_mem), `of ${bytes(sys.total_mem)} used`)];
   if (sys.free_pct != null) head.push(stat(sys.free_pct + "%", "free"));
   head.push(stat(`${bytes(sys.used_swap)}`, `swap · ${pct(sys.used_swap, sys.total_swap)} of ${bytes(sys.total_swap)}`));
   if (sys.compressed != null) head.push(stat(bytes(sys.compressed), "compressed"));
   head.push(stat(Math.round(sys.cpu_pct) + "%", `cpu · load ${sys.load_one.toFixed(1)}`), stat(dur(sys.uptime_secs), "up"));
-  head.push(`<div class="src">${src.daemon_running ? `daemon · snapshot ${dur(src.snapshot_age_secs)} ago` : "daemon not running · scanning on its own"}</div>`);
+  head.push(syncMarkup());
   const used = Math.min(100, sys.used_mem * 100 / sys.total_mem);
   const comp = sys.compressed != null ? Math.min(100 - used, sys.compressed * 100 / sys.total_mem) : 0;
   head.push(`<div class="meter" title="used · compressed"><i class="used" style="width:${used - comp}%"></i><i class="comp" style="width:${comp}%"></i></div>`);
   document.getElementById("head").innerHTML = head.join("");
+  document.getElementById("sync-btn").onclick = () => refresh({ fresh: true });
+}
+
+// ---- the refresh bar: how old the numbers are and when the next ones land ----
+const POLL_MS = 5000; // how often this window reads the daemon's snapshot
+const sync = { lastPoll: 0, scans: 0 };
+const nowSecs = () => Date.now() / 1000;
+
+// Ages in seconds as of right now, against this machine's clock, so the
+// text and the bar keep moving between polls. The bar follows the daemon's
+// cycle while it runs; otherwise the window scans on its own every poll.
+function syncInfo() {
+  const src = state.src, running = !!src.daemon_running;
+  const shown = Math.max(0, nowSecs() - state.snap.taken_at);
+  const period = Math.max(1, running ? src.interval_secs : POLL_MS / 1000);
+  const age = running && src.snapshot_taken_at != null ? Math.max(0, nowSecs() - src.snapshot_taken_at) : shown;
+  return { running, shown, period, age, left: Math.max(0, period - age), due: age >= period, busy: sync.scans > 0 };
+}
+function syncText(i) {
+  const ago = `snapshot ${dur(i.shown)} ago`;
+  if (i.busy) return `${ago} · scanning…`;
+  if (!i.running) return `${ago} · daemon not running · scanning every ${dur(i.period)}`;
+  return i.due ? `${ago} · daemon snapshot due` : `${ago} · next in ${dur(i.left)}`;
+}
+function syncMarkup() {
+  const i = syncInfo();
+  const tip = i.running ? `the daemon samples every ${dur(i.period)}; this window picks up each new snapshot within ${dur(POLL_MS / 1000)}` : "no daemon snapshot to read, so this window scans on its own";
+  return `<div class="sync"><div class="col"><div class="txt" id="sync-txt">${esc(syncText(i))}</div><div class="cycle${i.busy ? " busy" : i.due ? " due" : ""}" id="sync-bar" title="${esc(tip)}"><i style="width:${Math.min(100, i.age * 100 / i.period)}%"></i></div></div><button id="sync-btn" ${i.busy ? "disabled" : ""} title="scan now instead of waiting for the daemon's next tick">${i.busy ? "Scanning…" : "Refresh"}</button></div>`;
+}
+// Once a second: move the text and the bar along, and poll on the usual
+// cadence, or every second once the daemon's next snapshot is due so the bar
+// resets the moment it lands.
+function tickSync() {
+  if (!state.snap || !state.src) return;
+  const i = syncInfo();
+  const txt = document.getElementById("sync-txt"), bar = document.getElementById("sync-bar");
+  if (txt) txt.textContent = syncText(i);
+  if (bar) { bar.classList.toggle("due", i.due && !i.busy); bar.firstElementChild.style.width = Math.min(100, i.age * 100 / i.period) + "%"; }
+  const since = Date.now() - sync.lastPoll;
+  if (!i.busy && (since >= POLL_MS || (i.running && i.due && since >= 1000))) refresh();
 }
 
 function renderSide() {
@@ -475,17 +524,21 @@ function renderAll(viewChanged) { renderHeader(); renderSide(); renderMain(viewC
 // tick. What is on screen is never replaced by something older, so a fresh
 // scan taken after an action stays until the daemon catches up with it.
 async function refresh(opts = {}) {
+  sync.lastPoll = Date.now();
+  if (opts.fresh) { sync.scans++; if (state.snap && state.src) renderHeader(); }
+  let snap, src, log;
   try {
-    const [snap, src, log] = await Promise.all([invoke("snapshot", { fresh: !!opts.fresh }), invoke("source_info"), invoke("action_log").catch(() => [])]);
-    const first = !state.snap;
-    if (!first && snap.taken_at < state.snap.taken_at) { state.src = src; state.log = log; renderAll(false); return; }
-    state.snap = snap; state.src = src; state.log = log;
-    pruneGone(snap);
-    renderAll(first);
-  } catch (e) { document.getElementById("head").innerHTML = `<span class="muted">${esc(String(e))}</span>`; }
+    [snap, src, log] = await Promise.all([invoke("snapshot", { fresh: !!opts.fresh }), invoke("source_info"), invoke("action_log").catch(() => [])]);
+  } catch (e) { document.getElementById("head").innerHTML = `<span class="muted">${esc(String(e))}</span>`; return; }
+  finally { if (opts.fresh) sync.scans--; }
+  const first = !state.snap;
+  if (!first && snap.taken_at < state.snap.taken_at) { state.src = src; state.log = log; renderAll(false); return; }
+  state.snap = snap; state.src = src; state.log = log;
+  pruneGone(snap);
+  renderAll(first);
 }
 refresh();
-setInterval(() => refresh(), 5000);
+setInterval(tickSync, 1000);
 </script>
 </body>
 </html>

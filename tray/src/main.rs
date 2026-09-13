@@ -21,6 +21,9 @@ const REFRESH: Duration = Duration::from_secs(5);
 
 struct AppState {
     thresholds: Thresholds,
+    /// Seconds between the daemon's samples, from the shared config, so the
+    /// window can show how long until the next snapshot lands.
+    interval_secs: u64,
     latest: Mutex<Option<Snapshot>>,
 }
 
@@ -28,18 +31,25 @@ struct AppState {
 #[derive(serde::Serialize, Clone)]
 struct Source {
     daemon_running: bool,
-    snapshot_age_secs: Option<u64>,
+    /// When the daemon's latest snapshot was taken, epoch seconds. The window
+    /// counts its age from this against its own clock, so the count keeps
+    /// moving between polls.
+    snapshot_taken_at: Option<u64>,
+    /// How often the daemon writes a snapshot.
+    interval_secs: u64,
 }
 
-fn source() -> Source {
+fn source(interval_secs: u64) -> Source {
     match daemon::latest() {
-        Ok(Some((_, age))) => Source {
+        Ok(Some((snap, age))) => Source {
             daemon_running: age <= 120,
-            snapshot_age_secs: Some(age),
+            snapshot_taken_at: Some(snap.taken_at),
+            interval_secs,
         },
         _ => Source {
             daemon_running: false,
-            snapshot_age_secs: None,
+            snapshot_taken_at: None,
+            interval_secs,
         },
     }
 }
@@ -274,8 +284,8 @@ async fn snapshot(
 }
 
 #[tauri::command]
-fn source_info() -> Source {
-    source()
+fn source_info(state: tauri::State<'_, AppState>) -> Source {
+    source(state.interval_secs)
 }
 
 /// Run an action off the main thread: each one takes a fresh snapshot and
@@ -343,6 +353,7 @@ fn main() {
         }))
         .manage(AppState {
             thresholds: cfg.thresholds(),
+            interval_secs: cfg.interval_secs,
             latest: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
