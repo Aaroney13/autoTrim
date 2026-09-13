@@ -78,8 +78,11 @@ window lists everything holding memory, largest first: an agent's sessions
 with a Close on each, plus its own app's ports, Quit, and Restart when that
 app is running; a browser's worst sites and every tab with Close per tab,
 per site, or for every stale tab at once; an app's trend and ports with Quit
-and Restart. Buttons arm on the first click and act on the second.
-Settings holds the auto mode switches and "Run in background", which
+and Restart. Session and tab lists support search and filters; batch
+actions apply to the displayed results. Closing opens a target review,
+with recovery instructions saved in Actions. Quit, Restart, and Stop
+still arm on the first click and act on the second. Settings offers
+Off, Preview only, and On for auto mode, plus "Run in background", which
 installs the login service. The app reads the daemon's files and only scans
 on its own when no daemon is running. It is Tauri on the system web view,
 about 60 MB idle; the daemon itself stays under 20 MB.
@@ -183,6 +186,7 @@ permissions, one command to uninstall.
 ```bash
 cargo build --release && ./target/release/autotrim scan
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+node --test tests/tray-ui.test.mjs                                     # UI action/filter checks
 AUTOTRIM_DATA_DIR=/tmp/scratch ./target/debug/autotrim daemon --once   # never the real data dir
 cargo run -p autotrim-tray --release                                   # the app, unbundled
 ```
@@ -195,6 +199,11 @@ sessions; `browser.rs` and `snss.rs` read tabs; `ports.rs` and `portlabel.rs`
 name listeners; `trends.rs` fits the series; `rules.rs` turns all of it into
 advice; `daemon.rs` runs the loop; `actions.rs` and `automation.rs` are the
 verbs; `service.rs`, `notify.rs`, and `paths.rs` are the platform edges.
+The app uses compact lists with a details pane for sessions, tabs, sites, ports,
+and memory trends. Stale rows show a small idle duration beside their status dot.
+Selections follow the visible filters, and protected items cannot be selected.
+The details pane stacks below the list in narrow windows.
+
 `tray/` is the Tauri app, with its window in `tray/ui/index.html`, embedded
 at compile time. Platform-specific code stays behind `cfg`, and CI builds
 macOS, Linux, and Windows.

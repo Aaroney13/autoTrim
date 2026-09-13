@@ -7,43 +7,47 @@
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #f5f5f3; --side: #ecece8; --card: #ffffff; --line: #e0e0db; --fg: #1c1c1c; --muted: #6e6e6a; --faint: #a3a39f;
-    --hover: #e4e4df; --sel: #d8d8d2; --barbg: #dcdcd7;
-    --accent: #2f6f4e; --blue: #4a6fa5; --high: #c0392b; --med: #b7791f; --low: #4a6fa5; --danger: #b03a2e;
+    --bg: #f5f5f3; --side: #ecece8; --card: #ffffff; --line: #e0e0db; --fg: #232522; --muted: #62675e; --faint: #696e64;
+    --row-alt: #f0f2ed; --row-hover: #e3ebdf; --table-head: #e8ece3; --table-line: #d5dacf;
+    --hover: #e7e9e2; --sel: #dfe8dd; --soft: #eaf2e9; --amber-soft: #f7f0e3; --barbg: #dcdcd7;
+    --accent: #2f6f4e; --blue: #4a6fa5; --high: #c0392b; --med: #94621d; --low: #4a6fa5; --danger: #b03a2e;
     --k-agent: #2f6f4e; --k-browser: #4a6fa5; --k-app: #8a6d3b; --k-other: #8c8c88;
-    font: 13px/1.45 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    font: 13px/1.5 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #1c1c1e; --side: #161618; --card: #242427; --line: #303035; --fg: #ececec; --muted: #9c9c9c; --faint: #6b6b6f;
-            --hover: #26262b; --sel: #32323a; --barbg: #333338; --k-agent: #5fa981; --k-browser: #7f9fd1; --k-app: #c2a068; --k-other: #8c8c90; }
+    :root { --bg: #1c1c1e; --side: #161618; --card: #242427; --line: #303035; --fg: #ececec; --muted: #bdc1b7; --faint: #afb4a8; --accent: #92cba4; --blue: #9fbce6; --med: #e5bd79; --danger: #f59d91; --high: #f59d91; --low: #9fbce6; --soft: #29392e; --amber-soft: #3b3325;
+            --row-alt: #303034; --row-hover: #38413a; --table-head: #34363a; --table-line: #45464c;
+            --hover: #26262b; --sel: #303e34; --barbg: #333338; --k-agent: #5fa981; --k-browser: #7f9fd1; --k-app: #c2a068; --k-other: #8c8c90; }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--fg); display: flex; flex-direction: column; overflow: hidden; }
   a { color: inherit; text-decoration: none; }
-  button { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; white-space: nowrap; }
+  button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; white-space: nowrap; }
   button:hover { border-color: var(--muted); }
   button.confirm { border-color: var(--danger); color: var(--danger); }
   button.primary { border-color: var(--accent); color: var(--accent); }
   button[disabled] { opacity: .45; cursor: default; }
-  input, select { font: inherit; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  input, select { font: inherit; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  input::placeholder { color: var(--muted); opacity: 1; }
+  .icon { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; flex: none; }
   .muted { color: var(--muted); } .faint { color: var(--faint); }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 
-  header { padding: 12px 18px; border-bottom: 1px solid var(--line); display: flex; gap: 24px; align-items: center; background: var(--bg); }
-  header .mem { display: grid; gap: 6px; width: 340px; max-width: 42%; }
+  header { min-height: 83px; padding: 13px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 24px; align-items: center; background: var(--bg); }
+  header .mem { display: grid; gap: 6px; width: 370px; max-width: 46%; }
   header .mem .lbl { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  header .mem .lbl b { font-weight: 600; }
+  header .mem .lbl b { font-weight: 650; font-size: 15px; }
   header .meter { height: 6px; border-radius: 3px; background: var(--barbg); overflow: hidden; display: flex; }
   header .meter i { display: block; height: 100%; }
-  header .meter .used { background: var(--k-app); } header .meter .comp { background: var(--med); } header .meter .swapi { background: var(--high); }
+  header .meter .used { background: var(--k-agent); } header .meter .comp { background: var(--k-app); }
   header .stat { white-space: nowrap; font-variant-numeric: tabular-nums; }
   header .stat b { font-weight: 600; }
-  header .stat span { color: var(--muted); margin-left: 4px; }
+  header .stat span { color: var(--muted); display: block; font-size: 11px; }
   header .sync { margin-left: auto; display: flex; align-items: center; gap: 10px; }
   header .sync .txt { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  header .sync svg { width: 14px; height: 14px; flex: none; transform: rotate(-90deg); }
+  header .sync > svg { width: 14px; height: 14px; flex: none; transform: rotate(-90deg); }
   header .sync svg .track { fill: none; stroke: var(--barbg); stroke-width: 2.5; }
   header .sync svg .arc { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
   header .sync svg.due .arc { animation: pulse 1.2s ease-in-out infinite; }
@@ -55,28 +59,34 @@
 
   .body { flex: 1; display: flex; min-height: 0; }
 
-  nav { width: 248px; flex: none; overflow-y: auto; background: var(--side); border-right: 1px solid var(--line); padding: 8px 0 24px; }
-  nav h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 14px 4px; font-weight: 600; }
-  nav .item { display: grid; grid-template-columns: 8px 1fr auto; grid-template-areas: "dot name mem" ". cnt cnt"; column-gap: 8px; row-gap: 1px; align-items: center; padding: 5px 14px; cursor: pointer; }
+  nav { width: 213px; flex: none; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); padding: 14px 10px; display: flex; flex-direction: column; }
+  .nav-primary { flex: none; }
+  .nav-holders { flex: 1; min-height: 0; overflow-y: auto; margin-bottom: 14px; }
+  nav h3 { font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--muted); margin: 21px 10px 7px; font-weight: 600; display: flex; justify-content: space-between; gap: 6px; }
+  nav .item { display: grid; grid-template-columns: 8px 1fr auto; grid-template-areas: "dot name mem" ". cnt cnt"; column-gap: 9px; row-gap: 3px; align-items: center; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
   nav .item:hover { background: var(--hover); }
   nav .item.sel { background: var(--sel); }
+  nav .item.sel .name { font-weight: 600; }
   nav .item .dot { grid-area: dot; width: 8px; height: 8px; border-radius: 50%; background: var(--k-other); }
   nav .item .dot.agent { background: var(--k-agent); } nav .item .dot.browser { background: var(--k-browser); } nav .item .dot.app { background: var(--k-app); }
   nav .item .name { grid-area: name; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   nav .item .cnt { grid-area: cnt; color: var(--muted); font-size: 11px; white-space: nowrap; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; }
   nav .item .mem { grid-area: mem; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
-  nav .item.plain { grid-template-columns: 1fr auto; grid-template-areas: "name mem"; padding: 6px 14px 6px 30px; }
+  nav .item.plain { grid-template-columns: 16px minmax(0, 1fr) auto; grid-template-areas: "icon name mem"; padding: 7px 10px; border-radius: 6px; }
+  nav .item.plain .icon { grid-area: icon; color: var(--muted); }
+  nav .item.plain.sel .icon { color: var(--accent); }
+  nav .item.plain .name { font-size: 12px; }
   nav .item.plain .mem { color: var(--muted); font-size: 12px; }
-  nav .badge { background: var(--high); color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 600; }
-  nav .more { display: block; padding: 6px 14px 6px 30px; color: var(--muted); cursor: pointer; }
+  nav .badge { background: var(--barbg); color: var(--muted); border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 600; }
+  nav .more { display: block; padding: 8px 9px; border-radius: 6px; color: var(--muted); cursor: pointer; }
 
-  main { flex: 1; overflow-y: auto; padding: 16px 22px 40px; min-width: 0; }
-  main h1 { font-size: 17px; margin: 0; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  main h1 .pill { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 2px 7px; border-radius: 9px; background: var(--barbg); color: var(--muted); }
-  .sub { color: var(--muted); margin: 4px 0 14px; display: flex; gap: 14px; flex-wrap: wrap; }
+  main { flex: 1; overflow-y: auto; padding: 23px 25px 32px; min-width: 0; }
+  main h1 { font-size: 21px; margin: 0; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  main h1 .pill { font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0; padding: 2px 7px; border-radius: 9px; background: var(--barbg); color: var(--muted); }
+  .sub { color: var(--muted); font-size: 12px; margin: 5px 0 22px; display: flex; gap: 14px; flex-wrap: wrap; }
   .sub b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 20px 0 8px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-  h2 .tools { margin-left: auto; display: flex; gap: 6px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  h2 { font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--fg); margin: 23px 0 10px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  h2 .tools { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
   .cards { display: grid; gap: 8px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
   .card .t { font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
@@ -86,7 +96,7 @@
   .card .e { color: var(--muted); margin: 4px 0 0 20px; white-space: pre-line; }
   .card .a { margin: 6px 0 0 20px; }
   .note { color: var(--muted); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
-  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px; }
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 4px; }
   @media (max-width: 1100px) { .duo { grid-template-columns: 1fr; } }
   .card .h { font-weight: 600; display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
   .card .h .tag { margin-left: 0; }
@@ -96,21 +106,16 @@
   .card .row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
   .pending { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
   .pending div { display: flex; gap: 8px; justify-content: space-between; }
-  table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
-  tr:last-child td { border-bottom: 0; }
-  table.fixed { table-layout: fixed; }
-  table.fixed td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  table.fixed td:last-child { text-overflow: clip; padding-left: 4px; }
-  td.main { max-width: 0; width: 100%; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; }
+  th, td { text-align: left; vertical-align: middle; line-height: 1.5; }
+  td.num { font-weight: 500; }
   .l1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .l2 { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .state { white-space: nowrap; }
   tr.gone td { opacity: .45; }
-  .state.stale { color: var(--high); } .state.active { color: var(--accent); } .state.idle { color: var(--muted); }
-  .tag { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 5px; border-radius: 4px; background: var(--barbg); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
-  .tag.on { background: var(--accent); color: #fff; }
+  .state.stale { color: var(--med); } .state.active { color: var(--accent); } .state.idle { color: var(--muted); }
+  .tag { display: inline-block; font-size: 10px; text-transform: none; letter-spacing: 0; padding: 1px 5px; border-radius: 4px; background: var(--barbg); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
+  .tag.on { background: var(--soft); color: var(--accent); }
   .wrap { overflow-x: auto; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
   .chip { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 2px 10px; cursor: pointer; }
@@ -120,25 +125,181 @@
   .sub .tag { margin-left: 4px; }
   .kbar { height: 8px; border-radius: 4px; background: var(--barbg); overflow: hidden; display: flex; }
   .kbar i { display: block; height: 100%; background: var(--k-other); }
-  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); }
+  .legend { display: flex; gap: 12px 18px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--muted); }
   .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--k-other); margin-right: 6px; }
   .legend b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
   .kbar i.agent, .legend i.agent { background: var(--k-agent); } .kbar i.browser, .legend i.browser { background: var(--k-browser); } .kbar i.app, .legend i.app { background: var(--k-app); }
-  h2 small { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }
+  h2 small { margin-left: auto; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; text-align: right; }
   .log div { padding: 5px 0; border-bottom: 1px solid var(--line); }
   .log div:last-child { border-bottom: 0; }
   .log code { font-size: 12px; }
   .toast { position: fixed; right: 16px; bottom: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; max-width: 560px; box-shadow: 0 6px 24px rgba(0,0,0,.18); display: none; white-space: pre-line; z-index: 9; }
+
+  [hidden] { display: none !important; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+  a[data-goto]:hover { text-decoration: underline; }
+  .memory-detail { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
+  header { flex: none; }
+  header .sync { display: grid; grid-template-columns: 14px auto; justify-content: end; gap: 5px 7px; max-width: 230px; }
+  header .sync button { grid-column: 2; justify-self: end; display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; }
+  header .sync button .icon { width: 13px; height: 13px; }
+  header .sync .txt { white-space: normal; text-align: right; font-size: 11px; }
+  .nav-status { flex: none; border-top: 1px solid var(--line); padding: 14px 10px 2px; color: var(--muted); font-size: 11px; line-height: 1.9; }
+  .nav-status a { display: block; }
+  .nav-status .running { color: var(--accent); }
+  .nav-status .status-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: currentColor; }
+  .monitor-status { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 500; color: var(--muted); background: var(--barbg); }
+  .monitor-status.on { color: var(--accent); background: var(--soft); }
+  .monitor-status .icon { width: 13px; height: 13px; }
+  .advice-list { border: 1px solid var(--line); border-radius: 8px; background: var(--card); overflow: hidden; }
+  .advice-row { padding: 17px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; border-bottom: 1px solid var(--line); }
+  .advice-row:last-child { border-bottom: 0; }
+  .advice-row .t { font-weight: 600; }
+  .advice-row.high .t { color: var(--high); }
+  .advice-row .e { max-width: 62ch; color: var(--muted); font-size: 12px; white-space: pre-line; margin-top: 5px; }
+  .advice-row .impact { margin-top: 9px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .advice-row .impact b { color: var(--fg); font-size: 15px; }
+  .advice-row .a { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  .advice-row a { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 12px; color: var(--fg); white-space: nowrap; }
+  .advice-row:first-child a { border-color: var(--accent); color: var(--accent); }
+  .advice-row a:hover { background: var(--hover); text-decoration: none; }
+  .observations { display: grid; gap: 8px; margin-top: 12px; }
+  .observation { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 12px 13px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 12px; }
+  .observation > .icon { margin-top: 2px; color: var(--blue); }
+  .observation b { color: var(--fg); font-weight: 600; }
+  .observation .e { margin-top: 3px; white-space: pre-line; }
+  .observation a { color: var(--blue); white-space: nowrap; }
+  .list-toolbar { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin: 15px 0 12px; }
+  .list-toolbar .search { position: relative; flex: 1; min-width: 170px; }
+  .list-toolbar .search .icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+  .list-toolbar input[type=search] { width: 100%; padding-left: 33px; }
+  .list-toolbar select { max-width: 180px; }
+  .filter-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .filters { display: flex; gap: 4px; flex-wrap: wrap; }
+  .filters button { background: transparent; border-color: transparent; padding: 4px 9px; font-size: 12px; color: var(--muted); }
+  .filters button[aria-pressed=true] { background: var(--sel); color: var(--fg); }
+  .list-callout { background: var(--soft); border: 1px solid var(--sel); border-radius: 8px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .list-callout p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .scope { margin: 8px 0 11px; font-size: 12px; color: var(--muted); }
+  .compact-section { container-type: inline-size; margin-top: 8px; }
+  .compact-layout { display: grid; grid-template-columns: minmax(260px, 1fr) 250px; gap: 18px; align-items: start; }
+  .compact-list { min-width: 0; }
+  .compact-table { table-layout: fixed; border: 0; border-radius: 0; background: transparent; }
+  .compact-table th { padding: 8px 7px; font-size: 10px; font-weight: 500; background: transparent; color: var(--muted); border-bottom: 1px solid var(--line); }
+  .compact-table td { height: 53px; padding: 10px 7px; border-bottom: 1px solid var(--line); background: transparent; }
+  .compact-table tbody tr:nth-child(even) { --row-bg: transparent; }
+  .compact-table tbody tr:hover > td, .compact-table tbody tr:focus-within > td { background: var(--hover); }
+  .compact-table tr.inspected > td, .compact-table tr.selected > td { background: var(--sel); }
+  .compact-table tr.inspected > td:first-child { box-shadow: inset 2px 0 var(--accent); }
+  .compact-table .check { width: 29px; padding-left: 4px; padding-right: 6px; }
+  .compact-table .metric { width: 85px; font-size: 12px; }
+  .compact-table input[type=checkbox] { width: 14px; height: 14px; margin: 0; padding: 0; vertical-align: middle; accent-color: var(--accent); cursor: pointer; }
+  .compact-table .row-title { display: block; width: 100%; border: 0; border-radius: 2px; background: transparent; padding: 0; font-size: 12px; font-weight: 550; line-height: 1.5; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .compact-table .row-sub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 10px; white-space: nowrap; color: var(--muted); }
+  .compact-table .row-context { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .state-symbol { flex: none; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
+  .state-symbol.stale { background: var(--med); }
+  .state-symbol.active { background: var(--accent); }
+  .compact-table .stale-time { flex: none; color: var(--med); font-variant-numeric: tabular-nums; font-weight: 500; margin-right: 2px; }
+  .row-lock { display: inline-flex; color: var(--muted); }
+  .row-lock .icon { width: 12px; height: 12px; }
+  .list-inspector { min-width: 0; position: sticky; top: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  .inspector-kind { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
+  .row-state { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .row-state.stale { color: var(--med); }
+  .row-state.active { color: var(--accent); }
+  .list-inspector h3 { font-size: 15px; font-weight: 600; line-height: 1.45; margin: 14px 0 5px; overflow-wrap: anywhere; }
+  .list-inspector .context { color: var(--muted); font-size: 11px; margin: 0; overflow-wrap: anywhere; }
+  .inspector-metric { font-size: 25px; font-weight: 600; margin: 20px 0; font-variant-numeric: tabular-nums; }
+  .inspector-metric small { display: block; color: var(--muted); font-size: 10px; font-weight: 400; }
+  .list-inspector dl { display: grid; gap: 10px; margin: 18px 0; font-size: 11px; }
+  .list-inspector dl > div { display: grid; grid-template-columns: minmax(64px, .8fr) minmax(0, 1.2fr); gap: 12px; }
+  .list-inspector dt { color: var(--muted); }
+  .list-inspector dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .inspector-note { display: flex; gap: 8px; color: var(--muted); font-size: 10px; line-height: 1.6; margin: 15px 0; padding-top: 13px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+  .inspector-note .icon { width: 13px; height: 13px; margin-top: 2px; }
+  .inspector-actions { display: grid; gap: 7px; }
+  .inspector-actions button { width: 100%; font-size: 11px; white-space: normal; }
+  .list-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 14px; font-size: 11px; color: var(--muted); }
+  .list-footer .list-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .list-footer button { font-size: 11px; }
+  .compact-empty { padding: 28px 12px; text-align: center; color: var(--muted); border-block: 1px solid var(--line); }
+  @container (max-width: 580px) { .compact-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; } .list-inspector { position: static; } .list-inspector dl { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; } }
+  @container (max-width: 390px) { .list-inspector dl { grid-template-columns: minmax(0, 1fr); } }
+
+
+  .help { color: var(--muted); font-size: 12px; margin: 10px 0; }
+  .help summary { cursor: pointer; }
+  .help p { line-height: 1.6; }
+  .batch-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; margin: 12px 0; }
+  .batch-tools .scope { margin: 0 auto 0 0; }
+  .settings-card { padding: 17px; }
+  .settings-card > .h { margin-bottom: 8px; font-size: 14px; }
+  .settings-card > p { margin: 12px 0 16px; }
+  .settings-card .setting-row { padding: 15px 0; }
+  .settings-card .setting-row small { margin-top: 4px; }
+  .mode-choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+  .card .mode-choice { display: flex; align-items: flex-start; gap: 7px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin: 0; }
+  .mode-choice:has(input:checked) { background: var(--soft); border-color: var(--accent); }
+  .card .mode-choice input { margin: 3px 0 0; }
+  .mode-choice b { font-size: 12px; }
+  .mode-choice small { display: block; color: var(--muted); font-size: 11px; }
+  .setting-row { padding: 12px 0; border-top: 1px solid var(--line); }
+  .setting-row label { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .pending { line-height: 1.7; }
+  .pending div { flex-wrap: wrap; }
+  .history-entry { padding: 17px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); margin-bottom: 10px; }
+  .history-entry > p, .history-entry > details { margin-left: 34px; }
+  .event-icon { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; background: var(--soft); color: var(--accent); border-radius: 50%; flex: none; }
+  .event-icon.neutral { background: var(--barbg); color: var(--blue); }
+  .event-icon.warning { background: var(--amber-soft); color: var(--med); }
+  .event-icon .icon { width: 14px; height: 14px; }
+  .history-entry .event-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .history-entry time { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .history-entry p { font-size: 12px; color: var(--muted); margin: 6px 0 10px 34px; overflow-wrap: anywhere; }
+  .history-entry .result { color: var(--fg); }
+  .history-entry summary { color: var(--accent); cursor: pointer; font-size: 12px; }
+  .command { display: flex; gap: 10px; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 9px; margin-top: 10px; }
+  .command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; user-select: text; }
+  .command button { flex: none; font-size: 11px; }
+  .empty { text-align: center; padding: 25px 14px; color: var(--muted); }
+  dialog { border: 1px solid var(--line); border-radius: 12px; padding: 0; background: var(--bg); color: var(--fg); width: min(590px, calc(100vw - 32px)); max-height: calc(100vh - 40px); box-shadow: 0 20px 70px #0004; }
+  dialog::backdrop { background: #10171055; }
+  .review-content { padding: 23px; }
+  .review-content h2 { font-size: 21px; color: var(--fg); margin: 0 0 8px; }
+  .review-content p { font-size: 12px; color: var(--muted); margin: 8px 0 16px; }
+  .review-targets { max-height: 36vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  .review-target { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 13px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .review-target:last-child { border: 0; }
+  .review-target .l1, .review-target .l2 { white-space: normal; overflow-wrap: anywhere; }
+  .review-target .l2 { font-size: 12px; margin-top: 3px; }
+  .review-target:nth-child(even) { background: var(--row-alt); }
+  .review-target:hover, .review-target:focus-within { background: var(--row-hover); }
+  input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
+  .review-total { display: flex; justify-content: space-between; padding: 12px 0; font-size: 12px; gap: 10px; }
+  .review-total b { font-size: 16px; }
+  .recovery-note { display: flex; align-items: flex-start; gap: 10px; background: var(--soft); border-radius: 7px; padding: 12px 14px; margin: 6px 0 16px; font-size: 12px; }
+  .review-actions { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); padding-top: 16px; }
+  .review-actions .primary { background: var(--accent); color: var(--bg); }
+  #review-status { white-space: pre-line; }
+  @media (min-width: 1200px) { main { padding-left: 28px; padding-right: 28px; } }
+  @media (max-width: 850px) { nav { width: 190px; padding: 13px 7px; } main { padding: 19px 18px 32px; } header { gap: 16px; padding: 12px 15px; } header .sync { max-width: 170px; } .mode-choices { gap: 6px; } .card .mode-choice { padding: 8px; } }
+  @media (max-width: 620px) { header { flex-wrap: wrap; } header .mem { max-width: none; flex: 1; min-width: 190px; } header .sync { max-width: none; width: 100%; } .body { flex-direction: column; } nav { width: 100%; max-height: 140px; border-right: 0; border-bottom: 1px solid var(--line); display: block; } nav .item { margin: 2px 0; } .nav-status { display: none; } .nav-primary { display: flex; flex-wrap: wrap; } .nav-holders { display: none; } .observation { grid-template-columns: 16px minmax(0, 1fr); } .observation a { grid-column: 2; } .advice-row { grid-template-columns: 1fr; gap: 10px; } .advice-row a { justify-self: start; } main { padding: 18px 12px; } .mode-choices { grid-template-columns: 1fr; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
 </style>
 </head>
 <body>
 <header id="head"><span class="muted">loading…</span></header>
 <div class="body">
-  <nav id="side"></nav>
+  <nav id="side" aria-label="autoTrim navigation"></nav>
   <main id="main"><span class="muted">loading…</span></main>
 </div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status"></div>
+<dialog id="action-review" aria-labelledby="review-title" aria-describedby="review-description"></dialog>
 <script>
+function icon(name){const paths={lock:'<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',ports:'<path d="M8 3v5m8-5v5M6 8h12v4a6 6 0 0 1-12 0V8zm6 10v3"/>',history:'<path d="M3 11a9 9 0 1 1 2 7M3 4v7h7m2-5v6l4 2"/>',settings:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--side)"/><circle cx="15" cy="17" r="3" fill="var(--side)"/>',search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',check:'<path d="m5 12 4 4L19 6"/>',info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',back:'<path d="m10 5-7 7 7 7M3 12h18"/>',resume:'<path d="M3 9a9 9 0 1 1 0 7M3 3v6h6m3-3v6l4 2"/>'};return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name]||paths.info}</svg>`}
+
 const invoke = (...a) => window.__TAURI__.core.invoke(...a);
 const GB = 1024 ** 3, MB = 1024 ** 2;
 const bytes = b => b >= GB ? (b / GB).toFixed(1) + " GB" : b >= MB ? Math.round(b / MB) + " MB" : Math.round(b / 1024) + " KB";
@@ -151,10 +312,13 @@ const AGENT_LABEL = { claude_code: "Claude Code", codex: "Codex", cursor_agent: 
 
 const epochNow = () => Date.now() / 1000;
 
-const state = { snap: null, src: null, log: [], settings: null, service: null, view: "overview", showAll: false, tabSort: "idle", tabFilter: "", tabProfile: "", sessSort: "rss",
+const state = { snap: null, src: null, log: [], settings: null, service: null, view: "overview", showAll: false, tabSort: "idle", tabFilter: "", tabProfile: "", sessSort: "rss", sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), settingsBusy: false,
   // Things closed from here that the daemon's snapshot has not caught up with yet.
   gone: { tabs: new Set(), pids: new Set() } };
 const armed = {};
+const listModels = new Map();
+let actionReview = null;
+let settingsRevision = 0;
 const goneTab = t => state.gone.tabs.has(t.id);
 const goneSession = x => state.gone.pids.has(x.pid);
 
@@ -206,18 +370,15 @@ const holderByKey = key => holders(state.snap).find(h => h.key === key);
 
 function renderHeader() {
   const sys = state.snap.system, total = sys.total_mem;
-  const used = Math.min(100, sys.used_mem * 100 / total);
-  const comp = sys.compressed != null ? Math.min(used, sys.compressed * 100 / total) : 0;
-  const swap = sys.used_swap > 0 ? Math.min(100 - used, sys.used_swap * 100 / total) : 0;
-  const detail = [sys.compressed != null ? `${bytes(sys.compressed)} compressed` : "", sys.wired != null ? `${bytes(sys.wired)} wired` : "", sys.free_pct != null ? `${sys.free_pct}% free` : "",
-    sys.total_swap ? `swap ${bytes(sys.used_swap)} of ${bytes(sys.total_swap)}` : "no swap", `up ${dur(sys.uptime_secs)}`].filter(Boolean).join(" · ");
-  // The one figure beside the total: swap when any is in use, since that is
-  // the pressure signal; otherwise how much is compressed.
-  const side = sys.used_swap > 0 ? `<span class="state stale">${bytes(sys.used_swap)} swapped</span>` : sys.compressed != null ? `<span class="muted">${bytes(sys.compressed)} compressed</span>` : "";
+  const used = total > 0 ? Math.max(0, Math.min(100, sys.used_mem * 100 / total)) : 0;
+  const comp = total > 0 && sys.compressed != null ? Math.max(0, Math.min(used, sys.compressed * 100 / total)) : 0;
+  const detail = [sys.wired != null ? `${bytes(sys.wired)} wired` : "", sys.free_pct != null ? `${sys.free_pct}% free` : "", `up ${dur(sys.uptime_secs)}`].filter(Boolean).join(" · ");
   document.getElementById("head").innerHTML = `
-    <div class="mem" title="${esc(detail)}"><div class="lbl"><span><b>${bytes(sys.used_mem)}</b> <span class="muted">of ${bytes(total)} in use</span></span>${side}</div>
-      <div class="meter"><i class="used" style="width:${(used - comp).toFixed(1)}%"></i><i class="comp" style="width:${comp.toFixed(1)}%"></i><i class="swapi" style="width:${swap.toFixed(1)}%"></i></div></div>
-    <div class="stat" title="load ${sys.load_one.toFixed(1)} · ${sys.load_five.toFixed(1)} · ${sys.load_fifteen.toFixed(1)}"><b>${Math.round(sys.cpu_pct)}%</b><span>cpu</span></div>
+    <div class="mem" title="${esc(detail)}"><div class="lbl"><span><b>${bytes(sys.used_mem)}</b> <span class="muted">of ${bytes(total)}</span></span><span class="muted">In use</span></div>
+      <div class="meter" role="img" aria-label="${esc(`${bytes(sys.used_mem)} of ${bytes(total)} RAM in use`)}"><i class="used" style="width:${(used - comp).toFixed(1)}%"></i><i class="comp" style="width:${comp.toFixed(1)}%"></i></div>
+      <div class="memory-detail"><span>${sys.compressed != null ? `Includes ${bytes(sys.compressed)} compressed` : "Physical memory"}</span><span>${bytes(Math.max(0, total - sys.used_mem))} unused</span></div></div>
+    <div class="stat" title="${esc(`${bytes(sys.used_swap)} of ${bytes(sys.total_swap)} swap in use`)}"><b>${bytes(sys.used_swap)}</b><span>Swap on disk</span></div>
+    <div class="stat" title="load ${sys.load_one.toFixed(1)} · ${sys.load_five.toFixed(1)} · ${sys.load_fifteen.toFixed(1)}"><b>${Math.round(sys.cpu_pct)}%</b><span>CPU</span></div>
     ${syncMarkup()}`;
   document.getElementById("sync-btn").onclick = () => refresh({ fresh: true });
 }
@@ -251,7 +412,7 @@ const ringOffset = i => (RING * (1 - Math.min(1, i.age / i.period))).toFixed(2);
 function syncMarkup() {
   const i = syncInfo();
   const tip = i.running ? `the daemon samples every ${dur(i.period)}${i.due ? " and its next snapshot is due" : `; the next lands in ${dur(i.left)}`}, and this window picks it up within ${dur(POLL_MS / 1000)}` : "no daemon snapshot to read, so this window scans on its own";
-  return `<div class="sync" title="${esc(tip)}"><svg id="sync-ring" class="${i.busy ? "busy" : i.due ? "due" : ""}" viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5.5"/><circle class="arc" cx="7" cy="7" r="5.5" stroke-dasharray="${RING.toFixed(2)}" stroke-dashoffset="${ringOffset(i)}"/></svg><span class="txt" id="sync-txt">${esc(syncText(i))}</span><button id="sync-btn" ${i.busy ? "disabled" : ""} title="scan now instead of waiting for the daemon's next tick">Refresh</button></div>`;
+  return `<div class="sync" title="${esc(tip)}"><svg id="sync-ring" class="${i.busy ? "busy" : i.due ? "due" : ""}" viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5.5"/><circle class="arc" cx="7" cy="7" r="5.5" stroke-dasharray="${RING.toFixed(2)}" stroke-dashoffset="${ringOffset(i)}"/></svg><span class="txt" id="sync-txt">${esc(syncText(i))}</span><button id="sync-btn" ${i.busy ? "disabled" : ""} title="scan now instead of waiting for the daemon's next tick">${icon("resume")}Refresh</button></div>`;
 }
 // Once a second: move the text and the ring along, and poll on the usual
 // cadence, or every second once the daemon's next snapshot is due so the ring
@@ -272,24 +433,25 @@ function renderSide() {
   const hs = holders(s);
   const sel = k => state.view === k ? " sel" : "";
   const unmanaged = s.ports.filter(p => !p.owner_managed).length;
-  let html = `
-    <a class="item plain${sel("overview")}" data-view="overview"><span class="name">Overview</span><span class="mem">${s.advice.length ? `<span class="badge">${s.advice.length}</span>` : ""}</span></a>
-    <a class="item plain${sel("ports")}" data-view="ports"><span class="name">Listening ports</span><span class="mem">${unmanaged ? `${unmanaged} unmanaged` : s.ports.length || ""}</span></a>
-    <a class="item plain${sel("actions")}" data-view="actions"><span class="name">Actions</span><span class="mem"></span></a>
-    <a class="item plain${sel("settings")}" data-view="settings"><span class="name">Settings</span><span class="mem">${autoModeWord()}</span></a>
-    <h3>Largest holders</h3>`;
+  let html = `<div class="nav-primary">
+    <a class="item plain${sel("overview")}" data-view="overview">${icon("overview")}<span class="name">Overview</span><span class="mem">${s.advice.length ? `<span class="badge">${s.advice.length}</span>` : ""}</span></a>
+    <a class="item plain${sel("ports")}" data-view="ports">${icon("ports")}<span class="name">Listening ports</span><span class="mem">${s.ports.length ? `<span class="badge" title="${unmanaged} unmanaged of ${s.ports.length} ports" aria-label="${unmanaged ? `${unmanaged} unmanaged ports` : `${s.ports.length} managed ports`}">${unmanaged || s.ports.length}</span>` : ""}</span></a>
+    <a class="item plain${sel("actions")}" data-view="actions">${icon("history")}<span class="name">Actions</span><span class="mem"></span></a>
+    <a class="item plain${sel("settings")}" data-view="settings">${icon("settings")}<span class="name">Settings</span><span class="mem">${autoModeWord()}</span></a>
+    </div><div class="nav-holders"><h3>Largest holders <span style="font-weight:400;white-space:nowrap">Memory ↓</span></h3>`;
   const LIMIT = 20;
   const shown = state.showAll ? hs : hs.slice(0, LIMIT);
   html += shown.map(h => `<a class="item${sel(h.key)}" data-view="${esc(h.key)}" title="${esc(h.name)} · ${plural(h.procs, "process")} · ${pct(h.rss, s.system.total_mem)} of RAM · ${h.cpu.toFixed(1)}% cpu">
       <span class="dot ${h.kind}"></span><span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="cnt">${esc(h.count)}</span></a>`).join("");
   if (hs.length > shown.length) html += `<span class="more" data-more="1">${hs.length - shown.length} more…</span>`;
   else if (state.showAll && hs.length > LIMIT) html += `<span class="more" data-more="0">show fewer</span>`;
+  html += `</div><div class="nav-status"><span class="${state.src.daemon_running ? "running" : ""}">${state.src.daemon_running ? '<i class="status-dot" aria-hidden="true"></i>Running in background' : "Background monitor stopped"}</span><a href="#settings" data-view="settings">Auto mode ${esc(autoMode(state.settings).replace("preview", "in preview"))}</a></div>`;
   const nav = document.getElementById("side");
-  const scroll = nav.scrollTop;
+  const scroll = nav.querySelector(".nav-holders")?.scrollTop ?? 0;
   nav.innerHTML = html;
-  nav.scrollTop = scroll;
-  nav.querySelectorAll("[data-view]").forEach(a => a.onclick = () => { state.view = a.dataset.view; renderSide(); renderMain(true); });
-  nav.querySelectorAll("[data-more]").forEach(a => a.onclick = () => { state.showAll = a.dataset.more === "1"; renderSide(); });
+  nav.querySelector(".nav-holders").scrollTop = scroll;
+  nav.querySelectorAll("[data-view]").forEach(a => { a.href = "#" + encodeURIComponent(a.dataset.view); if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); a.onclick = e => { e.preventDefault(); navigate(a.dataset.view); }; });
+  nav.querySelectorAll("[data-more]").forEach(a => { a.setAttribute("role", "button"); a.tabIndex = 0; a.onclick = () => { state.showAll = a.dataset.more === "1"; renderSide(); }; a.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); a.click(); } }; });
 }
 
 // ---- views ----
@@ -306,15 +468,28 @@ function adviceTarget(a) {
 }
 
 function adviceCards(list) {
-  if (!list.length) return `<div class="card"><div class="muted">Nothing to do.</div></div>`;
-  return list.map(a => { const t = adviceTarget(a); return `<div class="card ${a.severity}"><div class="t"><span>${esc(a.title)}</span>${t ? `<a data-goto="${esc(t)}">show ›</a>` : ""}</div><div class="e">${esc(a.evidence.join("\n"))}</div><div class="a">→ ${esc(a.action)}</div></div>`; }).join("");
+  if (!list.length) return `<div class="note">Nothing needs attention right now. autoTrim will keep monitoring.</div>`;
+  return `<div class="advice-list">${list.map(a => {
+    const target = adviceTarget(a);
+    const estimate = ["browser_sprawl", "conversation_tabs"].includes(a.id);
+    const recovery = a.recovery > 0 ? `<div class="impact"><b>${estimate ? "≈ " : ""}${bytes(a.recovery)}</b><span>${estimate ? "estimated memory" : "memory held"}</span></div>` : "";
+    const label = target === "ports" ? "Review servers" : target && holderByKey(target)?.kind === "agent" ? "Review sessions" : target && holderByKey(target)?.browser ? "Review browser" : "View details";
+    return `<div class="advice-row ${esc(a.severity)}"><div><div class="t">${esc(a.title)}</div><div class="e">${esc(a.evidence.join("\n"))}</div>${recovery}${!target ? `<div class="a">${esc(a.action)}</div>` : ""}</div>${target ? `<a data-goto="${esc(target)}" title="${esc(a.action)}">${label}</a>` : ""}</div>`;
+  }).join("")}</div>`;
 }
 
-function trendsTable(list) {
+function observationCards(list) {
+  return `<section class="observations" aria-label="Recent observations">${list.map(a => {
+    const target = adviceTarget(a), holder = target && holderByKey(target);
+    const label = holder?.browser ? "View browser" : holder?.kind === "agent" ? "View sessions" : target === "ports" ? "View servers" : "View details";
+    return `<div class="observation">${icon("info")}<div><b>${esc(a.title)}</b><div class="e">${esc(a.evidence.join("\n"))}</div>${!target && a.action ? `<div class="e">${esc(a.action)}</div>` : ""}</div>${target ? `<a data-goto="${esc(target)}" title="${esc(a.action)}">${label}</a>` : ""}</div>`;
+  }).join("")}</section>`;
+}
+
+function trendsTable(list, title = "Trends", scope = "trends") {
   if (!list.length) return "";
-  return `<h2>Trends <small class="muted">over the last ${dur(Math.max(...list.map(t => t.span_secs)))}</small></h2><div class="wrap"><table>
-    <tr><th>Name</th><th class="num">Now</th><th class="num">Change</th><th class="num">Rate / h</th><th class="num">CPU</th></tr>` +
-    list.map(t => { const sg = t.growth >= 0 ? "+" : "−"; return `<tr><td>${esc(t.name)}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">${sg}${bytes(Math.abs(t.growth))}</td><td class="num">${sg}${bytes(Math.abs(t.bytes_per_hour))}</td><td class="num" title="mean over the window; ${Math.round(t.rising_frac * 100)}% of samples rising">${t.cpu_mean.toFixed(0)}%</td></tr>`; }).join("") + `</table></div>`;
+  const rows = list.map(t => ({ id: t.key, title: t.name, context: `${signedBytes(t.growth)} over ${dur(t.span_secs)}`, type: "Memory trend", metric: bytes(t.rss_now), metricLabel: "In memory now", facts: [["Change", signedBytes(t.growth)], ["Rate / hour", signedBytes(t.bytes_per_hour)], ["Mean CPU", t.cpu_mean.toFixed(1) + "%"], ["Window", dur(t.span_secs)], ["Samples rising", Math.round(t.rising_frac * 100) + "%"]], note: "Changes compare the start and end of the observation window. Memory growth is advice, never an automatic action." }));
+  return `<h2>${esc(title)} <small>over the last ${dur(Math.max(...list.map(t => t.span_secs)))}</small></h2>` + compactList(scope, rows, { label: title, title: "Process / change", metric: "Now", noun: "trend" });
 }
 
 // ---- the two switches: auto mode, and running in the background ----
@@ -322,7 +497,8 @@ function controlCards() {
   if (!state.settings || !state.service) return `<p class="note">Settings could not be read from the app.</p>`;
   return `<div class="duo">${autoCard()}${backgroundCard()}</div>`;
 }
-const autoModeWord = () => { const c = state.settings; return !c ? "" : !(c.auto_close_sessions || c.auto_stop_servers) ? "" : c.auto_dry_run ? "dry run" : "auto"; };
+const autoMode = c => !c || !(c.auto_close_sessions || c.auto_stop_servers) ? "off" : c.auto_dry_run ? "preview" : "on";
+const autoModeWord = () => autoMode(state.settings) === "off" ? "" : autoMode(state.settings) === "preview" ? "preview only" : "on";
 
 // What auto mode has warned about and is waiting on, with the time left.
 function pendingList(a) {
@@ -330,41 +506,28 @@ function pendingList(a) {
   return `<div class="pending">${a.pending.map(p => `<div><span class="l1" title="${esc(p.target + " · " + p.detail)}">${esc(p.target)} <span class="muted">· ${esc(p.detail)} · ${bytes(p.rss)}</span></span><span class="num state stale">${a.dry_run ? "would close" : "closing"} in ${dur(Math.max(0, p.due_at - now))}</span></div>`).join("")}</div>`;
 }
 
-// The overview's one line about the switches: their state, and anything
-// auto mode is about to close. The switches themselves are in Settings.
-function statusLine() {
-  const c = state.settings, sv = state.service, src = state.src, a = state.snap.auto;
-  if (!c || !sv) return "";
-  const on = c.auto_close_sessions || c.auto_stop_servers;
-  const mode = !on ? "off" : c.auto_dry_run ? "dry run" : "on";
-  const daemon = sv.installed && sv.running ? ["login service", "on"] : src.daemon_running ? ["foreground", ""] : ["not running", ""];
-  const pending = a && a.pending.length ? `<span class="state stale">${plural(a.pending.length, "pending close")}</span>` : "";
-  return `<span>auto mode<span class="tag ${on && !c.auto_dry_run ? "on" : ""}">${mode}</span></span><span>daemon<span class="tag ${daemon[1]}">${daemon[0]}</span></span>${pending}<a data-goto="settings">Settings ›</a>`;
-}
-
 // The file's settings are the switches; what the daemon is running with
 // (the snapshot's `auto`) says whether they have been picked up yet and
 // what is about to be closed.
 function autoCard() {
-  const c = state.settings, a = state.snap.auto, src = state.src;
-  const on = c.auto_close_sessions || c.auto_stop_servers;
-  const mode = !on ? "off" : c.auto_dry_run ? "dry run" : "on";
-  const box = (key, label, checked, title) => `<label title="${esc(title)}"><input type="checkbox" data-auto="${key}" ${checked ? "checked" : ""}>${label}</label>`;
-  let html = `<div class="card"><div class="h">Auto mode <span class="tag ${on && !c.auto_dry_run ? "on" : ""}">${mode}</span><a data-goto="actions">log ›</a></div>`;
-  if (c.config_error) html += `<div class="state stale" style="margin-bottom:6px">config.toml could not be read, so these are the defaults: ${esc(c.config_error)}</div>`;
-  html += box("close_sessions", "Close stale agent sessions", c.auto_close_sessions, "sessions idle by their own transcript for longer than the stale threshold, quiet, under an allowed host, and never the newest in a project")
-    + box("stop_servers", "Stop old local servers", c.auto_stop_servers, "quiet listeners open for over a day whose owner is a known dev runtime (node, python, ruby, …), started from a terminal rather than an app")
-    + box("dry_run", "Dry run: log and notify, close nothing", c.auto_dry_run, "the way to try it for a week; every would-be close lands in the Actions list");
-  html += `<div class="muted" style="margin-top:6px">Warns first, then waits ${dur(c.auto_grace_minutes * 60)}; anything used in between is spared. Never the newest session in a project, never a host outside ${esc(c.auto_hosts.join(", "))}. The rest is in config.toml.</div>`;
-  if (!src.daemon_running) html += `<div class="muted" style="margin-top:6px">Auto mode runs inside the daemon, and no daemon is running.</div>`;
+  const c = state.settings, a = state.snap.auto, mode = autoMode(c), busy = state.settingsBusy;
+  let html = `<div class="card settings-card"><div class="h">Auto mode <a data-goto="actions">View actions</a></div><div class="muted">Preview what autoTrim would close before turning automatic closing on.</div>`;
+  if (c.config_error) html += `<p class="state stale">Settings could not be read; defaults are shown: ${esc(c.config_error)}</p>`;
+  html += `<div class="mode-choices" role="group" aria-label="Auto mode">${[["off", "Off", "You close things"], ["preview", "Preview only", "Log, never close"], ["on", "On", "Warn, then close"]].map(([value, label, sub]) => `<label class="mode-choice"><input type="radio" name="auto-mode" data-auto-mode="${value}" ${mode === value ? "checked" : ""} ${busy || c.config_error ? "disabled" : ""}><span><b>${label}</b><small>${sub}</small></span></label>`).join("")}</div>`;
+  html += `<p class="muted">${mode === "off" ? "Monitoring and advice continue. All closing stays manual." : mode === "preview" ? "Preview records what would have closed in Actions. Nothing is closed." : `Warns first, then waits ${dur(c.auto_grace_minutes * 60)}. Anything used during that time is spared.`}</p>`;
+  for (const [key, label, checked, detail] of [["close_sessions", "Close stale agent sessions", c.auto_close_sessions, `Idle past ${dur(c.stale_after_secs ?? 21600)}, with transcript and CPU evidence.`], ["stop_servers", "Stop old local servers", c.auto_stop_servers, `Quiet dev servers open past ${dur(c.port_stale_after_secs ?? 86400)}.`]]) {
+    html += `<div class="setting-row"><label><span>${label}<small class="muted" style="display:block">${detail}</small></span><input type="checkbox" data-auto="${key}" ${checked ? "checked" : ""} ${busy || mode === "off" || c.config_error ? "disabled" : ""}></label></div>`;
+  }
+  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, and the newest session in each project. Only these hosts are allowed: ${esc(c.auto_hosts.join(", ") || "none")}. Activity during the grace period cancels that target’s close.</p></details>`;
+  if (!state.src.daemon_running) html += `<p class="note">The background monitor is stopped. Start it below for auto mode to run.</p>`;
   else if (a) {
     const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.dry_run === c.auto_dry_run;
-    if (!applied) html += `<div class="muted" style="margin-top:6px">Applying… the daemon picks changes up on its next tick.</div>`;
-    else if (a.pending.length) html += pendingList(a);
-    else if (on) html += `<div class="muted" style="margin-top:6px">Nothing is waiting to be closed.</div>`;
+    if (!applied || busy) html += `<p class="muted" role="status">Applying… the background monitor picks up changes on its next sample.</p>`;
+    if (a.pending.length) html += pendingList(a) + (mode !== "off" ? `<div class="row2"><button data-auto-off ${busy ? "disabled" : ""}>Turn off auto mode</button><span class="muted">Cancels pending closes when the change is picked up.</span></div>` : "");
+    else if (mode !== "off" && applied) html += `<p class="muted">Nothing is waiting to be closed.</p>`;
   }
   const dry = state.log.filter(r => r.mode === "dry-run");
-  if (dry.length) html += `<div class="muted" style="margin-top:6px">Dry run so far: ${plural(dry.length, "would-be close")} among the last ${state.log.length} logged actions, about ${bytes(dry.reduce((n, r) => n + (r.rss || 0), 0))}.</div>`;
+  if (dry.length) html += `<p class="muted">Preview history: ${plural(dry.length, "would-be close")} among the last ${state.log.length} logged actions.</p>`;
   return html + `</div>`;
 }
 
@@ -372,26 +535,31 @@ function backgroundCard() {
   const sv = state.service, src = state.src, c = state.settings;
   let status, buttons = "";
   if (!sv.supported) status = "The login service is macOS only so far; run <code>autotrim daemon</code> under your own supervisor.";
-  else if (sv.installed && sv.running) { status = `Running as a login service${sv.pid ? ` (pid ${sv.pid})` : ""}, started at every login${sv.binary ? `, from ${esc(sv.binary)}` : ""}.`; buttons = `<button data-service="restart" title="restart the daemon, for example after rebuilding it">Restart</button> <button data-service="uninstall" title="stop the daemon and remove the login service; data is kept">Stop login service</button>`; }
+  else if (sv.installed && sv.running) { status = `Starts at login and keeps monitoring when this window is closed.`; buttons = `<button data-service="restart" title="restart the daemon, for example after rebuilding it">Restart</button> <button data-service="uninstall" title="stop the daemon and remove the login service; data is kept">Stop login service</button>`; }
   else if (sv.installed) { status = "The login service is installed but the daemon is not running."; buttons = `<button class="primary" data-service="restart">Start</button> <button data-service="uninstall">Remove login service</button>`; }
   else if (src.daemon_running) { status = "A daemon is running in the foreground, in a terminal. As a login service it would outlive that terminal and start at every login."; buttons = `<button class="primary" data-service="install">Run in background</button>`; }
   else { status = "Nothing is running in the background, so this window scans on its own: no trends, no reminders, no auto mode. Run in background installs the daemon as a login service."; buttons = `<button class="primary" data-service="install">Run in background</button>`; }
   const tag = sv.installed && sv.running ? `<span class="tag on">login service</span>` : src.daemon_running ? `<span class="tag">foreground</span>` : `<span class="tag">not running</span>`;
-  return `<div class="card"><div class="h">In the background ${tag}</div>
+  return `<div class="card settings-card"><div class="h">Run in background ${tag}</div>
     <div class="muted">${status}</div>
+    ${sv.binary || sv.pid ? `<details class="help" data-keep-open="service-details"><summary>Service details</summary><p>${sv.pid ? `PID: ${sv.pid}<br>` : ""}${esc(sv.binary || "")}</p></details>` : ""}
     <div class="row2">${buttons}</div>
     <label style="margin-top:8px" title="off: the app starts as a menu bar item only; Open autoTrim… in its menu brings the window back"><input type="checkbox" data-launch-window ${c.open_window_at_launch ? "checked" : ""}>Open this window when the app starts</label>
     <div class="row2"><button data-hide>Hide window</button><span class="muted">The menu bar item stays. The daemon keeps working with the window closed, and with the app quit.</span></div></div>`;
 }
 
 
+const isObservation = a => a.severity !== "high" && /^(growth:|cpu:|page_growth:)/.test(a.id);
+
 function viewOverview() {
   const s = state.snap, a = s.auto;
   const trends = (s.trends || []).filter(t => t.kind !== "renderer" && t.span_secs >= 600).slice(0, 8);
-  return `<h1>Overview</h1>
-    <div class="sub"><span><b>${plural(s.sessions.filter(x => !goneSession(x)).length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span>${statusLine()}</div>
+  const observations = s.advice.filter(isObservation), advice = s.advice.filter(a => !isObservation(a));
+  return `<h1>Overview <span class="monitor-status ${state.src.daemon_running ? "on" : ""}">${icon(state.src.daemon_running ? "check" : "info")}${state.src.daemon_running ? "Monitoring" : "Manual scans"}</span></h1>
+    <div class="sub"><span><b>${plural(s.sessions.filter(x => !goneSession(x)).length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span></div>
     ${a && a.pending.length ? `<div class="card">${pendingList(a)}</div>` : ""}
-    <h2>Advice</h2><div class="cards">${adviceCards(s.advice)}</div>
+    <h2>Worth a look <small>Choose what to review</small></h2>${adviceCards(advice)}
+    ${observations.length ? observationCards(observations) : ""}
     ${kindBar()}
     ${trendsTable(trends)}
     ${!state.src.daemon_running ? `<p class="note" style="margin-top:16px">The daemon is not running, so this window is scanning on its own and there are no trends. Start it from Settings.</p>` : (trends.length ? "" : `<p class="note" style="margin-top:16px">Trends appear once the daemon has about ten minutes of history.</p>`)}`;
@@ -404,121 +572,105 @@ function kindBar() {
   const total = Object.values(sum).reduce((n, v) => n + v, 0);
   if (!total) return "";
   const kinds = [["agent", "Agent sessions"], ["browser", "Browsers"], ["app", "Apps"], ["other", "Other processes"]].filter(([k]) => sum[k]);
-  return `<h2>By kind <small class="muted">${plural(state.snap.groups.length, "holder")}, as the sidebar lists them</small></h2><div class="card">
+  return `<h2>Memory by kind <small class="muted">${plural(state.snap.groups.length, "holder")}</small></h2>
     <div class="kbar">${kinds.map(([k]) => `<i class="${k}" style="width:${(sum[k] * 100 / total).toFixed(1)}%"></i>`).join("")}</div>
-    <div class="legend">${kinds.map(([k, l]) => `<span><i class="${k}"></i>${l} <b>${bytes(sum[k])}</b></span>`).join("")}</div></div>`;
+    <div class="legend">${kinds.map(([k, l]) => `<span><i class="${k}"></i>${l} <b>${bytes(sum[k])}</b></span>`).join("")}</div>`;
 }
 
 function viewSettings() {
-  return `<h1>Settings</h1><div class="sub"><span>Auto mode and running in the background. Everything else is in config.toml.</span></div>${controlCards()}`;
+  return `<h1>Settings</h1><div class="sub"><span>Choose how autoTrim runs and when it can act.</span></div>${controlCards()}`;
 }
 
-function sessionRows(list) {
-  const sort = state.sessSort;
-  list = list.slice().sort((a, b) => sort === "idle" ? ((b.idle_secs ?? b.quiet_for_secs ?? -1) - (a.idle_secs ?? a.quiet_for_secs ?? -1)) : sort === "age" ? b.age_secs - a.age_secs : sort === "name" ? String(a.session_name ?? a.project).localeCompare(String(b.session_name ?? b.project)) : b.rss - a.rss);
-  return list.map(x => {
-    const gone = goneSession(x);
-    const since = x.idle_secs != null ? `idle ${dur(x.idle_secs)}` : (x.quiet_for_secs ? `quiet ${dur(x.quiet_for_secs)}` : "");
-    const st = gone ? "closed" : x.state === "active" ? "active" : x.state === "idle" ? (since || "idle") : (since ? `stale · ${since}` : "stale");
-    const name = x.session_name || x.project || "?";
-    const sub = [x.project, x.host, `pid ${x.pid}`].filter(Boolean);
-    if (x.first_prompt && x.first_prompt !== name) sub.unshift(x.first_prompt);
-    const can = !x.is_self && x.state !== "active" && !gone && !x.engine;
-    const engineNote = `${x.host}'s own agent engine: it serves the threads the app shows and the app restarts it if closed. Close threads in the app instead.`;
-    return `<tr class="${gone ? "gone" : x.state}"><td class="main"><div class="l1" title="${esc(name)}">${esc(name)}${x.is_self ? `<span class="tag on">this app</span>` : ""}${x.engine ? `<span class="tag" title="${esc(engineNote)}">app engine</span>` : ""}</div><div class="l2" title="${esc(sub.join(" · "))}">${esc(sub.join(" · "))}</div></td>
-      <td class="state ${gone ? "idle" : x.state}">${esc(st)}</td><td class="num">${dur(x.age_secs)}</td><td class="num">${(x.cpu_window_mean ?? x.cpu).toFixed(1)}%</td><td class="num">${bytes(x.rss)}</td><td class="num muted">${x.ports.join(", ") || "–"}</td>
-      <td class="num"><button ${can ? "" : "disabled"} data-close-session="${x.pid}" title="${x.is_self ? "this is the session running autoTrim" : x.engine ? esc(engineNote) : x.state === "active" ? "busy right now" : "close it; the transcript stays and the resume command is logged"}">Close</button></td></tr>`;
-  }).join("");
+const compactDuration = seconds => seconds == null || !Number.isFinite(seconds) ? "" : seconds >= 86400 ? Math.floor(seconds / 86400) + "d" : seconds >= 3600 ? Math.floor(seconds / 3600) + "h" : seconds >= 60 ? Math.floor(seconds / 60) + "m" : "<1m";
+const signedBytes = n => (n < 0 ? "−" : "+") + bytes(Math.abs(n));
+const sessionKey = x => `${x.pid}:${x.start_time}`;
+const tabKey = (b, t) => JSON.stringify([b.name, t.id, t.profile, t.url]);
+const sessionName = x => x.session_name || x.project || "Unnamed session";
+const sessionProtection = x => goneSession(x) ? "Closed" : x.is_self ? "This session" : x.engine ? "App engine" : x.state === "active" ? "In use" : "";
+function reconcileList(key, rows) {
+  let saved = state.listState.get(key);
+  if (!saved) { saved = { inspected: null, selected: new Set() }; state.listState.set(key, saved); }
+  const eligible = new Set(rows.filter(r => r.eligible).map(r => r.id));
+  saved.selected = new Set([...saved.selected].filter(id => eligible.has(id)));
+  if (!rows.some(r => r.id === saved.inspected)) saved.inspected = rows[0]?.id ?? null;
+  return saved;
+}
+function rowStatus(r) {
+  return `<span class="row-state ${esc(r.status || '')}"><i class="state-symbol ${esc(r.status || '')}" aria-hidden="true"></i>${esc(r.statusLabel || "Idle")}</span>`;
+}
+function compactInspector(r, label) {
+  if (!r) return "";
+  return `<aside class="list-inspector" aria-label="${esc(label)} details"><div class="inspector-kind"><span>${esc(r.type)}</span>${r.statusLabel ? rowStatus(r) : icon("history")}</div><h3>${esc(r.title)}</h3><p class="context">${esc(r.context)}</p><div class="inspector-metric">${esc(r.detailMetric ?? r.metric)}<small>${esc(r.metricLabel)}</small></div><dl>${r.facts.map(([k,v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>${r.note ? `<div class="inspector-note">${icon("info")}<span>${esc(r.note)}</span></div>` : ""}${r.action ? `<div class="inspector-actions">${r.action}</div>` : ""}</aside>`;
+}
+function compactList(key, rows, options) {
+  key = state.view + ":" + key;
+  const saved = reconcileList(key, rows), inspected = rows.find(r => r.id === saved.inspected);
+  listModels.set(key, { rows, options, saved });
+  if (!rows.length) return `<div class="compact-empty">${esc(options.empty || "Nothing to show.")}</div>`;
+  const eligible = rows.filter(r => r.eligible), chosen = eligible.filter(r => saved.selected.has(r.id));
+  const controls = r => `data-list="${esc(key)}" data-row="${esc(r.id)}"`;
+  const selectedMemory = chosen.reduce((n, r) => n + (r.rss || 0), 0);
+  const stale = eligible.filter(r => r.status === "stale");
+  return `<section class="compact-section" aria-label="${esc(options.label)}"><div class="compact-layout"><div class="compact-list"><table class="compact-table"><thead><tr>${options.review ? `<th class="check"><input type="checkbox" data-list-all="${esc(key)}" data-list-control="${esc(key)}:all" aria-label="Select all eligible ${esc(options.plural)}" ${chosen.length && chosen.length === eligible.length ? "checked" : ""} ${eligible.length ? "" : "disabled"}></th>` : ""}<th>${esc(options.title)}</th><th class="num metric">${esc(options.metric)}</th></tr></thead><tbody>${rows.map(r => `<tr class="${r.id === saved.inspected ? 'inspected' : ''} ${saved.selected.has(r.id) ? 'selected' : ''}">${options.review ? `<td class="check">${r.eligible ? `<input type="checkbox" data-list-select ${controls(r)} data-list-control="${esc(key + ':select:' + r.id)}" aria-label="Select ${esc(r.title)}" ${saved.selected.has(r.id) ? "checked" : ""}>` : `<span class="row-lock" title="${esc(r.protection)}" aria-label="${esc(r.protection)}">${icon("lock")}</span>`}</td>` : ""}<td><button class="row-title" data-list-inspect ${controls(r)} data-list-control="${esc(key + ':inspect:' + r.id)}" aria-pressed="${r.id === saved.inspected}" title="${esc(r.title)}">${esc(r.title)}</button><span class="row-sub">${r.status ? `<i class="state-symbol ${esc(r.status)}" role="img" aria-label="${esc(r.statusLabel)}" title="${esc(r.statusLabel)}"></i>` : ""}${r.status === "stale" && compactDuration(r.idle) ? `<span class="stale-time" title="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}" aria-label="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}">${esc(compactDuration(r.idle))}</span>` : ""}<span class="row-context">${esc(r.context)}</span></span></td><td class="num metric">${esc(r.metric)}</td></tr>`).join("")}</tbody></table>${options.review ? `<div class="list-footer"><span>${chosen.length ? `${plural(chosen.length, options.noun)} selected${selectedMemory ? ` · ${options.estimated ? '≈ ' : ''}${bytes(selectedMemory)}${options.estimated ? ' estimated' : ''}` : ''}` : 'Select a name for details.'}</span><div class="list-actions">${chosen.length ? `<button data-list-clear="${esc(key)}">Clear</button><button class="primary" data-list-review="${esc(key)}">Review ${plural(chosen.length, options.noun)}</button>` : `${stale.length ? `<button data-list-stale="${esc(key)}">Review ${plural(stale.length, 'stale ' + options.noun)}</button>` : ''}<button data-list-eligible="${esc(key)}" ${eligible.length ? '' : 'disabled'}>Select eligible rows</button>`}</div></div>` : ""}</div>${compactInspector(inspected, options.noun)}</div></section>`;
+}
+function sessionTable(list) {
+  const rows = list.filter(x => !goneSession(x)).map(x => {
+    const idle = x.idle_secs ?? x.quiet_for_secs, protection = sessionProtection(x);
+    const engineNote = `${x.host}'s agent engine serves the app's threads. Close those threads in the app.`;
+    return { id: sessionKey(x), data: x, title: sessionName(x), context: x.project || x.host, type: "Agent", status: x.state, statusLabel: protection || (x.state === "stale" ? "Stale" : "Idle"), idle, idleLabel: x.idle_secs != null ? "Last activity" : "CPU quiet for", idleIsDuration: x.idle_secs == null,
+      metric: bytes(x.rss), metricLabel: "In memory now", rss: x.rss, eligible: canCloseSession(x), protection,
+      facts: [["Host", x.host], ["Open", dur(x.age_secs)], ["CPU", (x.cpu_window_mean ?? x.cpu ?? 0).toFixed(1) + "%"], ["PID", x.pid], ["Ports", (x.ports || []).join(", ") || "None"], [x.idle_secs != null ? "Last activity" : "CPU quiet for", x.state === "active" ? "Working now" : idle != null ? dur(idle) + (x.idle_secs != null ? " ago" : "") : "Unknown"]],
+      note: x.engine ? engineNote : `${x.first_prompt && x.first_prompt !== sessionName(x) ? x.first_prompt + '\n\n' : ''}${x.idle_secs != null ? 'The transcript stays on disk. Available resume commands are saved in Actions after closing.' : 'Idle time comes from CPU observations; transcript activity is unavailable. Available resume commands are saved in Actions.'}`,
+      action: protection ? `<button disabled>${esc(protection)} · kept open</button>` : `<button class="primary" data-close-session="${x.pid}">Review close</button>` };
+  });
+  return compactList("sessions", rows, { label: "Agent sessions", title: "Session / project", metric: "Memory", noun: "session", plural: "sessions", review: chosen => reviewSessions(chosen.map(r => r.data)), empty: "No sessions match. Try another search or choose All sessions." });
 }
 
 function viewAgents(h) {
-  const s = state.snap;
-  const live = h.sessions.filter(x => !goneSession(x));
-  const stale = live.filter(x => x.state === "stale" && !x.is_self && !x.engine);
-  const trend = (s.trends || []).find(t => t.key === "g:" + h.name && t.span_secs >= 600);
-  // The group's memory less its sessions' is the folded-in app's own.
+  const s = state.snap, live = h.sessions.filter(x => !goneSession(x)), visible = filteredSessions(h.sessions);
   const appRss = h.app ? Math.max(0, h.rss - h.sessions.reduce((n, x) => n + x.rss, 0)) : 0;
   const ports = s.ports.filter(p => h.pids.includes(p.pid) && !h.sessions.some(x => (x.pids || []).includes(p.pid)));
-  let html = `<h1>${esc(h.name)} <span class="pill">agent</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span>${h.app ? `<span>the <b>${esc(h.app)}</b> app is <b>${bytes(appRss)}</b> of it</span>` : ""}<span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(live.length, "session")}</b></span><span><b>${stale.length}</b> stale</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>
-    <h2>Sessions <span class="tools">sort <select data-sess-sort>${["rss","idle","age","name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"memory",idle:"idle",age:"age",name:"name"}[k]}</option>`).join("")}</select>
-      <button ${stale.length ? "" : "disabled"} data-close-stale="${esc(h.name)}">Close ${stale.length} stale</button></span></h2>
-    <div class="wrap">${sessionTable(h.sessions)}</div>
-    <p class="muted" style="margin-top:8px">Names come from the session's own title when it has one, otherwise the first thing you asked. Closing keeps the transcript on disk; the resume command is written to the action log. An app engine (Codex under the ChatGPT app or VS Code, Copilot under VS Code) is one process serving every thread the app shows; close those in the app.${h.app ? ` The ${esc(h.app)} app itself is counted here rather than as a holder of its own: it exists to run these sessions, and the ones in a terminal belong with them.` : ""}</p>`;
-  if (ports.length) html += `<h2>Listening</h2>` + portsTable(ports);
-  html += quitBlock(h);
-  return html;
-}
-
-const SESSION_COLS = `<colgroup><col><col style="width:130px"><col style="width:76px"><col style="width:62px"><col style="width:74px"><col style="width:64px"><col style="width:90px"></colgroup>`;
-function sessionTable(list) {
-  return `<table class="fixed">${SESSION_COLS}<tr><th>Session</th><th>State</th><th class="num">Age</th><th class="num">CPU</th><th class="num">Memory</th><th class="num">Ports</th><th></th></tr>${sessionRows(list)}</table>`;
+  const trend = (s.trends || []).find(t => t.key === h.key && t.span_secs >= 600);
+  return `<h1>${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> total</span><span>${plural(live.length, "session")}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
+    <div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-session-filter aria-label="Search sessions" placeholder="Search sessions or projects" value="${esc(state.sessFilter)}"></label><select data-sess-sort aria-label="Sort sessions">${["rss", "idle", "age", "name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"Most memory",idle:"Longest idle",age:"Oldest",name:"Name"}[k]}</option>`).join("")}</select></div>
+    <div class="filter-row">${filterChips("session", state.sessState, [["all", "All sessions"], ["stale", "Stale"], ["active", "Active"]])}<span class="muted">${visible.length} shown</span></div>
+    ${sessionTable(visible)}<p class="help">Select a session name for its age, CPU, host, and ports. Active sessions and app engines stay open.</p>
+    ${h.app ? `<details class="help" data-keep-open="app-memory"><summary>What is included in ${bytes(h.rss)}?</summary><p>The ${esc(h.app)} app holds ${bytes(appRss)}. The remaining memory belongs to its sessions, including those running in terminals.</p></details>` : ""}
+    ${trend ? trendsTable([trend]) : ""}${ports.length ? `<h2>Listening ports</h2>${portsTable(ports)}` : ""}${quitBlock(h)}`;
 }
 
 function tabTable(b, tabs) {
-  const profiles = b.open_profiles.length > 1;
-  const byDir = Object.fromEntries(b.open_profiles.map(p => [p.dir, p]));
-  const cols = `<colgroup><col style="width:76px"><col><col style="width:164px">${profiles ? `<col style="width:150px">` : ""}<col style="width:90px"></colgroup>`;
   const rows = tabs.map(t => {
-    const gone = goneTab(t);
-    const idle = gone ? `<span class="muted">closed</span>` : t.active ? `<span class="state active">active</span>` : t.idle_secs != null ? dur(t.idle_secs) : `<span class="muted" title="opened in the background and never looked at">not viewed</span>`;
-    const title = t.title.trim() || t.url;
-    const p = byDir[t.profile];
-    const profile = !profiles ? "" : p ? `<td><div class="l1">${esc(p.name)}</div>${p.label !== p.name && p.email ? `<div class="l2" title="${esc(p.email)}">${esc(p.email)}</div>` : ""}</td>` : `<td class="muted">${esc(t.profile)}</td>`;
-    return `<tr class="${gone ? "gone" : ""}"><td class="num">${idle}</td><td class="main"><div class="l1" title="${esc(title)}">${esc(title)}${t.pinned ? `<span class="tag">pinned</span>` : ""}</div><div class="l2" title="${esc(t.url)}">${esc(t.url)}</div></td>
-      <td title="${esc(t.site)}">${esc(t.site)}${kindTag(t.kind)}</td>${profile}<td class="num"><button ${b.can_close_tabs && !gone ? "" : "disabled"} data-close-tab="${t.id}" data-browser="${esc(b.name)}">Close</button></td></tr>`;
-  }).join("");
-  return `<table class="fixed">${cols}<tr><th class="num">Idle</th><th>Tab</th><th>Site</th>${profiles ? "<th>Profile</th>" : ""}<th></th></tr>${rows}</table>`;
+    const profile = b.open_profiles.find(p => p.dir === t.profile)?.label || t.profile;
+    const protection = t.pinned ? "Pinned" : t.active ? "In use" : !b.can_close_tabs ? "Closing unavailable" : "";
+    const status = t.active ? "active" : isStale(b, t) ? "stale" : "idle";
+    return { id: tabKey(b, t), data: t, title: t.title.trim() || t.url, context: t.site, type: "Browser tab", status, statusLabel: protection || (status === "stale" ? "Stale" : "Idle"), idle: t.idle_secs, idleLabel: "Last viewed", metric: t.active ? "Now" : t.idle_secs != null ? compactDuration(t.idle_secs) + " ago" : "Not viewed", detailMetric: b.per_tab_estimate ? "≈ " + bytes(b.per_tab_estimate) : "Unknown", metricLabel: "Estimated share of browser memory", rss: b.per_tab_estimate, eligible: canCloseTab(b, t), protection,
+      facts: [["Profile", profile], ["Last viewed", t.active ? "Now" : t.idle_secs != null ? dur(t.idle_secs) + " ago" : "Not viewed"], ["Protection", protection || "None"], ["URL", t.url]], note: "Reopen with ⌘⇧T in the same profile. The URL is saved in Actions; unsaved text may not return.",
+      action: protection ? `<button disabled>${esc(protection)}${b.can_close_tabs ? ' · kept open' : ''}</button>` : `<button class="primary" data-close-tab="${t.id}" data-browser="${esc(b.name)}">Review close</button>` };
+  });
+  return compactList("tabs", rows, { label: "Browser tabs", title: "Tab / site", metric: "Last viewed", noun: "tab", plural: "tabs", estimated: true, review: chosen => reviewTabs(b, chosen.map(r => r.data)), empty: "No tabs match. Try another search, state, or profile." });
 }
 
 function viewBrowser(h) {
   const s = state.snap, b = h.browser, est = b.per_tab_estimate;
-  let html = `<h1>${esc(h.name)} <span class="pill">browser</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span title="${b.extension_renderers} more renderers serve extensions${b.profiles != null ? `; ${b.profiles} profiles on disk` : ""}"><b>${bytes(b.renderer_rss)}</b> in <b>${b.renderers}</b> page renderers</span></div>`;
-  if (!b.tabs.length) {
-    return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + quitBlock(h);
-  }
-  const live = b.tabs.filter(t => !goneTab(t));
-  const stale = live.filter(t => isStale(b, t));
-  const staleChat = stale.filter(t => t.kind === "chat" && !t.pinned);
-  const staleChatIds = staleChat.map(t => t.id);
-  const chat = live.filter(t => t.kind === "chat").length;
-  const profiles = b.open_profiles.length > 1;
-  const profileTabs = p => live.filter(t => t.profile === p.dir).length;
-  html += `<p class="muted" style="margin:0 0 10px"><b>${live.length}</b> tabs, <b>${stale.length}</b> not looked at in over a day${est ? `, about ${bytes(est)} each` : ""}${chat ? `. <span title="chatgpt.com, claude.ai, gemini.google.com and friends: pages that keep the whole conversation in memory and grow with it"><b>${chat}</b> ${chat === 1 ? "is a conversation" : "are conversations"}, <b>${staleChat.length}</b> of them stale</span>` : ""}.</p>`;
-  if (profiles) html += `<div class="chips">${b.open_profiles.map(p => `<span class="chip ${state.tabProfile === p.dir ? "sel" : ""}" data-profile="${esc(p.dir)}">${esc(p.label)} · ${profileTabs(p)}</span>`).join("")}</div>`;
+  const live = b.tabs.filter(t => !goneTab(t)), visible = filteredTabs(b);
+  let html = `<h1>${esc(h.name)} <span class="pill">Browser</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> total</span><span>${plural(live.length, "tab")}</span><span>${plural(b.open_profiles.length, "profile")}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>`;
+  if (!live.length) return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + quitBlock(h);
+  html += `<div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-tab-filter aria-label="Search tabs" placeholder="Search tabs, sites, or titles" value="${esc(state.tabFilter)}"></label><select data-tab-profile aria-label="Filter by profile"><option value="">All profiles</option>${b.open_profiles.map(p => `<option value="${esc(p.dir)}" ${state.tabProfile === p.dir ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select><select data-tab-sort aria-label="Sort tabs">${["idle", "site", "title", "window"].map(k => `<option value="${k}" ${state.tabSort === k ? "selected" : ""}>${{idle:"Longest untouched",site:"Site",title:"Title",window:"Window order"}[k]}</option>`).join("")}</select></div>
+    <div class="filter-row">${filterChips("tab", state.tabState, [["all", "All tabs"], ["stale", "Stale, unpinned"], ["chat", "Conversations"]])}<span class="muted">${visible.length} shown</span></div>
+    <p class="scope">Actions below apply to these results ${state.tabProfile ? `in ${esc(b.open_profiles.find(p => p.dir === state.tabProfile)?.label || state.tabProfile)}` : "across all profiles"}. Pinned and active tabs stay open.</p>
+    ${tabTable(b, visible)}
+    <p class="help">Stale means not viewed for ${dur(state.settings?.tab_stale_after_secs ?? 86400)}. Tab memory splits renderer memory evenly across tabs; individual tabs may use much more or less.</p>`;
+  html += `<h2>Sites in these results</h2>` + sitesTable(b, visible);
   const growing = (s.trends || []).filter(t => t.kind === "renderer" && t.growth > 0 && t.span_secs >= 600 && (b.renderer_procs || []).some(r => `r:${r.pid}:${r.start_time}` === t.key)).sort((x, y) => y.growth - x.growth).slice(0, 5);
   if (growing.length) {
-    html += `<h2>Pages growing <small class="muted">one renderer process each; Chrome does not say which tab</small></h2>
-      <div class="wrap"><table><tr><th>Process</th><th class="num">Now</th><th class="num">Change</th><th class="num">Rate / h</th><th class="num">Over</th><th class="num">CPU</th></tr>` +
-      growing.map(t => `<tr><td>${esc(t.name.replace(b.name, "").trim())}</td><td class="num">${bytes(t.rss_now)}</td><td class="num">+${bytes(t.growth)}</td><td class="num">+${bytes(Math.max(0, t.bytes_per_hour))}</td><td class="num">${dur(t.span_secs)}</td><td class="num">${t.cpu_mean.toFixed(0)}%</td></tr>`).join("") + `</table></div>
-      <p class="muted" style="margin:6px 0 12px">A page that grows steadily and never comes back down is usually a long-lived web app: a conversation, mail, an editor, a local dev UI. Close it if you are done with it, or reload it to start the page over.</p>`;
+    html += trendsTable(growing, "Pages growing", "growing") + `<p class="help">Each row is a renderer process; the browser does not identify its tab.</p>`;
   }
-  html += `<h2>Worst offenders <small class="muted">by tabs you have not looked at</small></h2>
-    <div class="wrap"><table class="fixed"><colgroup><col><col style="width:56px"><col style="width:56px"><col style="width:72px"><col style="width:90px"><col style="width:236px"></colgroup><tr><th>Site</th><th class="num">Tabs</th><th class="num">Stale</th><th class="num">Oldest</th><th class="num">≈ Memory</th><th></th></tr>` +
-    sitesOf(b, live).slice(0, 12).map(st => {
-      const closable = b.tabs.filter(t => t.site === st.site && !t.pinned && !t.active && !goneTab(t));
-      const staleIds = closable.filter(t => isStale(b, t)).map(t => t.id);
-      const allIds = closable.map(t => t.id);
-      return `<tr><td class="main"><div class="l1">${esc(st.site)}${kindTag(st.kind)}</div></td><td class="num">${st.tabs}</td><td class="num ${st.stale_tabs ? "state stale" : "muted"}">${st.stale_tabs}</td><td class="num">${st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "–"}</td><td class="num muted">${est ? bytes(st.est_rss) : "–"}</td>
-        <td class="num"><button ${b.can_close_tabs && staleIds.length ? "" : "disabled"} data-close-tabs="${staleIds.join(",")}" data-browser="${esc(b.name)}">Close ${staleIds.length} stale</button> <button ${b.can_close_tabs && allIds.length ? "" : "disabled"} data-close-tabs="${allIds.join(",")}" data-browser="${esc(b.name)}">Close all ${allIds.length}</button></td></tr>`;
-    }).join("") + `</table></div>`;
-  let tabs = b.tabs.filter(t => !state.tabProfile || t.profile === state.tabProfile);
-  const q = state.tabFilter.trim().toLowerCase();
-  if (q) tabs = tabs.filter(t => (t.title + " " + t.url + " " + t.site).toLowerCase().includes(q));
-  const idleOf = t => t.active ? -1 : (t.idle_secs ?? -0.5);
-  tabs.sort((a, c) => state.tabSort === "site" ? a.site.localeCompare(c.site) || idleOf(c) - idleOf(a) : state.tabSort === "title" ? a.title.localeCompare(c.title) : state.tabSort === "window" ? a.window_id - c.window_id || a.index - c.index : idleOf(c) - idleOf(a));
-  const staleUnpinned = stale.filter(t => !t.pinned && !goneTab(t)).map(t => t.id);
-  html += `<h2>Tabs <span class="tools"><input data-tab-filter placeholder="filter title, url, site" value="${esc(state.tabFilter)}" size="24">
-      <select data-tab-sort>${["idle","site","title","window"].map(k => `<option value="${k}" ${state.tabSort === k ? "selected" : ""}>${{idle:"longest untouched",site:"site",title:"title",window:"window order"}[k]}</option>`).join("")}</select>
-      <button ${b.can_close_tabs && staleUnpinned.length ? "" : "disabled"} data-close-tabs="${staleUnpinned.join(",")}" data-browser="${esc(b.name)}" title="every unpinned tab not looked at in over a day, in every open profile">Close all ${staleUnpinned.length} stale</button>
-      ${chat ? `<button ${b.can_close_tabs && staleChatIds.length ? "" : "disabled"} data-close-tabs="${staleChatIds.join(",")}" data-browser="${esc(b.name)}" title="unpinned conversation tabs (chatgpt.com, claude.ai, …) not looked at in over a day; the service keeps the conversation">Close ${staleChatIds.length} stale conversation${staleChatIds.length === 1 ? "" : "s"}</button>` : ""}</span></h2>
-    <div class="wrap">${tabTable(b, tabs)}</div>
-    <p class="muted" style="margin-top:8px">Idle is how long since the tab was last in front, from the browser's own session records. ${b.can_close_tabs ? "Close asks the browser to close that exact tab; ⌘⇧T brings it back and the URL is in the action log." : "Closing tabs is not available on this platform yet."} Chrome does not publish per-tab memory, so the ≈ figures split renderer memory evenly across tabs; conversation pages usually sit well above that, and the service keeps the history when one is closed.</p>`;
+
+  html += `<details class="help" data-keep-open="browser-memory"><summary>How browser memory and recovery work</summary><p>${bytes(b.renderer_rss)} is held by ${plural(b.renderers, "page renderer")}, plus ${plural(b.extension_renderers, "extension renderer")}. ${b.can_close_tabs ? "Close asks the browser to close the selected tab. Use ⌘⇧T in the same profile to reopen a recently closed tab; its URL is saved in Actions. Unsaved text may not be restored." : "Closing tabs is unavailable on this platform."}</p></details>`;
   return html + quitBlock(h);
 }
-
-function isStale(b, t) { return !t.active && !goneTab(t) && t.idle_secs != null && t.idle_secs >= 86400; }
+function isStale(b, t) { return !t.active && !goneTab(t) && t.idle_secs != null && t.idle_secs >= (state.settings?.tab_stale_after_secs ?? 86400); }
 
 // Tabs rolled up by site, worst first, from the tabs given (the live ones),
 // so the table follows a close at once instead of waiting for a snapshot.
@@ -570,7 +722,7 @@ function viewApp(h) {
   let html = `<h1>${esc(h.name)} <span class="pill">${h.kind === "app" ? "app" : "process"}</span></h1>
     <div class="sub"><span><b>${bytes(h.rss)}</b> in memory · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>`;
   if (hosted.length) {
-    html += `<h2>Agent sessions it hosts</h2><div class="wrap">${sessionTable(hosted)}</div>`;
+    html += `<h2>Agent sessions it hosts</h2>${sessionTable(hosted)}`;
   }
   if (ports.length) {
     html += `<h2>Listening</h2>` + portsTable(ports);
@@ -584,9 +736,16 @@ function viewApp(h) {
   return html + quitBlock(h);
 }
 
+function sitesTable(b, tabs) {
+  const rows = sitesOf(b, tabs).slice(0, 12).map(st => {
+    const closable = tabs.filter(t => t.site === st.site && canCloseTab(b, t)), stale = closable.filter(t => isStale(b, t));
+    return { id: st.site, title: st.site, context: `${plural(st.tabs, "tab")} · ${st.stale_tabs} stale`, type: "Site", metric: b.per_tab_estimate ? "≈ " + bytes(st.est_rss) : "—", metricLabel: "Estimated share of browser memory", facts: [["Tabs", st.tabs], ["Stale", st.stale_tabs], ["Oldest untouched", st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "Unknown"]], note: "These counts follow your search and profile filters. Pinned and active tabs stay open.", action: `<button class="primary" ${stale.length ? '' : 'disabled'} data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button><button ${closable.length ? '' : 'disabled'} data-close-tabs="${closable.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review all ${plural(closable.length, 'eligible tab')}</button>` };
+  });
+  return compactList("sites", rows, { label: "Sites in these results", title: "Site / tabs", metric: "≈ Memory", noun: "site" });
+}
 function portsTable(list) {
-  return `<div class="wrap"><table><tr><th class="num">Port</th><th>Proto</th><th>Addr</th><th class="num">Open</th><th>What</th><th>Owner</th><th>Process</th><th></th></tr>` +
-    list.map(p => `<tr><td class="num">${p.port}</td><td>${p.protocol}</td><td>${esc(p.addr)}</td><td class="num">${dur(p.open_for_secs)}</td><td title="${esc(p.label_source || "")}">${esc(p.label || "?")}</td><td>${esc(p.owner)}</td><td>${esc(p.process)} <span class="muted">(${p.pid})</span></td><td class="num"><button ${p.owner_managed ? "disabled" : ""} data-stop="${p.pid}" title="${p.owner_managed ? "managed by its app or the system" : "stop this process"}">Stop</button></td></tr>`).join("") + `</table></div>`;
+  const rows = list.map(p => ({ id: JSON.stringify([p.pid, p.port, p.protocol, p.addr]), data: p, title: p.label || p.process || "Listening process", context: `${p.owner} · ${p.process}`, type: "Listening port", status: "idle", statusLabel: p.owner_managed ? "Managed" : "Unmanaged", metric: String(p.port), metricLabel: "Listening port", eligible: !p.owner_managed, protection: "Managed by its app or the system", facts: [["Owner", p.owner], ["Process", `${p.process} (${p.pid})`], ["Address", p.addr], ["Protocol", p.protocol], ["Open", dur(p.open_for_secs)]], note: `${p.label_source ? p.label_source + '. ' : ''}Stopping the process closes all its listening ports. Managed services stay under their app’s control.`, action: p.owner_managed ? `<button disabled>Managed · kept open</button>` : `<button class="primary" data-review-port="${p.pid}">Review stop</button>` }));
+  return compactList("ports", rows, { label: "Listening ports", title: "Server / owner", metric: "Port", noun: "port", plural: "ports", review: chosen => reviewPorts(chosen.map(r => r.data)) });
 }
 
 function viewPorts() {
@@ -595,16 +754,22 @@ function viewPorts() {
 }
 
 function viewActions() {
-  const log = state.log;
-  return `<h1>Actions</h1><div class="sub"><span>Everything autoTrim has done, newest first, with how to get it back.</span></div><div class="card log">` +
-    (log.length ? log.slice().reverse().map(r => `<div><span class="muted">${new Date(r.ts * 1000).toLocaleString()}</span> <span class="tag">${esc(r.mode)}</span> ${esc(r.action.replace(/_/g, " "))} · ${esc(r.target)} · ${esc(r.result)}${r.resume ? `<br><code>${esc(r.resume)}</code>` : ""}</div>`).join("") : `<span class="muted">nothing yet</span>`) + `</div>`;
+  const labels = {close_session: "Close session", stop_server: "Stop server", close_tab: "Close tab", quit_app: "Quit app", restart_app: "Restart app"};
+  return `<h1>Actions</h1><div class="sub">What happened, why it happened, and how to get back to it.</div>` + (state.log.length ? state.log.slice().reverse().map(r => {
+    const preview = r.mode === "dry-run", failed = /fail|error|refus|still running|could not/i.test(r.result);
+    const mode = preview ? "Preview only" : r.mode === "auto" ? "Automatic" : "Manual";
+    const key = `${r.ts}:${r.action}:${r.pid}:${r.target}`;
+    return `<article class="history-entry"><div class="event-head"><span class="event-icon ${preview ? "neutral" : failed ? "warning" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "" : "neutral"}">${icon(preview || failed ? "info" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "check" : "history")}</span><b>${esc(labels[r.action] || r.action.replace(/_/g, " "))}</b><span class="tag ${preview ? "" : "on"}">${mode}</span><time>${esc(new Date(r.ts * 1000).toLocaleString())}</time></div><p class="result">${esc(r.target)}</p><p class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</p>${r.rss ? `<p>${r.action === "close_tab" ? "≈ " : ""}${bytes(r.rss)} ${preview ? "held when evaluated" : "held before the action"}${r.action === "close_tab" ? " (estimated)" : ""}</p>` : ""}${r.resume && !preview ? `<details data-keep-open="${esc(key)}"><summary>${r.action === "close_session" ? "How to resume" : "How to reopen"}</summary><div class="command"><code>${esc(r.resume)}</code><button data-copy-command="${esc(r.resume)}">Copy command</button></div></details>` : ""}</article>`;
+  }).join("") + `<p class="help">Memory shown is what a target held before the action, not a measurement of memory recovered.</p>` : `<div class="note">No actions yet. When you close something, its result and available recovery instructions will appear here.</div>`);
 }
 
-function renderMain(viewChanged) {
+function renderMain(viewChanged, force = false) {
   const main = document.getElementById("main");
   const active = document.activeElement;
-  if (!viewChanged && active && active.hasAttribute("data-tab-filter")) return; // typing; leave it alone
+  if (!force && !viewChanged && active && main.contains(active) && active.matches("input:not([type=checkbox]), select")) return; // typing; leave it alone
+  const focusKey = active?.dataset?.listControl;
   const scroll = viewChanged ? 0 : main.scrollTop;
+  listModels.clear();
   let html;
   const v = state.view;
   if (v === "overview") html = viewOverview();
@@ -618,27 +783,32 @@ function renderMain(viewChanged) {
     else if (h.browser) html = viewBrowser(h);
     else html = viewApp(h);
   }
+  const expanded = new Set([...main.querySelectorAll("details[open][data-keep-open]")].map(d => d.dataset.keepOpen));
   main.innerHTML = html;
+  if (!viewChanged) main.querySelectorAll("details[data-keep-open]").forEach(d => { d.open = expanded.has(d.dataset.keepOpen); });
   main.scrollTop = scroll;
   wire(main);
+  if (!viewChanged && focusKey) [...main.querySelectorAll("[data-list-control]")].find(el => el.dataset.listControl === focusKey)?.focus({ preventScroll: true });
 }
 
 function wire(root) {
-  root.querySelectorAll("[data-goto]").forEach(a => a.onclick = () => { state.view = a.dataset.goto; renderSide(); renderMain(true); });
-  // A row is gone when the action closed it, and just as gone when the
-  // action found it already closed: either way it should stop being listed.
-  const sessionGone = r => /^(terminated|killed|already gone)/.test(r.result);
-  const tabOk = r => r.result === "closed";
-  const tabGone = r => tabOk(r) || /already gone|not open any more/.test(r.result);
-  root.querySelectorAll("[data-close-session]").forEach(b => b.onclick = () => twoStep(b, "s" + b.dataset.closeSession, async () => { const pid = +b.dataset.closeSession; const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); report(rec); }));
+
+  root.querySelectorAll("[data-goto]").forEach(a => { a.href = "#" + encodeURIComponent(a.dataset.goto); a.onclick = e => { e.preventDefault(); navigate(a.dataset.goto); }; });
+  root.querySelectorAll("[data-close-session]").forEach(b => b.onclick = () => reviewSessions(state.snap.sessions.filter(x => x.pid === +b.dataset.closeSession)));
+  root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); if (h) reviewSessions(filteredSessions(h.sessions).filter(x => x.state === "stale")); });
+  root.querySelectorAll("[data-close-tab], [data-close-tabs]").forEach(button => button.onclick = () => {
+    const b = state.snap.browsers.find(b => b.name === button.dataset.browser);
+    if (!b) return;
+    const ids = (button.dataset.closeTabs ?? button.dataset.closeTab).split(",").filter(Boolean).map(Number);
+    reviewTabs(b, b.tabs.filter(t => ids.includes(t.id)));
+  });
   root.querySelectorAll("[data-stop]").forEach(b => b.onclick = () => twoStep(b, "p" + b.dataset.stop, async () => report(await invoke("stop_server", { pid: +b.dataset.stop, force: false }))));
-  root.querySelectorAll("[data-close-tab]").forEach(b => b.onclick = () => twoStep(b, "t" + b.dataset.closeTab, async () => { const ids = [+b.dataset.closeTab]; const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); report(recs); }));
-  root.querySelectorAll("[data-close-tabs]").forEach(b => b.onclick = () => { const ids = b.dataset.closeTabs.split(",").filter(Boolean).map(Number); if (!ids.length) return; twoStep(b, "T" + b.dataset.closeTabs, async () => { const recs = await invoke("close_tabs", { browser: b.dataset.browser, ids }); markGone("tabs", ids, recs, tabGone); const ok = recs.filter(tabOk).length; toast(`closed ${ok} of ${recs.length} tabs` + (ok < recs.length ? "\n" + recs.filter(r => !tabOk(r)).map(r => `${r.target}: ${r.result}`).join("\n") : "")); }); });
-  root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); const pids = h ? h.sessions.filter(x => x.state === "stale" && !x.is_self && !x.engine && !goneSession(x)).map(x => x.pid) : []; twoStep(b, "S" + b.dataset.closeStale, async () => { const out = []; for (const pid of pids) { try { const rec = await invoke("close_session", { pid, force: false }); markGone("pids", [pid], [rec], sessionGone); out.push(rec); } catch (e) { out.push({ action: "close_session", target: `pid ${pid}`, result: String(e) }); } } report(out); }); });
   root.querySelectorAll("[data-quit]").forEach(b => b.onclick = () => twoStep(b, "q" + b.dataset.quit, async () => report(await invoke("quit_app", { name: b.dataset.quit, force: false }))));
   root.querySelectorAll("[data-restart]").forEach(b => b.onclick = () => twoStep(b, "r" + b.dataset.restart, async () => report(await invoke("restart_app", { name: b.dataset.restart, force: false }))));
   // The switches write config.toml; the daemon picks it up on its next tick.
-  root.querySelectorAll("[data-auto]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_auto", { [cb.dataset.auto]: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });
+  root.querySelectorAll("[data-auto]").forEach(cb => cb.onchange = () => saveAuto({ [cb.dataset.auto]: cb.checked }));
+  root.querySelectorAll("[data-auto-mode]").forEach(r => r.onchange = () => saveAuto(autoModeValues(state.settings, r.dataset.autoMode)));
+  root.querySelectorAll("[data-auto-off]").forEach(b => b.onclick = () => saveAuto(autoModeValues(state.settings, "off")));
   root.querySelectorAll("[data-launch-window]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_open_window_at_launch", { value: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });
   root.querySelectorAll("[data-hide]").forEach(b => b.onclick = () => invoke("hide_window").catch(e => toast(String(e))));
   root.querySelectorAll("[data-service]").forEach(b => {
@@ -647,12 +817,40 @@ function wire(root) {
     if (what === "uninstall") b.onclick = () => twoStep(b, "svc", run);
     else b.onclick = () => { b.disabled = true; b.textContent = "…"; run().catch(e => toast(String(e))).finally(() => refresh()); };
   });
-  root.querySelectorAll("[data-profile]").forEach(c => c.onclick = () => { state.tabProfile = state.tabProfile === c.dataset.profile ? "" : c.dataset.profile; renderMain(true); });
-  root.querySelectorAll("[data-tab-sort]").forEach(sel => sel.onchange = () => { state.tabSort = sel.value; renderMain(true); });
-  root.querySelectorAll("[data-sess-sort]").forEach(sel => sel.onchange = () => { state.sessSort = sel.value; renderMain(true); });
-  root.querySelectorAll("[data-tab-filter]").forEach(inp => {
-    inp.oninput = () => { state.tabFilter = inp.value; const pos = inp.selectionStart; renderMain(true); const again = document.querySelector("[data-tab-filter]"); if (again) { again.focus(); again.setSelectionRange(pos, pos); } };
+
+  root.querySelectorAll("[data-tab-profile]").forEach(el => el.onchange = () => { state.tabProfile = el.value; renderMain(true); });
+  root.querySelectorAll("[data-tab-sort]").forEach(el => el.onchange = () => { state.tabSort = el.value; renderMain(true); });
+  root.querySelectorAll("[data-sess-sort]").forEach(el => el.onchange = () => { state.sessSort = el.value; renderMain(true); });
+  for (const [attribute, key] of [["data-tab-filter", "tabFilter"], ["data-session-filter", "sessFilter"]]) {
+    root.querySelectorAll(`[${attribute}]`).forEach(input => input.oninput = () => {
+      state[key] = input.value; const pos = input.selectionStart; renderMain(true);
+      const next = document.querySelector(`[${attribute}]`); next.focus(); if (pos != null) next.setSelectionRange(pos, pos);
+    });
+  }
+  root.querySelectorAll("[data-tab-state]").forEach(b => b.onclick = () => { state.tabState = b.dataset.tabState; renderMain(true); });
+  root.querySelectorAll("[data-session-state]").forEach(b => b.onclick = () => { state.sessState = b.dataset.sessionState; renderMain(true); });
+  root.querySelectorAll("[data-list-inspect]").forEach(b => b.onclick = () => {
+    listModels.get(b.dataset.list).saved.inspected = b.dataset.row; renderMain(false, true);
   });
+  root.querySelectorAll("[data-list-select]").forEach(cb => cb.onchange = () => {
+    const model = listModels.get(cb.dataset.list), row = model.rows.find(r => r.id === cb.dataset.row);
+    if (cb.checked && row?.eligible) model.saved.selected.add(row.id); else model.saved.selected.delete(cb.dataset.row);
+    renderMain(false, true);
+  });
+  root.querySelectorAll("[data-list-all]").forEach(cb => {
+    const model = listModels.get(cb.dataset.listAll), count = model.saved.selected.size, total = model.rows.filter(r => r.eligible).length;
+    cb.indeterminate = count > 0 && count < total;
+    cb.onchange = () => { model.saved.selected = new Set(cb.checked ? model.rows.filter(r => r.eligible).map(r => r.id) : []); renderMain(false, true); };
+  });
+  for (const [attribute, action] of [["data-list-clear", m => m.saved.selected.clear()], ["data-list-eligible", m => { m.saved.selected = new Set(m.rows.filter(r => r.eligible).map(r => r.id)); }], ["data-list-review", m => m.options.review(m.rows.filter(r => r.eligible && m.saved.selected.has(r.id)))], ["data-list-stale", m => m.options.review(m.rows.filter(r => r.eligible && r.status === "stale"))]]) {
+    root.querySelectorAll(`[${attribute}]`).forEach(b => b.onclick = () => { const model = listModels.get(b.getAttribute(attribute)); action(model); if (!actionReview) renderMain(false, true); });
+  }
+  root.querySelectorAll("[data-review-port]").forEach(b => b.onclick = () => reviewPorts(state.snap.ports.filter(p => p.pid === +b.dataset.reviewPort)));
+  root.querySelectorAll("[data-copy-command]").forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copyCommand); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy command", 1800); }
+    catch { const range = document.createRange(); range.selectNodeContents(b.previousElementSibling); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); toast("Command selected. Press ⌘C to copy."); }
+  });
+
 }
 
 function renderAll(viewChanged) { renderHeader(); renderSide(); renderMain(viewChanged); }
@@ -663,17 +861,133 @@ function renderAll(viewChanged) { renderHeader(); renderSide(); renderMain(viewC
 async function refresh(opts = {}) {
   sync.lastPoll = Date.now();
   if (opts.fresh) { sync.scans++; if (state.snap && state.src) renderHeader(); }
+  const revision = settingsRevision;
   let snap, src, log, settings, service;
   try {
     [snap, src, log, settings, service] = await Promise.all([invoke("snapshot", { fresh: !!opts.fresh }), invoke("source_info"), invoke("action_log").catch(() => []), invoke("settings").catch(() => null), invoke("service_info").catch(() => null)]);
   } catch (e) { document.getElementById("head").innerHTML = `<span class="muted">${esc(String(e))}</span>`; return; }
   finally { if (opts.fresh) sync.scans--; }
   const first = !state.snap;
-  if (!first && snap.taken_at < state.snap.taken_at) { state.src = src; state.log = log; state.settings = settings; state.service = service; renderAll(false); return; }
-  state.snap = snap; state.src = src; state.log = log; state.settings = settings; state.service = service;
+  if (!first && snap.taken_at < state.snap.taken_at) { state.src = src; state.log = log; if (revision === settingsRevision && !state.settingsBusy) state.settings = settings; state.service = service; renderAll(false); return; }
+  state.snap = snap; state.src = src; state.log = log; if (revision === settingsRevision && !state.settingsBusy) state.settings = settings; state.service = service;
   pruneGone(snap);
   renderAll(first);
 }
+
+function navigate(view) {
+  if (state.view !== view) { state.sessFilter = ""; state.sessState = "all"; state.tabFilter = ""; state.tabProfile = ""; state.tabState = "all"; state.listState.clear(); }
+  state.view = view; renderSide(); renderMain(true);
+}
+
+const canCloseSession = x => !goneSession(x) && !x.is_self && !x.engine && x.state !== "active";
+const canCloseTab = (b, t) => b.can_close_tabs && !goneTab(t) && !t.pinned && !t.active;
+function filteredSessions(list) {
+  const q = state.sessFilter.trim().toLowerCase();
+  return list.filter(x => !goneSession(x) && (state.sessState === "all" || x.state === state.sessState) && (!q || [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q)))
+    .sort((a, b) => state.sessSort === "idle" ? (b.idle_secs ?? b.quiet_for_secs ?? -1) - (a.idle_secs ?? a.quiet_for_secs ?? -1) : state.sessSort === "age" ? b.age_secs - a.age_secs : state.sessSort === "name" ? String(a.session_name ?? a.project).localeCompare(String(b.session_name ?? b.project)) : b.rss - a.rss);
+}
+function filteredTabs(b) {
+  const q = state.tabFilter.trim().toLowerCase(), idle = t => t.active ? -1 : t.idle_secs ?? -.5;
+  return b.tabs.filter(t => !goneTab(t) && (!state.tabProfile || t.profile === state.tabProfile) && (state.tabState === "all" || state.tabState === "stale" && isStale(b, t) && !t.pinned || state.tabState === "chat" && t.kind === "chat") && (!q || [t.title, t.url, t.site].join(" ").toLowerCase().includes(q)))
+    .sort((a, c) => state.tabSort === "site" ? a.site.localeCompare(c.site) || idle(c) - idle(a) : state.tabSort === "title" ? a.title.localeCompare(c.title) : state.tabSort === "window" ? a.window_id - c.window_id || a.index - c.index : idle(c) - idle(a));
+}
+function filterChips(kind, selected, choices) {
+  return `<div class="filters" role="group" aria-label="Filter ${kind}s">${choices.map(([value, text]) => `<button data-${kind}-state="${value}" aria-pressed="${selected === value}">${text}</button>`).join("")}</div>`;
+}
+function autoModeValues(c, mode) {
+  if (mode === "off") return { close_sessions: false, stop_servers: false };
+  return { close_sessions: c.auto_close_sessions || !c.auto_stop_servers, stop_servers: c.auto_stop_servers, dry_run: mode === "preview" };
+}
+async function saveAuto(values) {
+  if (state.settingsBusy) return;
+  state.settingsBusy = true; ++settingsRevision; renderMain(true);
+  try { state.settings = await invoke("set_auto", values); }
+  catch (e) { toast(String(e)); }
+  finally { state.settingsBusy = false; ++settingsRevision; renderSide(); renderMain(true); refresh(); }
+}
+
+// The dialog owns a frozen set of reviewed identities. Polling may update
+// the app behind it, but never changes the user's targets or checkboxes.
+function reviewSessions(list) {
+  const targets = list.filter(canCloseSession).map(x => ({ id: x.pid, name: x.session_name || x.project || `Session ${x.pid}`, detail: [x.project, x.host, x.idle_secs != null ? `idle ${dur(x.idle_secs)}` : ""].filter(Boolean).join(" · "), rss: x.rss, startTime: x.start_time }));
+  openReview("sessions", targets);
+}
+function reviewTabs(b, list) {
+  const targets = list.filter(t => canCloseTab(b, t)).map(t => ({ id: t.id, name: t.title.trim() || t.url, detail: `${t.site} · ${b.open_profiles.find(p => p.dir === t.profile)?.label || t.profile}`, rss: b.per_tab_estimate || 0, url: t.url, profile: t.profile }));
+  openReview("tabs", targets, b.name);
+}
+function reviewPorts(list) {
+  const processes = new Map();
+  list.filter(p => !p.owner_managed).forEach(p => {
+    if (!processes.has(p.pid)) processes.set(p.pid, { id: p.pid, name: p.label || p.process, detail: `${p.owner} · ${p.process} (${p.pid}) · ports ${state.snap.ports.filter(port => port.pid === p.pid).map(port => port.port).join(", ")}`, rss: 0 });
+  });
+  openReview("ports", [...processes.values()]);
+}
+const reviewNoun = kind => kind === "tabs" ? "tab" : kind === "ports" ? "server" : "session";
+const reviewVerb = kind => kind === "ports" ? "Stop" : "Close";
+function openReview(kind, targets, browser = null) {
+  if (actionReview || !targets.length) return;
+  actionReview = { kind, targets, browser, selected: new Set(targets.map(t => t.id)), busy: false, returnView: state.view };
+  const dialog = document.getElementById("action-review"), noun = reviewNoun(kind), verb = reviewVerb(kind);
+  dialog.innerHTML = `<div class="review-content"><h2 id="review-title">${verb} these ${noun}s?</h2><p id="review-description">Review the exact targets below. Uncheck anything you want to keep.</p><div class="review-targets">${targets.map(t => `<label class="review-target"><input type="checkbox" data-review-target="${t.id}" checked><span><span class="l1">${esc(t.name)}</span><span class="l2" style="display:block">${esc(t.detail)}</span></span><span class="num">${t.rss ? `${kind === "tabs" ? "≈ " : ""}${bytes(t.rss)}` : ""}</span></label>`).join("")}</div><div class="review-total"><span id="review-count"></span><span id="review-memory"></span></div><div class="recovery-note">${icon("resume")}<span>${kind === "ports" ? "Stopping a server ends its process and closes all ports it owns. Restart it from the terminal or app that launched it." : kind === "tabs" ? "Use ⌘⇧T in the same browser profile to reopen a recently closed tab. Its URL is saved in Actions. Unsaved text may not be restored." : "Closing stops the session’s processes. Its transcript stays on disk. Available resume commands are saved in Actions."}</span></div><p>${kind === "ports" ? "Each process is checked again before stopping. Services managed by an app or the system are skipped." : kind === "tabs" ? "Pinned, active, or navigated tabs are skipped when checked before closing. Memory figures are estimates." : "Active sessions, app engines, and sessions whose process has changed are skipped when checked before closing."}</p><p id="review-status" role="status"></p><div class="review-actions"><button id="review-cancel" autofocus>Cancel</button><button class="primary" id="review-submit">${verb} ${plural(targets.length, noun)}</button></div></div>`;
+  dialog.oncancel = event => { if (actionReview?.busy) event.preventDefault(); };
+  dialog.onclose = () => { actionReview = null; };
+  dialog.querySelectorAll("[data-review-target]").forEach(cb => cb.onchange = () => { cb.checked ? actionReview.selected.add(+cb.dataset.reviewTarget) : actionReview.selected.delete(+cb.dataset.reviewTarget); updateReviewTotal(); });
+  document.getElementById("review-cancel").onclick = () => dialog.close();
+  document.getElementById("review-submit").onclick = executeReview;
+  updateReviewTotal(); dialog.showModal();
+}
+function updateReviewTotal() {
+  const r = actionReview, chosen = r.targets.filter(t => r.selected.has(t.id));
+  document.getElementById("review-count").textContent = `${plural(chosen.length, reviewNoun(r.kind))} selected`;
+  const rss = chosen.reduce((n, t) => n + t.rss, 0);
+  document.getElementById("review-memory").innerHTML = rss ? `<b>${r.kind === "tabs" ? "≈ " : ""}${bytes(rss)}</b> ${r.kind === "tabs" ? "estimated" : "held now"}` : "";
+  const button = document.getElementById("review-submit");
+  button.textContent = `${reviewVerb(r.kind)} ${plural(chosen.length, reviewNoun(r.kind))}`;
+  button.disabled = !chosen.length || r.busy;
+}
+async function executeReview() {
+  const r = actionReview;
+  if (!r || r.busy || !r.selected.size) return;
+  r.busy = true;
+  const dialog = document.getElementById("action-review"), status = document.getElementById("review-status");
+  dialog.querySelectorAll("button, input").forEach(el => el.disabled = true);
+  status.textContent = `Checking the selected targets and ${r.kind === "ports" ? "stopping" : "closing"}…`;
+  const targets = r.targets.filter(t => r.selected.has(t.id)), results = [];
+  try {
+    if (r.kind === "sessions" || r.kind === "ports") {
+      for (const target of targets) {
+        try {
+          const record = r.kind === "ports" ? await invoke("stop_server", { pid: target.id, force: false }) : await invoke("close_session", { pid: target.id, expectedStartTime: target.startTime });
+          if (r.kind === "sessions" && /^(terminated|killed|already gone)/.test(record.result)) state.gone.pids.add(target.id);
+          results.push(record);
+        } catch (e) { results.push({ target: target.name, result: `Skipped: ${e}` }); }
+      }
+    } else {
+      const records = await invoke("close_tabs", { browser: r.browser, expectedTabs: targets.map(t => ({ id: t.id, url: t.url, profile: t.profile })) });
+      records.forEach((record, i) => { if (/^(closed|not open any more|already gone)/.test(record.result)) state.gone.tabs.add(targets[i].id); });
+      results.push(...records);
+    }
+    const ok = record => /^(terminated|killed|stopped|closed|already gone|not open any more)/.test(record.result);
+    const completed = results.filter(ok).length, failed = results.filter(record => !ok(record));
+    status.textContent = `${completed} of ${plural(targets.length, reviewNoun(r.kind))} ${r.kind === "ports" ? "stopped" : "closed"} or already gone.${failed.length ? "\n" + failed.map(record => `${record.target}: ${record.result}`).join("\n") : r.kind === "ports" ? " Results are in Actions." : " Recovery instructions are in Actions."}`;
+    document.getElementById("review-submit").textContent = "View actions";
+    document.getElementById("review-submit").disabled = false;
+    document.getElementById("review-submit").onclick = () => { dialog.close(); navigate("actions"); };
+    document.getElementById("review-cancel").textContent = "Done";
+  } catch (e) {
+    // A lost response can still mean the action ran. Do not offer an
+    // automatic retry against stale targets; refresh and review again.
+    status.textContent = `Could not complete the request: ${e}\nCheck Actions and refresh before trying again.`;
+    document.getElementById("review-submit").textContent = "View actions";
+    document.getElementById("review-submit").disabled = false;
+    document.getElementById("review-submit").onclick = () => { dialog.close(); navigate("actions"); };
+    document.getElementById("review-cancel").textContent = "Done";
+  } finally {
+    r.busy = false; document.getElementById("review-cancel").disabled = false; afterAction();
+  }
+}
+
 refresh();
 setInterval(tickSync, 1000);
 </script>

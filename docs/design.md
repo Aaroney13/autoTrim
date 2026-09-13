@@ -26,8 +26,8 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
 ## How each part works
 
 - **Auto mode**, off by default. Switch it on from the window (the Auto
-  mode card on the Overview: close stale sessions, stop old servers, dry
-  run), from the menu bar menu, with `autotrim config set
+  mode card in Settings: Off, Preview only, or On, with target switches
+  for stale sessions and old servers), from the menu bar menu, with `autotrim config set
   auto_close_sessions=true`, or by editing `config.toml`; the daemon
   re-reads the file when it changes, so nothing needs a restart. When on,
   the daemon warns first ("closing N idle targets in 10 minutes", one
@@ -125,28 +125,42 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
   menu bar item showing free memory, with a menu that carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".
-  The header is one memory bar (used, with compressed as a second shade
-  and swap in red when any is in use), the CPU figure, and the age of the
+  The header is one physical-memory bar (used, with compressed as a second
+  shade), a separate swap-on-disk figure, the CPU figure, and the age of the
   numbers with a ring that fills toward the daemon's next snapshot. The
   sidebar lists everything holding memory, largest first, with a count of
   what each contains (sessions, tabs, processes). Click one for the
-  detail: an agent's sessions by name with a Close on each and "Close N
-  stale", plus the ports and Quit and Restart of the agent's own app when
-  it is running; a browser's worst sites and every tab, longest untouched
-  first, filterable, with Close per tab, per site, and for every stale tab
-  at once; an app's memory, trend, hosted sessions and ports, with Quit
-  and Restart. Overview carries a status line (auto mode, the daemon, anything
-  auto mode is about to close), the advice (each card links to the view
-  it is about), one bar of memory by kind, and trends. Settings holds two
-  cards. *Auto mode* has the three switches and, once the daemon has
+  detail: an agent's searchable sessions with state filters and expandable
+  CPU, age, host, PID, and ports; a browser's searchable tabs and site
+  summaries with profile and state filters. Batch reviews apply to the
+  displayed results; pinned and active tabs remain protected. Stale-tab
+  filters use the configured threshold. The existing app trends, hosted
+  sessions, ports, Quit, and Restart remain available. Overview puts advice
+  first, separates lower-severity growth/CPU observations, and shows memory
+  by kind and trends. The sidebar carries background and auto-mode status;
+  pending auto closes also appear on Overview. Settings holds two cards.
+  *Auto mode* offers Off, Preview only, and On, with session/server target
+  switches and, once the daemon has
   picked them up, the targets it has warned about with the time left on
-  each. *In the background* says whether the daemon runs as a login
+  each. Turning it off cancels pending closes when the daemon next reads
+  the settings; the UI shows that applying state. *Run in background* says whether the daemon runs as a login
   service and has the "Run in background" button that installs it (with
   the `autotrim` binary next to the app, inside its bundle, or on PATH), a
   "Hide window" button, and the choice of whether the window opens when
-  the app starts (`open_window_at_launch`). Buttons
-  are two-step: first click arms, second click acts, and the result with
-  its resume command appears in a toast and in the Actions list. The tray
+  the app starts (`open_window_at_launch`). Session and tab closing opens
+  a persistent review with exact targets, deselection, memory held, and
+  recovery guidance. Polling does not replace that selection. The backend
+  re-checks session start times and tab URLs/profiles against the reviewed
+  identities, plus active/pinned status, before closing. Results and partial
+  failures stay in the dialog; Actions has readable history and copyable
+  recovery commands. Tab memory is always labeled as estimated; memory
+  held before an action is never described as measured savings. Other
+  app and service actions retain their two-click confirmation. Server stopping
+  uses the same target review dialog, with one entry per process. Sessions,
+  tabs, sites, ports, and trends use compact lists with a details pane; stale
+  rows show a small idle duration next to the status dot. Selection follows
+  the visible filters and excludes protected items. The pane stacks below
+  the list in narrow windows. The tray
   reads the daemon's snapshot every five seconds and only scans on its own
   when no daemon is running. No Dock icon. Launching it again only brings
   the window forward. The window is created when you open it and destroyed
@@ -324,6 +338,14 @@ Things that came up and where they landed.
   full context. It runs when you ask for it. An opt-in flag may later fire it
   after an emergency has been handled, off by default. The daemon itself
   never calls a model.
+- The tray carries the approved preview’s navigation and search icons, section
+  spacing, compact growth notices, and recovery cues. Primary navigation and
+  background status stay visible while the holder list scrolls independently.
+
+- Tables use alternating row shades in both themes, a distinct header, and
+  row hover/focus highlighting. Session detail rows keep their parent’s shade;
+  secondary labels stay at a readable size and contrast.
+
 - **The UI is a Tauri tray app** that reads the daemon's files rather than
   talking to it over a socket. The daemon writes `latest.json` every tick
   and the action log is append-only, so a file is the simplest possible
@@ -346,4 +368,3 @@ Things that came up and where they landed.
   One trap: Chrome hands that id over as text, and AppleScript's integer
   stops at 2^29, so an id near two billion coerced to integer silently
   becomes a real and matches nothing. The script compares ids as text.
-

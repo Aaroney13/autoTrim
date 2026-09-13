@@ -1,0 +1,184 @@
+// Run with: node --test tests/tray-ui.test.mjs
+// Exercise production UI logic with a stubbed bridge; never call the daemon.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+const html = readFileSync(new URL('../tray/ui/index.html', import.meta.url), 'utf8');
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
+  .replace(/\nrefresh\(\);\nsetInterval\(tickSync, 1000\);\s*$/, '');
+
+function load(invoke = async () => {}) {
+  const elements = new Map();
+  const document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {
+        innerHTML: '', textContent: '', disabled: false,
+        querySelectorAll: () => [],
+      });
+      return elements.get(id);
+    },
+  };
+  const context = vm.createContext({
+    document, window: { __TAURI__: { core: { invoke } } },
+    setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0,
+  });
+  vm.runInContext(script, context);
+  // Rendering is tested in the browser. These tests check decisions and
+  // bridge calls independently from the DOM implementation.
+  vm.runInContext('renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
+  const api = vm.runInContext(`({ state, filteredSessions, filteredTabs,
+    canCloseSession, canCloseTab, isStale, autoMode, autoModeValues,
+    viewActions, sessionTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts,
+    setReview(value) { actionReview = value; } })`, context);
+  return { ...api, elements, context };
+}
+
+const sessions = [
+  { pid: 1, state: 'stale', session_name: 'Billing', project: 'atlas', rss: 300, idle_secs: 100 },
+  { pid: 2, state: 'stale', session_name: 'Migration', project: 'ledger', rss: 200, idle_secs: 200 },
+  { pid: 3, state: 'active', session_name: 'Search', project: 'ledger', rss: 100, idle_secs: 0 },
+];
+
+test('session batch eligibility follows search and state, excluding protected sessions', () => {
+  const ui = load();
+  ui.state.sessFilter = 'ledger';
+  ui.state.sessState = 'stale';
+  const visible = ui.filteredSessions(sessions);
+  assert.deepEqual(Array.from(visible, x => x.pid), [2]);
+  assert.equal(ui.canCloseSession(sessions[2]), false);
+  assert.equal(ui.canCloseSession({ ...sessions[0], is_self: true }), false);
+  assert.equal(ui.canCloseSession({ ...sessions[0], engine: true }), false);
+  ui.state.gone.pids.add(2);
+  assert.equal(ui.filteredSessions(sessions).length, 0);
+});
+
+test('tab batches respect profile, query, configured threshold, and pinned/active exclusions', () => {
+  const ui = load();
+  ui.state.settings = { tab_stale_after_secs: 7200 };
+  ui.state.tabProfile = 'Work';
+  ui.state.tabFilter = 'notes';
+  ui.state.tabState = 'stale';
+  const tab = { id: 1, profile: 'Work', title: 'Notes', url: 'https://example.com/notes', site: 'example.com', idle_secs: 8000, active: false, pinned: false };
+  const browser = { can_close_tabs: true, tabs: [tab,
+    { ...tab, id: 2, profile: 'Personal' }, { ...tab, id: 3, pinned: true },
+    { ...tab, id: 4, active: true }, { ...tab, id: 5, idle_secs: 100 },
+  ] };
+  assert.deepEqual(Array.from(ui.filteredTabs(browser), t => t.id), [1]);
+  assert.equal(ui.canCloseTab(browser, browser.tabs[2]), false);
+  assert.equal(ui.canCloseTab(browser, browser.tabs[3]), false);
+  ui.state.settings.tab_stale_after_secs = 9000;
+  assert.equal(ui.filteredTabs(browser).length, 0);
+});
+
+test('auto modes preserve server-only selection and atomically switch preview/live behavior', () => {
+  const ui = load();
+  const c = { auto_close_sessions: false, auto_stop_servers: true, auto_dry_run: false };
+  assert.equal(ui.autoMode(c), 'on');
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'preview')), JSON.stringify({ close_sessions: false, stop_servers: true, dry_run: true }));
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'off')), JSON.stringify({ close_sessions: false, stop_servers: false }));
+  assert.equal(JSON.stringify(ui.autoModeValues({ ...c, auto_stop_servers: false }, 'on')), JSON.stringify({ close_sessions: true, stop_servers: false, dry_run: false }));
+});
+
+test('settings writes cannot overlap', async () => {
+  let finish, calls = 0;
+  const ui = load(() => { calls++; return new Promise(resolve => { finish = resolve; }); });
+  const writing = ui.saveAuto({ dry_run: true });
+  await ui.saveAuto({ dry_run: false });
+  assert.equal(calls, 1);
+  finish({ auto_close_sessions: true, auto_stop_servers: false, auto_dry_run: true });
+  await writing;
+  assert.equal(ui.autoMode(ui.state.settings), 'preview');
+  assert.equal(ui.state.settingsBusy, false);
+});
+
+test('confirmation sends only selected frozen identities and accounts for partial failure', async () => {
+  const calls = [];
+  const ui = load(async (command, args) => {
+    calls.push({ command, args });
+    if (args.pid === 2) throw new Error('Now active');
+    return { target: 'Billing', result: 'terminated' };
+  });
+  ui.setReview({ kind: 'sessions', targets: [
+    { id: 1, name: 'Billing', startTime: 100 },
+    { id: 2, name: 'Migration', startTime: 200 },
+    { id: 3, name: 'Unchecked', startTime: 300 },
+  ], selected: new Set([1, 2]), busy: false });
+  await ui.executeReview();
+  assert.deepEqual(calls.map(c => [c.command, c.args.pid, c.args.expectedStartTime]), [['close_session', 1, 100], ['close_session', 2, 200]]);
+  assert.equal(ui.state.gone.pids.has(1), true);
+  assert.equal(ui.state.gone.pids.has(2), false);
+  assert.match(ui.elements.get('review-status').textContent, /Now active/);
+  assert.equal(ui.elements.get('review-submit').textContent, 'View actions');
+});
+
+test('tab confirmation sends the reviewed URL and profile', async () => {
+  let payload;
+  const ui = load(async (command, args) => { assert.equal(command, 'close_tabs'); payload = args; return [{ result: 'closed' }]; });
+  ui.setReview({ kind: 'tabs', browser: 'Chrome', targets: [{ id: 7, url: 'https://example.com', profile: 'Work' }], selected: new Set([7]), busy: false });
+  await ui.executeReview();
+  assert.equal(JSON.stringify(payload.expectedTabs), JSON.stringify([{ id: 7, url: 'https://example.com', profile: 'Work' }]));
+  assert.equal(ui.state.gone.tabs.has(7), true);
+});
+
+test('a failed request never offers an automatic retry', async () => {
+  const ui = load(async () => { throw new Error('Connection interrupted'); });
+  ui.setReview({ kind: 'tabs', browser: 'Chrome', targets: [{ id: 7, url: 'https://example.com', profile: 'Work' }], selected: new Set([7]), busy: false });
+  await ui.executeReview();
+  assert.match(ui.elements.get('review-status').textContent, /Check Actions and refresh/);
+  assert.equal(ui.elements.get('review-submit').textContent, 'View actions');
+  assert.equal(ui.state.gone.tabs.size, 0);
+});
+
+test('history escapes commands and does not offer resume for preview-only actions', () => {
+  const ui = load();
+  ui.state.log = [{ ts: 1, pid: 1, mode: 'dry-run', action: 'close_session', target: '<img src=x>', result: 'dry run', rss: 1, resume: 'echo "test"' }];
+  const rendered = ui.viewActions();
+  assert.match(rendered, /&lt;img src=x&gt;/);
+  assert.doesNotMatch(rendered, /data-copy-command/);
+  ui.state.log[0].mode = 'manual';
+  assert.match(ui.viewActions(), /data-copy-command="echo &quot;test&quot;"/);
+});
+
+
+test('compact selections drop hidden, protected, and replaced targets', () => {
+  const ui = load();
+  const oldSession = { pid: 7, start_time: 100 };
+  const oldTab = { id: 8, profile: 'Work', url: 'https://example.com/old' };
+  const browser = { name: 'Chrome' };
+  const ids = [ui.sessionKey(oldSession), ui.tabKey(browser, oldTab), 'hidden', 'protected'];
+  const saved = ui.reconcileList('list', ids.map(id => ({ id, eligible: true })));
+  ids.forEach(id => saved.selected.add(id));
+  const next = ui.reconcileList('list', [
+    { id: ui.sessionKey({ ...oldSession, start_time: 200 }), eligible: true },
+    { id: ui.tabKey(browser, { ...oldTab, url: 'https://example.com/new' }), eligible: true },
+    { id: 'protected', eligible: false },
+  ]);
+  assert.equal(next.selected.size, 0);
+  assert.equal(ui.reconcileList('another-list', ids.map(id => ({ id, eligible: true }))).selected.size, 0);
+});
+
+test('inspection follows the same item across reordering and recovers when it disappears', () => {
+  const ui = load();
+  const saved = ui.reconcileList('sessions', [{ id: 'a' }, { id: 'b' }]);
+  saved.inspected = 'b';
+  assert.equal(ui.reconcileList('sessions', [{ id: 'b' }, { id: 'a' }]).inspected, 'b');
+  assert.equal(ui.reconcileList('sessions', [{ id: 'a' }]).inspected, 'a');
+  assert.equal(ui.reconcileList('sessions', []).inspected, null);
+});
+
+test('port review excludes managed services and stops each selected process once', async () => {
+  const calls = [];
+  const ui = load(async (command, args) => { calls.push({ command, args }); return { result: 'terminated' }; });
+  vm.runInContext('openReview = (kind, targets) => { actionReview = {kind, targets, selected: new Set(targets.map(t => t.id)), busy: false}; };', ui.context);
+  ui.state.snap = { ports: [
+    { pid: 7, port: 3000, process: 'node', owner: 'Terminal', owner_managed: false },
+    { pid: 7, port: 3001, process: 'node', owner: 'Terminal', owner_managed: false },
+    { pid: 8, port: 5432, process: 'postgres', owner: 'Database app', owner_managed: true },
+  ] };
+  ui.reviewPorts(ui.state.snap.ports);
+  await ui.executeReview();
+  assert.deepEqual(calls.map(c => [c.command, c.args.pid, c.args.force]), [['stop_server', 7, false]]);
+  assert.match(ui.elements.get('review-status').textContent, /1 of 1 server stopped/);
+});

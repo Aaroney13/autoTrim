@@ -68,6 +68,9 @@ struct Settings {
     auto_dry_run: bool,
     auto_grace_minutes: u64,
     auto_hosts: Vec<String>,
+    stale_after_secs: u64,
+    tab_stale_after_secs: u64,
+    port_stale_after_secs: u64,
     open_window_at_launch: bool,
     config_path: Option<String>,
     /// Set when the file exists but could not be read; the values shown
@@ -86,6 +89,9 @@ fn settings_now() -> Settings {
         auto_dry_run: cfg.auto_dry_run,
         auto_grace_minutes: cfg.auto_grace_minutes,
         auto_hosts: cfg.auto_hosts.clone(),
+        stale_after_secs: cfg.thresholds().stale_after_secs,
+        tab_stale_after_secs: cfg.thresholds().tab_stale_after_secs,
+        port_stale_after_secs: cfg.thresholds().port_stale_after_secs,
         open_window_at_launch: cfg.open_window_at_launch,
         config_path: path.or_else(Config::path).map(|p| p.display().to_string()),
         config_error: err,
@@ -505,11 +511,11 @@ async fn off_thread<T: Send + 'static>(
 #[tauri::command]
 async fn close_session(
     pid: u32,
-    force: bool,
+    expected_start_time: u64,
     state: tauri::State<'_, AppState>,
 ) -> Result<actions::ActionRecord, String> {
     let t = thresholds(&state);
-    off_thread(move || actions::close_by_pid(pid, &t, false, force, "manual")).await
+    off_thread(move || actions::close_reviewed_session(pid, expected_start_time, &t)).await
 }
 
 #[tauri::command]
@@ -525,11 +531,11 @@ async fn stop_server(
 #[tauri::command]
 async fn close_tabs(
     browser: String,
-    ids: Vec<i32>,
+    expected_tabs: Vec<actions::ReviewedTab>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<actions::ActionRecord>, String> {
     let t = thresholds(&state);
-    off_thread(move || actions::close_tabs_by_id(&browser, &ids, &t, false, "manual")).await
+    off_thread(move || actions::close_reviewed_tabs(&browser, &expected_tabs, &t)).await
 }
 
 #[tauri::command]

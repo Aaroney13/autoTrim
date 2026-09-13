@@ -274,6 +274,47 @@ pub fn close_tabs_by_id(
     dry_run: bool,
     mode: &str,
 ) -> Result<Vec<ActionRecord>> {
+    close_tabs_checked(browser, ids, None, t, dry_run, mode)
+}
+
+/// The identity of a tab shown in a persistent confirmation dialog.
+#[derive(Deserialize, Clone, Debug)]
+pub struct ReviewedTab {
+    pub id: i32,
+    pub url: String,
+    pub profile: String,
+}
+
+pub fn close_reviewed_tabs(
+    browser: &str,
+    reviewed: &[ReviewedTab],
+    t: &Thresholds,
+) -> Result<Vec<ActionRecord>> {
+    let ids: Vec<_> = reviewed.iter().map(|tab| tab.id).collect();
+    close_tabs_checked(browser, &ids, Some(reviewed), t, false, "manual")
+}
+
+fn reviewed_tab_error(tab: &TabInfo, expected: Option<&ReviewedTab>) -> Option<&'static str> {
+    let Some(expected) = expected else {
+        return Some("tab was not part of the review");
+    };
+    if tab.id != expected.id || tab.url != expected.url || tab.profile != expected.profile {
+        return Some("tab changed since the review; review it again");
+    }
+    if tab.pinned || tab.active {
+        return Some("tab is now pinned or active");
+    }
+    None
+}
+
+fn close_tabs_checked(
+    browser: &str,
+    ids: &[i32],
+    reviewed: Option<&[ReviewedTab]>,
+    t: &Thresholds,
+    dry_run: bool,
+    mode: &str,
+) -> Result<Vec<ActionRecord>> {
     let mut sys = System::new();
     let snap = take_snapshot(&mut sys, Some(Duration::from_millis(300)), t);
     let Some(b) = snap.browsers.iter().find(|b| b.name == browser) else {
@@ -302,6 +343,16 @@ pub fn close_tabs_by_id(
             continue;
         };
         found += 1;
+        if let Some(reviewed) = reviewed
+            && let Some(reason) = reviewed_tab_error(tab, reviewed.iter().find(|x| x.id == *id))
+        {
+            let mut rec = close_tab(b, tab, mode, true);
+            rec.mode = mode.to_string();
+            rec.result = format!("skipped: {reason}");
+            log(&rec)?;
+            out.push(rec);
+            continue;
+        }
         let rec = close_tab(b, tab, mode, dry_run);
         log(&rec)?;
         out.push(rec);
@@ -646,11 +697,40 @@ pub fn close_by_pid(
     force: bool,
     mode: &str,
 ) -> Result<ActionRecord> {
+    close_by_pid_checked(pid, None, t, dry_run, force, mode)
+}
+
+pub fn close_reviewed_session(
+    pid: u32,
+    expected_start_time: u64,
+    t: &Thresholds,
+) -> Result<ActionRecord> {
+    close_by_pid_checked(pid, Some(expected_start_time), t, false, false, "manual")
+}
+
+fn check_session_identity(start_time: u64, expected: Option<u64>) -> Result<()> {
+    if let Some(expected) = expected
+        && start_time != expected
+    {
+        anyhow::bail!("session process changed since the review; review it again");
+    }
+    Ok(())
+}
+
+fn close_by_pid_checked(
+    pid: u32,
+    expected_start_time: Option<u64>,
+    t: &Thresholds,
+    dry_run: bool,
+    force: bool,
+    mode: &str,
+) -> Result<ActionRecord> {
     let mut sys = System::new();
     let snap = take_snapshot(&mut sys, Some(Duration::from_millis(1000)), t);
     let Some(s) = snap.sessions.iter().find(|s| s.pid == pid) else {
         anyhow::bail!("pid {pid} is not a detected agent session");
     };
+    check_session_identity(s.start_time, expected_start_time)?;
     if s.is_self {
         anyhow::bail!("pid {pid} is the session running this command");
     }
@@ -718,6 +798,52 @@ pub fn session_line(s: &AgentSession) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reviewed_session_rejects_reused_pid() {
+        assert!(check_session_identity(100, Some(100)).is_ok());
+        assert!(check_session_identity(200, Some(100)).is_err());
+        assert!(check_session_identity(200, None).is_ok());
+    }
+
+    #[test]
+    fn reviewed_tab_requires_same_page_profile_and_unprotected_state() {
+        let mut tab = TabInfo {
+            id: 7,
+            window_id: 1,
+            profile: "Default".into(),
+            index: 0,
+            url: "https://example.com/notes".into(),
+            site: "example.com".into(),
+            title: "Notes".into(),
+            pinned: false,
+            active: false,
+            last_active: None,
+            idle_secs: Some(90000),
+            kind: Default::default(),
+        };
+        let expected = ReviewedTab {
+            id: tab.id,
+            url: tab.url.clone(),
+            profile: tab.profile.clone(),
+        };
+        assert!(reviewed_tab_error(&tab, Some(&expected)).is_none());
+        assert!(reviewed_tab_error(&tab, None).is_some());
+        tab.url.push_str("/edited");
+        assert!(reviewed_tab_error(&tab, Some(&expected)).is_some());
+        tab.url = expected.url.clone();
+        tab.profile = "Profile 2".into();
+        assert!(reviewed_tab_error(&tab, Some(&expected)).is_some());
+        tab.profile = expected.profile.clone();
+        tab.pinned = true;
+        assert!(reviewed_tab_error(&tab, Some(&expected)).is_some());
+        tab.pinned = false;
+        tab.active = true;
+        assert!(reviewed_tab_error(&tab, Some(&expected)).is_some());
+        tab.active = false;
+        tab.id += 1;
+        assert!(reviewed_tab_error(&tab, Some(&expected)).is_some());
+    }
 
     fn app(kind: GroupKind) -> AppGroup {
         AppGroup {
