@@ -14,7 +14,7 @@ function load(invoke = async () => {}) {
   const document = {
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, {
-        innerHTML: '', textContent: '', disabled: false,
+        innerHTML: '', textContent: '', disabled: false, style: {},
         querySelectorAll: () => [],
       });
       return elements.get(id);
@@ -139,6 +139,38 @@ test('history escapes commands and does not offer resume for preview-only action
   assert.doesNotMatch(rendered, /data-copy-command/);
   ui.state.log[0].mode = 'manual';
   assert.match(ui.viewActions(), /data-copy-command="echo &quot;test&quot;"/);
+});
+
+test('tab recovery keeps shortcut hints outside the copy control and preserves quoted URLs', () => {
+  const ui = load();
+  ui.state.log = [{ ts: 1, mode: 'manual', action: 'close_tab', target: 'Notes', result: 'closed',
+    resume: "open 'https://example.com'   # or ⌘⇧T in the same browser profile" }];
+  const rendered = ui.viewActions();
+  const button = rendered.match(/<button[^>]*data-copy-command[\s\S]*?<\/button>/)[0];
+  assert.match(button, /<code>open 'https:\/\/example.com'<\/code>/);
+  assert.doesNotMatch(button, /⌘⇧T/);
+  assert.match(rendered, /recovery-hint.*Or press ⌘⇧T/);
+  ui.state.log[0].resume = "open 'https://example.com/   # or ⌘⇧T in the URL'";
+  assert.doesNotMatch(ui.viewActions(), /class="muted recovery-hint"/);
+});
+
+test('copy control copies the displayed command and retains success feedback', async () => {
+  const ui = load();
+  let copied;
+  ui.context.navigator = { clipboard: { writeText: async text => { copied = text; } } };
+  const classes = new Set();
+  const label = { textContent: 'Copy' };
+  ui.context.copyButton = {
+    classList: { contains: c => classes.has(c), add: (...cs) => cs.forEach(c => classes.add(c)), remove: (...cs) => cs.forEach(c => classes.delete(c)) },
+    querySelector: selector => selector === 'code' ? { textContent: 'echo "test"' } : label,
+    setAttribute() {}, removeAttribute() {},
+  };
+  await vm.runInContext('copyCommand(copyButton)', ui.context);
+  assert.equal(copied, 'echo "test"');
+  assert.equal(label.textContent, '✓ Copied!');
+  assert.equal(classes.has('copied'), true);
+  assert.equal(classes.has('copy-feedback'), true);
+  assert.equal(classes.has('copying'), false);
 });
 
 

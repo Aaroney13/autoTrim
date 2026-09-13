@@ -153,7 +153,12 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
   re-checks session start times and tab URLs/profiles against the reviewed
   identities, plus active/pinned status, before closing. Results and partial
   failures stay in the dialog; Actions has readable history and copyable
-  recovery commands. Tab memory is always labeled as estimated; memory
+  recovery commands. Click a command or use Enter or Space on its Copy control
+  to copy it. Successful copies show a green highlight and “✓ Copied!” for
+  2.5 seconds; background refresh preserves that feedback, and reduced-motion
+  settings disable the pulse. The browser’s alternative ⌘⇧T shortcut appears
+  as helper text and is excluded from copying, including for existing logs.
+  Other recovery hints stay intact. Tab memory is always labeled as estimated; memory
   held before an action is never described as measured savings. Other
   app and service actions retain their two-click confirmation. Server stopping
   uses the same target review dialog, with one entry per process. Sessions,

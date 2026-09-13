@@ -130,9 +130,19 @@
   .legend b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
   .kbar i.agent, .legend i.agent { background: var(--k-agent); } .kbar i.browser, .legend i.browser { background: var(--k-browser); } .kbar i.app, .legend i.app { background: var(--k-app); }
   h2 small { margin-left: auto; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; text-align: right; }
-  .log div { padding: 5px 0; border-bottom: 1px solid var(--line); }
-  .log div:last-child { border-bottom: 0; }
+  .log > div { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .log > div:last-child { border-bottom: 0; }
   .log code { font-size: 12px; }
+  .history-entry .recovery-hint { margin-top: 4px; overflow-wrap: anywhere; }
+  .history-entry .copy-command { display: inline-flex; align-items: baseline; gap: 12px; max-width: 100%; margin-top: 4px; padding: 5px 8px; white-space: normal; text-align: left; transition: background-color .16s ease, color .16s ease, border-color .16s ease; }
+  .history-entry .copy-command:hover { background: var(--hover); }
+  .history-entry .copy-command:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .history-entry .copy-command code { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
+  .history-entry .copy-command span { flex: none; min-width: 65px; text-align: right; color: var(--muted); font-size: 11px; }
+  .history-entry .copy-command.copied { border-color: var(--accent); background: var(--accent); color: #fff; animation: copy-pulse .4s ease-out; }
+  .history-entry .copy-command.copied span { color: #fff; font-weight: 600; }
+  @keyframes copy-pulse { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--k-agent) 45%, transparent); } to { box-shadow: 0 0 0 7px transparent; } }
+  @media (prefers-reduced-motion: reduce) { .history-entry .copy-command { transition: none; } .history-entry .copy-command.copied { animation: none; } }
   .toast { position: fixed; right: 16px; bottom: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; max-width: 560px; box-shadow: 0 6px 24px rgba(0,0,0,.18); display: none; white-space: pre-line; z-index: 9; }
 
   [hidden] { display: none !important; }
@@ -323,6 +333,56 @@ const goneTab = t => state.gone.tabs.has(t.id);
 const goneSession = x => state.gone.pids.has(x.pid);
 
 function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 8000); }
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch (_) { /* Try the web view fallback below. */ }
+  }
+  // Some embedded web views do not expose the async Clipboard API.
+  const active = document.activeElement;
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.readOnly = true;
+  input.style.cssText = "position:fixed;top:0;left:-9999px";
+  document.body.append(input);
+  try {
+    input.select();
+    if (!document.execCommand("copy")) throw new Error("Copy failed");
+  } finally {
+    input.remove();
+    active?.focus({ preventScroll: true });
+  }
+}
+
+async function copyCommand(button) {
+  if (button.classList.contains("copying")) return;
+  const label = button.querySelector("span");
+  clearTimeout(button._copyTimer);
+  button.classList.remove("copied", "copy-feedback");
+  button.classList.add("copying");
+  button.setAttribute("aria-busy", "true");
+  button.title = "Copy to clipboard";
+  label.textContent = "Copying…";
+  try {
+    await copyText(button.querySelector("code").textContent);
+    button.classList.add("copied");
+    button.title = "Copied to clipboard";
+    label.textContent = "✓ Copied!";
+    toast("Copied to clipboard.");
+  } catch (_) {
+    label.textContent = "Try again";
+    toast("Couldn't copy. Select the command and copy it manually.");
+  } finally {
+    button.removeAttribute("aria-busy");
+    button.classList.remove("copying");
+    button.classList.add("copy-feedback");
+    button._copyTimer = setTimeout(() => {
+      button.classList.remove("copied", "copy-feedback");
+      button.title = "Copy to clipboard";
+      label.textContent = "Copy";
+    }, 2500);
+  }
+}
 
 // Two-step buttons: the first click arms for five seconds, the second acts.
 function twoStep(btn, key, run) {
@@ -753,13 +813,41 @@ function viewPorts() {
   return `<h1>Listening ports</h1><div class="sub"><span><b>${s.ports.length}</b> open</span><span><b>${s.ports.filter(p => !p.owner_managed).length}</b> unmanaged: started from a terminal or script, nothing will restart them</span></div>` + (s.ports.length ? portsTable(s.ports) : `<p class="note">Nothing is listening.</p>`);
 }
 
+function recoveryDetails(r) {
+  const command = r.resume || "";
+  // Tab recovery tips are stored as trailing shell comments in existing logs.
+  // Only split outside quotes, so a matching phrase inside a URL stays intact.
+  if (r.action === "close_tab") {
+    const hintPrefix = "   # or ";
+    let quote = "";
+    for (let i = 0; i < command.length; i++) {
+      const c = command[i];
+      if (c === "\\" && quote !== "'") { i++; continue; }
+      if (quote) { if (c === quote) quote = ""; continue; }
+      if (c === "'" || c === '"') { quote = c; continue; }
+      if (command.startsWith(hintPrefix + "⌘⇧T in the ", i)) {
+        return { command: command.slice(0, i), hint: "Or press " + command.slice(i + hintPrefix.length) };
+      }
+    }
+  }
+  return { command, hint: "" };
+}
+
+function recoveryControl(r) {
+  const { command, hint } = recoveryDetails(r);
+  if (!command) return "";
+  return `<br><button type="button" class="copy-command" data-copy-command="${esc(command)}" title="Copy to clipboard" aria-label="Copy recovery command for ${esc(r.target)}: ${esc(command)}">
+    <code>${esc(command)}</code><span aria-hidden="true">Copy</span>
+  </button>${hint ? `<div class="muted recovery-hint">${esc(hint)}</div>` : ""}`;
+}
+
 function viewActions() {
   const labels = {close_session: "Close session", stop_server: "Stop server", close_tab: "Close tab", quit_app: "Quit app", restart_app: "Restart app"};
   return `<h1>Actions</h1><div class="sub">What happened, why it happened, and how to get back to it.</div>` + (state.log.length ? state.log.slice().reverse().map(r => {
     const preview = r.mode === "dry-run", failed = /fail|error|refus|still running|could not/i.test(r.result);
     const mode = preview ? "Preview only" : r.mode === "auto" ? "Automatic" : "Manual";
     const key = `${r.ts}:${r.action}:${r.pid}:${r.target}`;
-    return `<article class="history-entry"><div class="event-head"><span class="event-icon ${preview ? "neutral" : failed ? "warning" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "" : "neutral"}">${icon(preview || failed ? "info" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "check" : "history")}</span><b>${esc(labels[r.action] || r.action.replace(/_/g, " "))}</b><span class="tag ${preview ? "" : "on"}">${mode}</span><time>${esc(new Date(r.ts * 1000).toLocaleString())}</time></div><p class="result">${esc(r.target)}</p><p class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</p>${r.rss ? `<p>${r.action === "close_tab" ? "≈ " : ""}${bytes(r.rss)} ${preview ? "held when evaluated" : "held before the action"}${r.action === "close_tab" ? " (estimated)" : ""}</p>` : ""}${r.resume && !preview ? `<details data-keep-open="${esc(key)}"><summary>${r.action === "close_session" ? "How to resume" : "How to reopen"}</summary><div class="command"><code>${esc(r.resume)}</code><button data-copy-command="${esc(r.resume)}">Copy command</button></div></details>` : ""}</article>`;
+    return `<article class="history-entry"><div class="event-head"><span class="event-icon ${preview ? "neutral" : failed ? "warning" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "" : "neutral"}">${icon(preview || failed ? "info" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "check" : "history")}</span><b>${esc(labels[r.action] || r.action.replace(/_/g, " "))}</b><span class="tag ${preview ? "" : "on"}">${mode}</span><time>${esc(new Date(r.ts * 1000).toLocaleString())}</time></div><p class="result">${esc(r.target)}</p><p class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</p>${r.rss ? `<p>${r.action === "close_tab" ? "≈ " : ""}${bytes(r.rss)} ${preview ? "held when evaluated" : "held before the action"}${r.action === "close_tab" ? " (estimated)" : ""}</p>` : ""}${r.resume && !preview ? `<details data-keep-open="${esc(key)}"><summary>${r.action === "close_session" ? "How to resume" : "How to reopen"}</summary>${recoveryControl(r)}</details>` : ""}</article>`;
   }).join("") + `<p class="help">Memory shown is what a target held before the action, not a measurement of memory recovered.</p>` : `<div class="note">No actions yet. When you close something, its result and available recovery instructions will appear here.</div>`);
 }
 
@@ -767,6 +855,8 @@ function renderMain(viewChanged, force = false) {
   const main = document.getElementById("main");
   const active = document.activeElement;
   if (!force && !viewChanged && active && main.contains(active) && active.matches("input:not([type=checkbox]), select")) return; // typing; leave it alone
+  // Keep copy feedback visible through background refreshes.
+  if (!viewChanged && state.view === "actions" && main.querySelector(".copy-command.copying, .copy-command.copy-feedback")) return;
   const focusKey = active?.dataset?.listControl;
   const scroll = viewChanged ? 0 : main.scrollTop;
   listModels.clear();
@@ -846,10 +936,7 @@ function wire(root) {
     root.querySelectorAll(`[${attribute}]`).forEach(b => b.onclick = () => { const model = listModels.get(b.getAttribute(attribute)); action(model); if (!actionReview) renderMain(false, true); });
   }
   root.querySelectorAll("[data-review-port]").forEach(b => b.onclick = () => reviewPorts(state.snap.ports.filter(p => p.pid === +b.dataset.reviewPort)));
-  root.querySelectorAll("[data-copy-command]").forEach(b => b.onclick = async () => {
-    try { await navigator.clipboard.writeText(b.dataset.copyCommand); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy command", 1800); }
-    catch { const range = document.createRange(); range.selectNodeContents(b.previousElementSibling); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); toast("Command selected. Press ⌘C to copy."); }
-  });
+  root.querySelectorAll("[data-copy-command]").forEach(b => b.onclick = () => copyCommand(b));
 
 }
 
