@@ -48,6 +48,32 @@ pub fn find() -> Option<PathBuf> {
     candidates().into_iter().find(|p| p.exists())
 }
 
+/// The daemon shipped inside this macOS app, when running from a bundle.
+/// Restrict this to Contents/MacOS so a development binary cannot pick up
+/// an unrelated Resources directory.
+pub fn bundled_cli() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let current = bundled_cli_at(&std::env::current_exe().ok()?)?;
+    if current.is_file() {
+        return Some(current);
+    }
+    // Compatibility with app bundles made before the updater was introduced.
+    let legacy = current.parent()?.parent()?.join("Resources/autotrim");
+    legacy.is_file().then_some(legacy)
+}
+
+fn bundled_cli_at(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+        .then(|| macos.join("autotrim"))
+}
+
 /// Where the `autotrim` command-line binary might be, most specific first.
 /// The menu bar app uses this to install the login service, since the
 /// daemon is the command-line binary, not the app.
@@ -60,6 +86,9 @@ pub fn cli_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(p) = std::env::var_os("AUTOTRIM_CLI") {
         out.push(PathBuf::from(p));
+    }
+    if let Some(p) = bundled_cli() {
+        out.push(p);
     }
     let exe = std::env::current_exe().ok();
     if let Some(d) = exe.as_ref().and_then(|e| e.parent()) {
@@ -123,4 +152,25 @@ pub fn open() -> Result<()> {
         .with_context(|| format!("starting {}", path.display()))?;
     println!("started {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn bundle_daemon_path_requires_an_actual_app_layout() {
+        assert_eq!(
+            bundled_cli_at(Path::new(
+                "/Applications/autoTrim.app/Contents/MacOS/autotrim-tray"
+            )),
+            Some(PathBuf::from(
+                "/Applications/autoTrim.app/Contents/MacOS/autotrim"
+            ))
+        );
+        assert_eq!(
+            bundled_cli_at(Path::new("/tmp/target/release/autotrim-tray")),
+            None
+        );
+    }
 }

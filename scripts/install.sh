@@ -73,7 +73,9 @@ if [ "$UNINSTALL" = 1 ]; then
     removed=0
     for cli in "$BIN" ./target/release/autotrim \
       /Applications/autoTrim.app/Contents/Resources/autotrim \
-      "$HOME/Applications/autoTrim.app/Contents/Resources/autotrim"; do
+      "$HOME/Applications/autoTrim.app/Contents/Resources/autotrim" \
+      /Applications/autoTrim.app/Contents/MacOS/autotrim \
+      "$HOME/Applications/autoTrim.app/Contents/MacOS/autotrim"; do
       if [ -x "$cli" ]; then
         "$cli" service uninstall
         removed=1
@@ -95,7 +97,7 @@ if [ "$UNINSTALL" = 1 ]; then
       fi
     done
   fi
-  if [ -e "$BIN" ]; then
+  if [ -e "$BIN" ] || [ -L "$BIN" ]; then
     rm -f "$BIN"
     echo "removed $BIN"
   fi
@@ -128,6 +130,13 @@ fi
 if [ "$WITH_APP" = 1 ]; then
   if command -v npx >/dev/null 2>&1; then
     ./scripts/install-app.sh
+    # Use the app's copy for the CLI too, so subsequent in-app updates also
+    # update commands run from a terminal. CLI-only installs stay standalone.
+    APP_DEST=/Applications/autoTrim.app
+    if [ ! -w /Applications ]; then APP_DEST="$HOME/Applications/autoTrim.app"; fi
+    ln -sf "$APP_DEST/Contents/MacOS/autotrim" "$BIN_DIR/.autotrim.link"
+    mv -f "$BIN_DIR/.autotrim.link" "$BIN"
+    if [ "$WITH_SERVICE" = 1 ]; then "$BIN" service install; fi
   else
     echo "skipped the menu bar app: bundling it needs Node (npx)." >&2
     echo "Install Node and run ./scripts/install-app.sh, or pass --no-app." >&2

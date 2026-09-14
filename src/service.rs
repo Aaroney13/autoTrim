@@ -166,6 +166,10 @@ mod macos {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>Umask</key>
+  <integer>63</integer>
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>
@@ -243,8 +247,9 @@ mod macos {
                 .context("locating this binary")?,
         };
         let dir = paths::data_dir().context("no data directory")?;
-        fs::create_dir_all(&dir)?;
+        crate::storage::harden_existing(&dir)?;
         let log = dir.join("daemon.log");
+        crate::storage::append_log(&log, b"")?;
         let plist_file = plist_path()?;
         fs::create_dir_all(plist_file.parent().unwrap())?;
         let data_override = std::env::var("AUTOTRIM_DATA_DIR").ok();
@@ -315,6 +320,8 @@ mod macos {
                 Some("/Applications/a&b/autotrim")
             );
             assert_eq!(program_of("<plist/>"), None);
+            assert!(text.contains("<key>ThrottleInterval</key>\n  <integer>60</integer>"));
+            assert!(text.contains("<key>Umask</key>\n  <integer>63</integer>"));
         }
     }
 }

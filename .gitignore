@@ -1,3 +1,5 @@
 /target
 /tray/gen/schemas
 /.claude/worktrees
+/.release-keys/
+/tray/binaries/

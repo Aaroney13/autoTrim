@@ -6,8 +6,12 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('../tray/ui/index.html', import.meta.url), 'utf8');
-const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
-  .replace(/\nrefresh\(\);\nsetInterval\(tickSync, 1000\);\s*$/, '');
+const moduleSource = name => readFileSync(new URL(`../tray/ui/${name}.js`, import.meta.url), 'utf8')
+  .replace(/^import .*;\n/gm, '').replace(/^export \{[^}]*\};?\n/gm, '')
+  .replace(/^export function createActions[^\n]*\n/m, '')
+  .replace(/^return \{[^\n]*\n\}\n?$/m, '')
+  .replace(/^const \{[^\n]* = createActions[^\n]*\n/m, '');
+const script = ['format', 'state', 'actions', 'render'].map(moduleSource).join('\n');
 
 function load(invoke = async () => {}) {
   const elements = new Map();
@@ -27,11 +31,11 @@ function load(invoke = async () => {}) {
   vm.runInContext(script, context);
   // Rendering is tested in the browser. These tests check decisions and
   // bridge calls independently from the DOM implementation.
-  vm.runInContext('renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
+  vm.runInContext('const actualRefresh = refresh; renderAll = () => {}; renderHeader = () => {}; renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
   const api = vm.runInContext(`({ state, filteredSessions, filteredTabs,
     canCloseSession, canCloseTab, isStale, autoMode, autoModeValues,
-    viewActions, sessionTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts,
-    setReview(value) { actionReview = value; } })`, context);
+    refreshNow: actualRefresh, actionSucceeded, twoStep, viewActions, sessionTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts, updateCard, runUpdate,
+    setReview(value) { state.actionReview = value; } })`, context);
   return { ...api, elements, context };
 }
 
@@ -203,7 +207,7 @@ test('inspection follows the same item across reordering and recovers when it di
 test('port review excludes managed services and stops each selected process once', async () => {
   const calls = [];
   const ui = load(async (command, args) => { calls.push({ command, args }); return { result: 'terminated' }; });
-  vm.runInContext('openReview = (kind, targets) => { actionReview = {kind, targets, selected: new Set(targets.map(t => t.id)), busy: false}; };', ui.context);
+  vm.runInContext('openReview = (kind, targets) => { state.actionReview = {kind, targets, selected: new Set(targets.map(t => t.id)), busy: false}; };', ui.context);
   ui.state.snap = { ports: [
     { pid: 7, port: 3000, process: 'node', owner: 'Terminal', owner_managed: false },
     { pid: 7, port: 3001, process: 'node', owner: 'Terminal', owner_managed: false },
@@ -213,4 +217,69 @@ test('port review excludes managed services and stops each selected process once
   await ui.executeReview();
   assert.deepEqual(calls.map(c => [c.command, c.args.pid, c.args.force]), [['stop_server', 7, false]]);
   assert.match(ui.elements.get('review-status').textContent, /1 of 1 server stopped/);
+});
+
+test('updates escape release notes and disable installation during a download', () => {
+  const ui = load();
+  ui.state.update = { enabled: true, current_version: '0.2.0', phase: 'available', version: '0.3.0', notes: '<img src=x onerror=alert(1)>', error: null };
+  assert.match(ui.updateCard(), /Install and restart/);
+  assert.doesNotMatch(ui.updateCard(), /<img/);
+  assert.match(ui.updateCard(), /&lt;img/);
+  ui.state.update.phase = 'installing';
+  assert.match(ui.updateCard(), /data-update="install" disabled/);
+  ui.state.update.enabled = false;
+  assert.doesNotMatch(ui.updateCard(), /data-update=/);
+});
+
+test('update clicks cannot overlap and cannot choose an arbitrary download', async () => {
+  const calls = [];
+  let finish;
+  const ui = load((name, args) => {
+    calls.push([name, args]);
+    if (name === 'install_update') return new Promise(resolve => { finish = resolve; });
+    return Promise.resolve({ enabled: true, phase: 'available', version: '0.3.0' });
+  });
+  ui.state.update = { enabled: true, phase: 'available', version: '0.3.0' };
+  const first = ui.runUpdate('install');
+  await ui.runUpdate('install');
+  await ui.runUpdate('check');
+  assert.deepEqual(calls, [['install_update', undefined]]);
+  finish();
+  await first;
+  assert.equal(ui.state.updateBusy, false);
+});
+
+test('older and same-second daemon snapshots cannot undo a fresh post-action scan', async () => {
+  let snap = { taken_at: 200, sessions: [], browsers: [], marker: 'fresh' };
+  const ui = load(async command => command === 'snapshot' ? snap : command === 'action_log' ? [] : {});
+  await ui.refreshNow({ fresh: true });
+  assert.equal(ui.state.snap.marker, 'fresh');
+  snap = { ...snap, marker: 'stale daemon' };
+  await ui.refreshNow(); assert.equal(ui.state.snap.marker, 'fresh');
+  snap = { ...snap, taken_at: 199 };
+  await ui.refreshNow(); assert.equal(ui.state.snap.marker, 'fresh');
+  snap = { ...snap, taken_at: 201, marker: 'next tick' };
+  await ui.refreshNow(); assert.equal(ui.state.snap.marker, 'next tick');
+});
+
+test('failed actions remain visible when log polling fails', async () => {
+  const ui = load(async command => {
+    if (command === 'action_log') throw new Error('temporary log read failure');
+    if (command === 'snapshot') return {taken_at: 1, sessions: [], browsers: []};
+    return {};
+  });
+  ui.state.log = [{status:'partial', target:'fixture', result:'partial failure: child survived'}];
+  await ui.refreshNow(); assert.equal(ui.state.log.length, 1);
+  for (const status of ['partial','failure','intent','dry_run','skipped']) {
+    assert.equal(ui.actionSucceeded({status, result:'terminated', mode:'auto'}), false);
+  }
+  assert.equal(ui.actionSucceeded({status:'success', result:'terminated', mode:'dry-run'}), false);
+});
+
+test('two-step confirmation does not call IPC on its first click', async () => {
+  const ui = load(); let calls = 0;
+  const button = {dataset:{}, textContent:'Quit', classList:{add(){},remove(){}}};
+  const run = async () => { calls++; };
+  ui.twoStep(button, 'fixture', run); assert.equal(calls, 0); assert.equal(button.textContent, 'Confirm');
+  ui.twoStep(button, 'fixture', run); await Promise.resolve(); assert.equal(calls, 1);
 });

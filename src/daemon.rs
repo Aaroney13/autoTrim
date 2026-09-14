@@ -5,23 +5,27 @@
 //! No model calls, no arbitrary actions. Everything here is a rule you can read.
 
 use crate::actions;
-use crate::agents::{AgentSession, SessionState};
+use crate::agents::AgentSession;
 use crate::config::Config;
 use crate::fmt::{bytes, date_utc, dur, stamp_utc};
 use crate::footprint;
 use crate::notify;
 use crate::paths;
 use crate::rules::{self, Advice, Thresholds};
+use crate::storage::write_atomic;
 use crate::trends::History;
 use crate::{Snapshot, take_snapshot_with};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
+
+macro_rules! daemon_log {
+    ($($arg:tt)*) => { crate::diagnostics::log(format_args!($($arg)*)) };
+}
 
 pub struct DaemonConfig {
     pub interval: Duration,
@@ -191,14 +195,9 @@ struct Tracker {
     /// its process, which makes restarts and first runs honest.
     #[serde(default)]
     ports: HashMap<String, u64>,
-    /// Auto-mode candidates and when they were first warned about.
-    #[serde(default)]
-    pending: HashMap<String, u64>,
-    /// Targets a dry run has already "closed". Nothing was closed, so they
-    /// stay candidates; this keeps each one to a single report rather
-    /// than a new warning every grace period.
-    #[serde(default)]
-    dry_done: HashSet<String>,
+    // Flatten retains the existing persisted pending/dry_done keys.
+    #[serde(flatten)]
+    policy: crate::policy::PolicyState,
     /// Rolling series per app and session, for growth and CPU trends.
     #[serde(default)]
     history: History,
@@ -261,7 +260,7 @@ impl Tracker {
     fn observe_ports(&mut self, now: u64, ports: &mut [crate::ports::PortInfo]) {
         let mut live = std::collections::HashSet::new();
         for p in ports.iter_mut() {
-            let key = format!("{}:{}:{}", p.pid, p.port, p.protocol);
+            let key = format!("{}:{}:{}:{}", p.pid, p.start_time, p.port, p.protocol);
             let first = *self
                 .ports
                 .entry(key.clone())
@@ -395,38 +394,52 @@ fn claim_lock(dir: &Path) -> Result<()> {
     write_atomic(&path, std::process::id().to_string().as_bytes())
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
-    Ok(())
-}
-
 fn append_history(dir: &Path, now: u64, rec: &HistoryRecord) -> Result<PathBuf> {
     let path = dir.join(format!("history-{}.jsonl", date_utc(now)));
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    serde_json::to_writer(&mut f, rec)?;
-    f.write_all(b"\n")?;
+    crate::storage::append_history(&path, rec)?;
     Ok(path)
 }
 
-fn rotate_history(dir: &Path, now: u64, retention_days: u64) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let cutoff = date_utc(now.saturating_sub(retention_days * 86_400));
-    for e in entries.flatten() {
+/// Attempt every output even when another one fails; retry on the next tick.
+fn persist_tick(dir: &Path, now: u64, snap: &Snapshot, tracker: &Tracker) -> Result<()> {
+    let writes = [
+        (
+            "latest.json",
+            serde_json::to_vec_pretty(snap)
+                .map_err(anyhow::Error::from)
+                .and_then(|bytes| write_atomic(&dir.join("latest.json"), &bytes)),
+        ),
+        (
+            "history",
+            append_history(dir, now, &record(snap)).map(|_| ()),
+        ),
+        ("state.json", tracker.save(&dir.join("state.json"))),
+    ];
+    let errors: Vec<String> = writes
+        .into_iter()
+        .filter_map(|(name, result)| result.err().map(|e| format!("{name}: {e:#}")))
+        .collect();
+    if !errors.is_empty() {
+        anyhow::bail!("{}", errors.join("; "));
+    }
+    Ok(())
+}
+
+fn rotate_history(dir: &Path, now: u64, retention_days: u64) -> Result<()> {
+    let entries = fs::read_dir(dir)?;
+    let cutoff = date_utc(now.saturating_sub(retention_days.saturating_mul(86_400)));
+    for e in entries {
+        let e = e?;
         let name = e.file_name().to_string_lossy().into_owned();
         let date = name
             .strip_prefix("history-")
             .and_then(|n| n.strip_suffix(".jsonl"));
         if date.is_some_and(|d| d < cutoff.as_str()) {
-            let _ = fs::remove_file(e.path());
+            fs::remove_file(e.path())
+                .with_context(|| format!("removing expired history {}", e.path().display()))?;
         }
     }
+    Ok(())
 }
 
 fn now_epoch() -> u64 {
@@ -573,151 +586,67 @@ fn warm_start(h: &mut History, dir: &Path, now: u64, window: u64) -> usize {
     count
 }
 
-/// Sessions auto mode may close this tick. Stricter than the advice: it
-/// needs transcript evidence of idleness, a warm quiet window agreeing,
-/// an allowed host, never an app's own engine (the app would restart it),
-/// and it spares the most recently active session in each project so a
-/// person always keeps their place.
-fn auto_session_candidates<'a>(
-    snap: &'a Snapshot,
-    auto: &AutoConfig,
-    t: &Thresholds,
-) -> Vec<&'a AgentSession> {
-    let mut newest: HashMap<&str, u64> = HashMap::new();
-    for s in &snap.sessions {
-        if let (Some(p), Some(la)) = (s.project.as_deref(), s.last_activity) {
-            let e = newest.entry(p).or_insert(0);
-            if la > *e {
-                *e = la;
-            }
-        }
-    }
-    snap.sessions
-        .iter()
-        .filter(|s| s.state == SessionState::Stale && !s.is_self)
-        // An app's agent engine (Codex's server, Copilot's) is restarted by
-        // its app, so closing it frees nothing for long. Only `close --force`
-        // will.
-        .filter(|s| !s.engine)
-        .filter(|s| s.idle_secs.is_some_and(|i| i >= t.stale_after_secs))
-        .filter(|s| s.quiet_for_secs.is_some_and(|q| q >= t.min_quiet_secs))
-        .filter(|s| auto.hosts.iter().any(|h| h == &s.host))
-        .filter(|s| {
-            let path = s.cwd.as_deref().or(s.project.as_deref()).unwrap_or("");
-            !t.ignore_projects
-                .iter()
-                .any(|p| !p.is_empty() && path.contains(p.as_str()))
-        })
-        .filter(|s| match (s.project.as_deref(), s.last_activity) {
-            (Some(p), Some(la)) => newest.get(p).is_none_or(|n| la < *n),
-            _ => true,
-        })
-        .collect()
-}
-
-/// Servers auto mode may stop: the old-servers rule's targets, narrowed to
-/// known dev runtimes. Anything else old and unmanaged is only reported.
-fn auto_server_candidates<'a>(
-    snap: &'a Snapshot,
-    t: &Thresholds,
-) -> Vec<&'a crate::ports::PortInfo> {
-    let mut seen = BTreeSet::new();
-    snap.ports
-        .iter()
-        .filter(|p| !p.owner_managed && p.dev_runtime)
-        .filter(|p| !t.ignore_ports.contains(&p.port))
-        .filter(|p| p.open_for_secs >= t.port_stale_after_secs)
-        .filter(|p| p.owner_cpu < t.quiet_cpu)
-        .filter(|p| seen.insert(p.pid))
-        .collect()
-}
-
 /// One pass of auto mode: warn about new candidates, act on ones whose
 /// grace has run out, forget ones that went away or woke up. Returns what
 /// the snapshot should say about it. With auto mode off the pending list
 /// is emptied, so switching it on later starts every grace period afresh.
-fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64) -> AutoStatus {
+fn run_auto(
+    tracker: &mut Tracker,
+    snap: &Snapshot,
+    cfg: &DaemonConfig,
+    now: u64,
+    overrides: &Overrides,
+) -> AutoStatus {
     let auto = &cfg.auto;
     let grace = auto.grace.as_secs();
-    let mode = if auto.dry_run { "dry-run" } else { "auto" };
-    let mut live = std::collections::HashSet::new();
-    let mut warned: Vec<String> = Vec::new();
-    let mut acted: Vec<actions::ActionRecord> = Vec::new();
-    let mut pending: Vec<PendingTarget> = Vec::new();
-
-    if !auto.dry_run {
-        tracker.dry_done.clear();
+    let decisions = crate::policy::decide(&mut tracker.policy, snap, cfg, now);
+    let warned = decisions.warned;
+    let pending = decisions.pending;
+    for key in decisions.cancelled {
+        daemon_log!("{} cancelled pending {key}", stamp_utc(now));
     }
-    if auto.close_sessions {
-        for s in auto_session_candidates(snap, auto, &cfg.thresholds) {
-            let k = format!("s:{}:{}", s.pid, s.start_time);
-            live.insert(k.clone());
-            if auto.dry_run && tracker.dry_done.contains(&k) {
-                continue;
-            }
-            let name = s
-                .session_name
-                .as_deref()
-                .or(s.project.as_deref())
-                .unwrap_or("?");
-            let detail = format!("idle {}", dur(s.idle_secs.unwrap_or(0)));
-            let first = *tracker.pending.entry(k.clone()).or_insert_with(|| {
-                warned.push(format!("{} · {} ({})", s.kind.label(), name, detail));
-                now
-            });
-            if now.saturating_sub(first) >= grace {
-                acted.push(actions::close_session(s, mode, auto.dry_run));
-                if auto.dry_run {
-                    tracker.dry_done.insert(k);
+    let mut acted = Vec::new();
+    for target in decisions.eligible {
+        tracker.policy.pending.remove(&target.key());
+        // Re-read settings and sample immediately before each target, since a
+        // previous action may have waited many seconds for its process tree.
+        let result = (|| -> Result<actions::ActionRecord> {
+            let (file, _) = Config::load()?;
+            let current = DaemonConfig::from_config(&file, overrides);
+            let mut sys = System::new();
+            let mut fresh = take_snapshot_with(
+                &mut sys,
+                Some(Duration::from_millis(1000)),
+                &current.thresholds,
+                Some(&mut tracker.port_labels),
+            );
+            // Retain only previously observed quiet evidence. A fresh sample
+            // cannot manufacture a warmed daemon window.
+            for session in &mut fresh.sessions {
+                if let Some(prior) = snap
+                    .sessions
+                    .iter()
+                    .find(|s| s.pid == session.pid && s.start_time == session.start_time)
+                {
+                    session.cpu_window_mean = prior.cpu_window_mean;
+                    session.quiet_for_secs = prior.quiet_for_secs;
                 }
-            } else {
-                pending.push(PendingTarget {
-                    kind: "session".to_string(),
-                    pid: s.pid,
-                    target: format!("{} · {}", s.kind.label(), name),
-                    detail,
-                    rss: s.rss,
-                    since: first,
-                    due_at: first + grace,
-                });
+                session.state = rules::session_state(session, &current.thresholds);
             }
+            for port in &mut fresh.ports {
+                if let Some(prior) = snap.ports.iter().find(|p| {
+                    p.pid == port.pid && p.start_time == port.start_time && p.port == port.port
+                }) {
+                    port.open_for_secs = prior.open_for_secs;
+                }
+            }
+            actions::execute_auto(&target, &fresh, &sys, &current)
+        })();
+        match result {
+            Ok(rec) => acted.push(rec),
+            Err(e) => daemon_log!("{} auto target skipped: {e:#}", stamp_utc(now)),
         }
     }
-    if auto.stop_servers {
-        for p in auto_server_candidates(snap, &cfg.thresholds) {
-            let k = format!("p:{}:{}", p.pid, p.port);
-            live.insert(k.clone());
-            if auto.dry_run && tracker.dry_done.contains(&k) {
-                continue;
-            }
-            let detail = format!("open {}", dur(p.open_for_secs));
-            let first = *tracker.pending.entry(k.clone()).or_insert_with(|| {
-                warned.push(format!(
-                    "{} on {}:{} ({})",
-                    p.process, p.addr, p.port, detail
-                ));
-                now
-            });
-            if now.saturating_sub(first) >= grace {
-                acted.push(actions::stop_server(p, mode, auto.dry_run));
-                if auto.dry_run {
-                    tracker.dry_done.insert(k);
-                }
-            } else {
-                pending.push(PendingTarget {
-                    kind: "server".to_string(),
-                    pid: p.pid,
-                    target: format!("{} on {}:{}", p.process, p.addr, p.port),
-                    detail,
-                    rss: p.owner_rss,
-                    since: first,
-                    due_at: first + grace,
-                });
-            }
-        }
-    }
-    tracker.pending.retain(|k, _| live.contains(k));
-    tracker.dry_done.retain(|k| live.contains(k));
 
     if !warned.is_empty() {
         let title = format!(
@@ -735,25 +664,17 @@ fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64
             dur(grace)
         );
         let body = warned.join("\n");
-        println!("{} ~ {}: {}", stamp_utc(now), title, warned.join(" · "));
+        daemon_log!("{} ~ {}: {}", stamp_utc(now), title, warned.join(" · "));
         if cfg.notify {
             let _ = notify::send(
                 &title,
-                "Use one to keep it. Everything closed can be resumed.",
+                "Use one to keep it. Available resume instructions are saved; unsaved state may be lost.",
                 &body,
             );
         }
     }
     for rec in acted {
-        for k in tracker.pending.keys().cloned().collect::<Vec<_>>() {
-            if k.ends_with(&format!(":{}", rec.pid)) || k.contains(&format!(":{}:", rec.pid)) {
-                tracker.pending.remove(&k);
-            }
-        }
-        if let Err(e) = actions::log(&rec) {
-            eprintln!("{} could not write action log: {e}", stamp_utc(now));
-        }
-        println!(
+        daemon_log!(
             "{} {}",
             stamp_utc(now),
             actions::describe(&rec)
@@ -761,20 +682,69 @@ fn run_auto(tracker: &mut Tracker, snap: &Snapshot, cfg: &DaemonConfig, now: u64
                 .trim_start()
         );
         if cfg.notify {
-            let title = format!(
-                "{} {}",
-                if auto.dry_run {
-                    "Would have closed"
-                } else {
-                    "Closed"
-                },
-                rec.target
+            let (title, subtitle) = action_notification(&rec);
+            let body = format!(
+                "{}\n{}",
+                rec.result,
+                rec.resume
+                    .as_deref()
+                    .unwrap_or("No resume command is available.")
             );
-            let body = rec.resume.clone().unwrap_or_else(|| rec.result.clone());
-            let _ = notify::send(&title, &format!("freed about {}", bytes(rec.rss)), &body);
+            let _ = notify::send(&title, &subtitle, &body);
         }
     }
     auto.status(pending)
+}
+
+fn action_notification(rec: &actions::ActionRecord) -> (String, String) {
+    let verb = match if rec.mode == "dry-run" {
+        "dry_run"
+    } else {
+        rec.status.as_str()
+    } {
+        "dry_run" => "Would close",
+        "success" => "Closed",
+        "skipped" => "Skipped",
+        _ => "Cleanup incomplete for",
+    };
+    let memory = if rec.rss == 0 {
+        "Previous memory footprint unknown".into()
+    } else {
+        format!("Previously held {} (not measured savings)", bytes(rec.rss))
+    };
+    (format!("{verb} {}", rec.target), memory)
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    #[test]
+    fn never_claims_measured_savings() {
+        let base = serde_json::json!({"ts": 0, "mode": "dry-run", "action": "close_session", "pid": 1,
+            "target": "fixture", "rss": 1000, "result": "dry run", "status": "dry_run"});
+        let mut rec: actions::ActionRecord = serde_json::from_value(base).unwrap();
+        for (status, expected) in [
+            ("dry_run", "Would close"),
+            ("success", "Closed"),
+            ("partial", "Cleanup incomplete"),
+            ("failure", "Cleanup incomplete"),
+            ("skipped", "Skipped"),
+        ] {
+            rec.status = status.into();
+            rec.mode = if status == "dry_run" {
+                "dry-run"
+            } else {
+                "auto"
+            }
+            .into();
+            let (title, subtitle) = action_notification(&rec);
+            assert!(title.starts_with(expected));
+            assert!(subtitle.contains("Previously held"));
+            assert!(!subtitle.contains("freed"));
+        }
+        rec.rss = 0;
+        assert!(action_notification(&rec).1.contains("unknown"));
+    }
 }
 
 /// The config file's modification time and size, or None when there is no
@@ -784,13 +754,25 @@ fn config_stamp() -> Option<(SystemTime, u64)> {
     Some((m.modified().ok()?, m.len()))
 }
 
+struct PidGuard(PathBuf);
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 /// The daemon loop. `file` is the config as loaded at start; the file is
 /// watched and re-read when it changes, with `overrides` re-applied on
 /// top each time.
 pub fn run(file: &Config, overrides: Overrides) -> Result<()> {
     let dir = paths::data_dir().context("no data directory for this platform")?;
-    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    crate::diagnostics::set_notifications(file.notify && !overrides.no_notify);
+    crate::storage::private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
     claim_lock(&dir)?;
+    let _pid_guard = PidGuard(dir.join("daemon.pid"));
+    let mut health = crate::diagnostics::Health::default();
+    let mut permissions_pending = true;
     let state_path = dir.join("state.json");
     let latest_path = dir.join("latest.json");
     let mut cfg = DaemonConfig::from_config(file, &overrides);
@@ -805,13 +787,13 @@ pub fn run(file: &Config, overrides: Overrides) -> Result<()> {
             cfg.thresholds.trend_window_secs,
         );
         if n > 0 {
-            eprintln!("warmed trends from {n} history records");
+            daemon_log!("warmed trends from {n} history records");
         }
     }
     let mut sys = System::new();
     let mut prev_ids: BTreeSet<String> = BTreeSet::new();
 
-    eprintln!(
+    daemon_log!(
         "autotrim daemon · every {}s · window {}s · auto mode {} · data in {}",
         cfg.interval.as_secs(),
         cfg.window.as_secs(),
@@ -833,13 +815,14 @@ pub fn run(file: &Config, overrides: Overrides) -> Result<()> {
             match Config::load() {
                 Ok((c, _)) => {
                     cfg = DaemonConfig::from_config(&c, &overrides);
-                    println!(
+                    crate::diagnostics::set_notifications(cfg.notify);
+                    daemon_log!(
                         "{} = settings reloaded · auto mode {}",
                         stamp_utc(now),
                         cfg.auto.describe()
                     );
                 }
-                Err(e) => eprintln!("{} settings not reloaded: {e}", stamp_utc(now)),
+                Err(e) => daemon_log!("{} settings not reloaded: {e}", stamp_utc(now)),
             }
         }
         let window = cfg.window.as_secs();
@@ -883,42 +866,51 @@ pub fn run(file: &Config, overrides: Overrides) -> Result<()> {
 
         let ids: BTreeSet<String> = snap.advice.iter().map(|a| a.id.clone()).collect();
         for a in snap.advice.iter().filter(|a| !prev_ids.contains(&a.id)) {
-            println!("{} + {}", stamp_utc(now), a.title);
+            daemon_log!("{} + {}", stamp_utc(now), a.title);
         }
         for id in prev_ids.difference(&ids) {
-            println!("{} - {} resolved", stamp_utc(now), id);
+            daemon_log!("{} - {} resolved", stamp_utc(now), id);
         }
         if prev_ids.is_empty() && ids.is_empty() {
-            println!("{} · nothing to do", stamp_utc(now));
+            daemon_log!("{} · nothing to do", stamp_utc(now));
         }
         prev_ids = ids;
 
-        snap.auto = Some(run_auto(&mut tracker, &snap, &cfg, now));
+        snap.auto = Some(run_auto(&mut tracker, &snap, &cfg, now, &overrides));
 
         if cfg.notify {
             for a in tracker.due_for_notification(now, cfg.remind_every.as_secs(), &snap.advice) {
                 let body = a.evidence.first().cloned().unwrap_or_default();
                 match notify::send(&a.title, &a.action, &body) {
-                    Ok(()) => println!("{} ! notified: {}", stamp_utc(now), a.title),
-                    Err(e) => eprintln!("{} notification failed: {e}", stamp_utc(now)),
+                    Ok(()) => daemon_log!("{} ! notified: {}", stamp_utc(now), a.title),
+                    Err(e) => daemon_log!("{} notification failed: {e}", stamp_utc(now)),
                 }
             }
         }
 
-        write_atomic(&latest_path, &serde_json::to_vec_pretty(&snap)?)?;
-        append_history(&dir, now, &record(&snap))?;
-        tracker.save(&state_path)?;
-        rotate_history(&dir, now, cfg.retention_days);
+        let permissions = if permissions_pending {
+            let result = crate::storage::harden_existing(&dir);
+            permissions_pending = result.is_err();
+            result
+        } else {
+            Ok(())
+        };
+        let retention = rotate_history(&dir, now, cfg.retention_days);
+        let persisted = persist_tick(&dir, now, &snap, &tracker)
+            .and(permissions)
+            .and(retention);
+        health.report(&persisted, now);
 
         if cfg.once || now.saturating_sub(last_self) >= 3600 {
             if let Some(line) = self_line() {
-                eprintln!("{} {line}", stamp_utc(now));
+                daemon_log!("{} {line}", stamp_utc(now));
             }
             last_self = now;
         }
 
         if cfg.once {
-            eprintln!(
+            persisted?;
+            daemon_log!(
                 "one tick · {} sessions · swap {} · wrote {}",
                 snap.sessions.len(),
                 bytes(snap.system.used_swap),
@@ -928,7 +920,6 @@ pub fn run(file: &Config, overrides: Overrides) -> Result<()> {
         }
         std::thread::sleep(cfg.interval);
     }
-    let _ = fs::remove_file(dir.join("daemon.pid"));
     Ok(())
 }
 
@@ -956,4 +947,34 @@ pub fn latest() -> Result<Option<(Snapshot, u64)>> {
         .with_context(|| format!("parsing {}", path.display()))?;
     let age = now_epoch().saturating_sub(snap.taken_at);
     Ok(Some((snap, age)))
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use crate::storage::tests::Scratch;
+
+    #[test]
+    fn each_failed_output_leaves_other_outputs_working_and_recovers() {
+        let snap: Snapshot = serde_json::from_value(serde_json::json!({
+            "taken_at": 50000, "scanner_pid": 1,
+            "system": {"os": "fixture", "total_mem": 0, "used_mem": 0,
+                "available_mem": 0, "total_swap": 0, "used_swap": 0, "uptime_secs": 0},
+            "groups": [], "sessions": [], "browsers": [], "advice": []
+        }))
+        .unwrap();
+        let outputs = ["latest.json", "history-1970-01-01.jsonl", "state.json"];
+        for failed in outputs {
+            let dir = Scratch::new();
+            fs::create_dir(dir.0.join(failed)).unwrap();
+            assert!(persist_tick(&dir.0, 1, &snap, &Tracker::default()).is_err());
+            for other in outputs.into_iter().filter(|name| *name != failed) {
+                let bytes = fs::read(dir.0.join(other)).unwrap();
+                assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_ok());
+            }
+            fs::remove_dir(dir.0.join(failed)).unwrap();
+            persist_tick(&dir.0, 2, &snap, &Tracker::default()).unwrap();
+            assert!(dir.0.join(failed).is_file());
+        }
+    }
 }

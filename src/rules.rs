@@ -25,9 +25,7 @@ pub struct Advice {
     pub title: String,
     pub evidence: Vec<String>,
     pub action: String,
-    /// Bytes back if the action is taken, where that is honest to say. On
-    /// macOS the numbers are footprint, so this is what exiting returns,
-    /// not a guess.
+    /// Pre-action footprint or estimated opportunity, never measured savings.
     pub recovery: Option<u64>,
 }
 
@@ -48,9 +46,8 @@ pub struct Thresholds {
     pub pressure_swap_frac: f64,
     /// Window-mean CPU below this counts as quiet (daemon mode).
     pub quiet_cpu: f32,
-    /// A session must be observed quiet at least this long before it is
-    /// called stale, however old it is. Keeps a freshly started daemon from
-    /// judging anything in its first minutes.
+    /// Without transcript evidence, stale classification requires this
+    /// observed quiet period. Automatic cleanup requires it in all cases.
     pub min_quiet_secs: u64,
     /// A quiet, unmanaged local server open longer than this is reported.
     pub port_stale_after_secs: u64,
@@ -137,6 +134,13 @@ pub fn session_state(s: &AgentSession, t: &Thresholds) -> SessionState {
         (None, None) if s.age_secs >= t.stale_after_secs => SessionState::Stale,
         _ => SessionState::Idle,
     }
+}
+
+fn tab_memory_estimate(per_tab: Option<u64>, count: usize) -> Option<String> {
+    per_tab.filter(|p| *p > 0).map(|p| format!(
+        "estimated opportunity {} = total renderer memory ÷ all open tabs × selected tabs; not measured per-page memory or a lower bound",
+        fmt::bytes(p.saturating_mul(count as u64))
+    ))
 }
 
 /// Renderers are not tabs: every cross-site frame, prerender, and the spare
@@ -304,14 +308,8 @@ pub fn evaluate(
                 fmt::dur(t.tab_stale_after_secs),
                 worst.join(", ")
             ));
-            let est = b
-                .per_tab_estimate
-                .map(|p| {
-                    format!(
-                        ", roughly {} at the average renderer size",
-                        fmt::bytes(p * b.stale_tabs as u64)
-                    )
-                })
+            let est = tab_memory_estimate(b.per_tab_estimate, b.stale_tabs)
+                .map(|text| format!(", {text}"))
                 .unwrap_or_default();
             actions.push(format!(
                 "close the {} stale tabs from the browser view{est}",
@@ -338,8 +336,8 @@ pub fn evaluate(
 
     // 3b. Conversation pages left open. A chat UI keeps the whole exchange
     //     in the page, so a long conversation grows the way a leak does and
-    //     a background tab never gives it back. The service keeps the
-    //     conversation, so closing the tab loses nothing.
+    //     inactive tabs may already be deactivated. Reopening saved history
+    //     does not restore drafts or temporary chats.
     for b in browsers.iter().filter(|b| !ignored_app(&b.name)) {
         let n = b.stale_chat_tabs;
         if n == 0 || n < t.chat_stale_tabs {
@@ -366,13 +364,10 @@ pub fn evaluate(
                 fmt::dur(t.tab_stale_after_secs),
                 sites.join(", ")
             ),
-            "a conversation page keeps the whole exchange in the page and grows with it; in the background it never gives that back".to_string(),
+            "conversation pages can grow with use; inactive tabs may already be deactivated by the browser, so tab age does not establish retained memory".to_string(),
         ];
-        if let Some(p) = b.per_tab_estimate {
-            evidence.push(format!(
-                "at least {} at the average renderer size; conversation pages usually run well above it",
-                fmt::bytes(p * n as u64)
-            ));
+        if let Some(estimate) = tab_memory_estimate(b.per_tab_estimate, n) {
+            evidence.push(estimate);
         }
         out.push(Advice {
             id: "conversation_tabs".to_string(),
@@ -384,7 +379,7 @@ pub fn evaluate(
                 b.name
             ),
             evidence,
-            action: "Close them from the browser view. The services keep the conversation history on their side (temporary chats excepted), so each one reopens where it was.".to_string(),
+            action: "Review them in the browser view before closing. Reopening a URL or resuming saved history does not restore unsaved drafts or temporary chats.".to_string(),
             recovery: None,
         });
     }
@@ -578,7 +573,7 @@ pub fn evaluate(
                 fmt::bytes(tr.bytes_per_hour.max(0.0) as u64)
             ),
             evidence,
-            action: "If it is a conversation or app page you are done with, close it from the browser view. If you still need it, reloading the tab starts the page over and gives the growth back.".to_string(),
+            action: "If it is a conversation or app page you are done with, close it from the browser view. If you still need it, reloading may reduce its footprint but can lose unsaved state.".to_string(),
             recovery: Some(tr.growth.max(0) as u64),
         });
     }
@@ -652,4 +647,70 @@ pub fn evaluate(
 
     out.sort_by_key(|a| a.severity);
     out
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+    use crate::test_support::session;
+
+    #[test]
+    fn estimates_explain_method_and_unknown_values() {
+        assert!(tab_memory_estimate(None, 2).is_none());
+        assert!(tab_memory_estimate(Some(0), 2).is_none());
+        let text = tab_memory_estimate(Some(1024 * 1024), 3).unwrap();
+        assert!(text.contains("3 MB"));
+        assert!(text.contains("÷ all open tabs × selected tabs"));
+        assert!(!text.contains("at least"));
+        assert!(text.contains("not measured"));
+    }
+
+    #[test]
+    fn evidence_precedence_and_boundaries() {
+        use SessionState::{Active, Idle, Stale};
+        let t = Thresholds::default();
+        // (mean, instantaneous CPU, transcript idle, quiet duration, age, expected)
+        let cases = [
+            (Some(1.99), 99., Some(21600), Some(900), 21600, Stale),
+            (Some(2.), 0., Some(21600), Some(900), 21600, Active),
+            (Some(2.01), 0., Some(21600), Some(900), 21600, Active),
+            (None, 9.99, Some(21600), None, 21600, Stale),
+            (None, 10., Some(21600), None, 21600, Active),
+            (None, 10.01, Some(21600), None, 21600, Active),
+            (Some(0.), 0., Some(21599), Some(900), 50000, Idle),
+            (Some(0.), 0., Some(21600), Some(0), 1, Stale),
+            (Some(0.), 0., Some(21601), None, 1, Stale),
+            (None, 0., Some(21599), None, 50000, Idle),
+            (None, 0., None, Some(0), 50000, Idle),
+            (None, 0., None, Some(900), 50000, Idle),
+            (Some(0.), 0., None, None, 50000, Idle),
+            (Some(0.), 0., None, Some(899), 50000, Idle),
+            (Some(0.), 0., None, Some(900), 21600, Stale),
+            (Some(0.), 0., None, Some(901), 21601, Stale),
+            (Some(0.), 0., None, Some(900), 21599, Idle),
+            (None, 1.99, None, None, 21600, Stale),
+            (None, 2., None, None, 50000, Active),
+            (None, 0., None, None, 21599, Idle),
+            (Some(2.), 0., Some(0), Some(10000), 50000, Active),
+        ];
+        for (i, (mean, cpu, idle, quiet, age, expected)) in cases.into_iter().enumerate() {
+            let mut s = session();
+            s.cpu_window_mean = mean;
+            s.cpu = cpu;
+            s.idle_secs = idle;
+            s.quiet_for_secs = quiet;
+            s.age_secs = age;
+            assert_eq!(session_state(&s, &t), expected, "case {i}");
+        }
+        let mut s = session();
+        s.cpu_window_mean = None;
+        s.cpu = 15.;
+        let t = Thresholds {
+            quiet_cpu: 20.,
+            ..t
+        };
+        assert_eq!(session_state(&s, &t), Stale);
+        s.cpu = 20.;
+        assert_eq!(session_state(&s, &t), Active);
+    }
 }

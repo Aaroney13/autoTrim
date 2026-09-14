@@ -747,28 +747,12 @@ pub fn last_activity_in(path: &Path) -> Option<u64> {
 }
 
 fn last_activity_with(path: &Path, pick: fn(&str) -> Option<u64>) -> Option<u64> {
-    let mut f = fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    for chunk in [256 * 1024u64, 4 * 1024 * 1024, u64::MAX] {
-        let start = len.saturating_sub(chunk);
-        f.seek(SeekFrom::Start(start)).ok()?;
-        let mut buf = Vec::with_capacity((len - start) as usize);
-        f.read_to_end(&mut buf).ok()?;
-        let text = String::from_utf8_lossy(&buf);
-        let mut lines: Vec<&str> = text.lines().collect();
-        if start > 0 && !lines.is_empty() {
-            lines.remove(0); // partial line
-        }
-        for line in lines.iter().rev() {
-            if let Some(ts) = pick(line) {
-                return Some(ts);
-            }
-        }
-        if start == 0 {
-            break;
-        }
-    }
-    None
+    static CACHE: LazyLock<Mutex<crate::activity_cache::ActivityCache>> =
+        LazyLock::new(|| Mutex::new(Default::default()));
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .read(path, pick)
 }
 
 fn activity_timestamp(line: &str) -> Option<u64> {

@@ -4,18 +4,21 @@
 //! this crate. One `Snapshot` feeds all of them.
 
 pub mod actions;
+mod activity_cache;
 pub mod agents;
 pub mod app;
 pub mod automation;
 pub mod browser;
 pub mod config;
 pub mod daemon;
+pub mod diagnostics;
 pub mod fmt;
 pub mod footprint;
 pub mod groups;
 pub mod notify;
 pub mod openfiles;
 pub mod paths;
+mod policy;
 pub mod portlabel;
 pub mod ports;
 pub mod procs;
@@ -23,7 +26,9 @@ pub mod report;
 pub mod rules;
 pub mod service;
 pub mod snss;
+pub mod storage;
 pub mod system;
+pub mod termination;
 pub mod transcripts;
 pub mod trends;
 pub mod watch;
@@ -130,3 +135,6 @@ pub fn take_snapshot_with(
 pub fn scan_now(thresholds: &rules::Thresholds, sample: Duration) -> Snapshot {
     take_snapshot(&mut System::new(), Some(sample), thresholds)
 }
+
+#[cfg(test)]
+mod test_support;

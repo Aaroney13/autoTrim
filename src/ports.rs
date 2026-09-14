@@ -14,6 +14,8 @@ pub struct PortInfo {
     /// Bound address, `*` when it is unspecified (all interfaces).
     pub addr: String,
     pub pid: u32,
+    #[serde(default)]
+    pub start_time: u64,
     pub process: String,
     /// The app group or agent session that owns the process.
     pub owner: String,
@@ -175,6 +177,7 @@ pub fn listening(table: &ProcTable, det: &Detection, groups: &[AppGroup]) -> Vec
             protocol,
             addr,
             pid,
+            start_time: proc_.map(|p| p.start_time).unwrap_or(0),
             process,
             owner,
             exe,

@@ -126,7 +126,7 @@ struct DaemonArgs {
     /// Take a single sample, write it, and exit.
     #[arg(long)]
     once: bool,
-    /// Do not send native notifications; only log advice to stdout.
+    /// Do not send native notifications; keep advice in daemon.log.
     #[arg(long)]
     no_notify: bool,
     /// Hours before persisting advice is notified again.
@@ -447,10 +447,7 @@ fn init_config(force: bool) -> Result<()> {
         );
         return Ok(());
     }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, Config::template())?;
+    autotrim::storage::write_atomic(&path, Config::template().as_bytes())?;
     println!("wrote {}", path.display());
     Ok(())
 }
@@ -478,6 +475,15 @@ fn set_config(pairs: &[String]) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Cmd::Daemon(args)) = &cli.cmd {
+        autotrim::diagnostics::set_notifications(!args.no_notify);
+        autotrim::diagnostics::install_panic_hook();
+        let result = Config::load().and_then(|(cfg, _)| run_daemon(args, &cfg));
+        if let Err(error) = &result {
+            autotrim::diagnostics::fatal(error);
+        }
+        return result;
+    }
     let (cfg, cfg_path) = Config::load()?;
     match cli.cmd.unwrap_or(Cmd::Scan(ScanArgs::default())) {
         Cmd::Scan(args) => scan(&args, &cfg),

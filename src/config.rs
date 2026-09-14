@@ -317,13 +317,7 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
         };
         let edited = set_keys(&text, pairs);
         toml::from_str::<Config>(&edited).context("the edited settings would not parse")?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, edited).with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
-            .with_context(|| format!("renaming into {}", path.display()))?;
+        crate::storage::write_atomic(&path, edited.as_bytes())?;
         Ok(path)
     }
 }

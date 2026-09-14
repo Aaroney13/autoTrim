@@ -1,7 +1,7 @@
 //! The reclaim verbs. Narrow on purpose: close an agent session, stop an
 //! unmanaged local server, close a browser tab, ask an app to quit, or
 //! restart it so it comes back fresh. Every action is logged with how to
-//! undo it.
+//! reopen or resume it when that is possible.
 
 use crate::agents::{AgentKind, AgentSession, SessionState};
 use crate::automation;
@@ -12,17 +12,28 @@ use crate::paths;
 use crate::ports::PortInfo;
 use crate::rules::Thresholds;
 use crate::take_snapshot;
+use crate::termination::{self, ProcessIdentity, TerminationOutcome};
 use crate::transcripts;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ActionRecord {
+    /// Stable identifier shared by intent and completion; absent in legacy logs.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// intent, success, failure, partial, skipped, dry_run, or legacy.
+    #[serde(default = "legacy_status")]
+    pub status: String,
+    #[serde(default)]
+    pub identities: Vec<ProcessIdentity>,
+    #[serde(default)]
+    pub target_identity: Option<serde_json::Value>,
+    #[serde(default)]
+    pub termination: Option<TerminationOutcome>,
     pub ts: u64,
     /// manual, auto, or dry-run
     pub mode: String,
@@ -40,6 +51,10 @@ pub struct ActionRecord {
     /// size elsewhere.
     pub rss: u64,
     pub result: String,
+}
+
+fn legacy_status() -> String {
+    "legacy".into()
 }
 
 fn now_epoch() -> u64 {
@@ -114,58 +129,19 @@ pub fn resume_command(s: &AgentSession) -> Option<String> {
     }
 }
 
-/// Terminate a process tree politely, then firmly. Returns what happened.
-pub fn terminate_tree(pids: &[u32], wait: Duration) -> String {
-    let mut sys = System::new();
-    let targets: Vec<Pid> = pids.iter().map(|p| Pid::from_u32(*p)).collect();
-    sys.refresh_processes(ProcessesToUpdate::Some(&targets), true);
-    let Some(root) = targets.first().copied() else {
-        return "nothing to do".to_string();
-    };
-    let Some(p) = sys.process(root) else {
-        return "already gone".to_string();
-    };
-    if p.kill_with(Signal::Term).is_none() {
-        // Platform without SIGTERM: fall through to a hard kill.
-        p.kill();
-    }
-    let started = Instant::now();
-    let mut outcome = "terminated";
-    loop {
-        std::thread::sleep(Duration::from_millis(200));
-        sys.refresh_processes(ProcessesToUpdate::Some(&targets), true);
-        if sys.process(root).is_none() {
-            break;
-        }
-        if started.elapsed() >= wait {
-            if let Some(p) = sys.process(root) {
-                p.kill();
-            }
-            outcome = "killed after timeout";
-            std::thread::sleep(Duration::from_millis(300));
-            break;
-        }
-    }
-    // Anything left in the tree goes the same way.
-    sys.refresh_processes(ProcessesToUpdate::Some(&targets), true);
-    for t in targets.iter().skip(1) {
-        if let Some(p) = sys.process(*t)
-            && p.kill_with(Signal::Term).is_none()
-        {
-            p.kill();
-        }
-    }
-    outcome.to_string()
-}
-
-pub fn close_session(s: &AgentSession, mode: &str, dry_run: bool) -> ActionRecord {
+fn close_session(s: &AgentSession, mode: &str, dry_run: bool) -> ActionRecord {
     let resume = resume_command(s);
     let result = if dry_run {
         "dry run, nothing done".to_string()
     } else {
-        terminate_tree(&s.pids, Duration::from_secs(10))
+        "intent; execution not started".into()
     };
     ActionRecord {
+        id: None,
+        status: "legacy".into(),
+        identities: Vec::new(),
+        target_identity: None,
+        termination: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -192,13 +168,18 @@ pub fn close_session(s: &AgentSession, mode: &str, dry_run: bool) -> ActionRecor
     }
 }
 
-pub fn stop_server(p: &PortInfo, mode: &str, dry_run: bool) -> ActionRecord {
+fn stop_server(p: &PortInfo, mode: &str, dry_run: bool) -> ActionRecord {
     let result = if dry_run {
         "dry run, nothing done".to_string()
     } else {
-        terminate_tree(&[p.pid], Duration::from_secs(10))
+        "intent; execution not started".into()
     };
     ActionRecord {
+        id: None,
+        status: "legacy".into(),
+        identities: Vec::new(),
+        target_identity: None,
+        termination: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -222,7 +203,7 @@ pub fn stop_server(p: &PortInfo, mode: &str, dry_run: bool) -> ActionRecord {
 
 /// Close one browser tab. Matched by id and URL at the moment of closing,
 /// so a tab that moved on since the snapshot is left alone.
-pub fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionRecord {
+fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionRecord {
     let profile = b
         .open_profiles
         .iter()
@@ -240,6 +221,11 @@ pub fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> Act
         t.title.clone()
     };
     ActionRecord {
+        id: None,
+        status: "legacy".into(),
+        identities: Vec::new(),
+        target_identity: None,
+        termination: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -328,6 +314,11 @@ fn close_tabs_checked(
     for id in ids {
         let Some(tab) = b.tabs.iter().find(|x| x.id == *id) else {
             out.push(ActionRecord {
+                id: None,
+                status: "legacy".into(),
+                identities: Vec::new(),
+                target_identity: None,
+                termination: None,
                 ts: now_epoch(),
                 mode: mode.to_string(),
                 action: "close_tab".to_string(),
@@ -353,9 +344,13 @@ fn close_tabs_checked(
             out.push(rec);
             continue;
         }
-        let rec = close_tab(b, tab, mode, dry_run);
-        log(&rec)?;
-        out.push(rec);
+        let mut plan = close_tab(b, tab, mode, true);
+        plan.target_identity = Some(
+            serde_json::json!({"browser": b.name, "profile": tab.profile, "id": tab.id, "url": tab.url}),
+        );
+        out.push(journal(plan, mode, dry_run, || {
+            close_tab(b, tab, mode, false)
+        })?);
     }
     if found == 0 && !ids.is_empty() {
         anyhow::bail!(
@@ -389,7 +384,7 @@ fn wait_gone(pids: &[u32], wait: Duration) -> bool {
 /// Ask an app to quit the way ⌘Q would: it may prompt to save, and it may
 /// say no. `root` is the app's main process, for the log and to see whether
 /// it went.
-pub fn quit_app(g: &AppGroup, root: u32, mode: &str, dry_run: bool) -> ActionRecord {
+fn quit_app(g: &AppGroup, root: u32, mode: &str, dry_run: bool) -> ActionRecord {
     let result = if dry_run {
         "dry run, nothing done".to_string()
     } else {
@@ -405,6 +400,11 @@ pub fn quit_app(g: &AppGroup, root: u32, mode: &str, dry_run: bool) -> ActionRec
         }
     };
     ActionRecord {
+        id: None,
+        status: "legacy".into(),
+        identities: Vec::new(),
+        target_identity: None,
+        termination: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -435,7 +435,7 @@ const RESTART_SETTLE: Duration = Duration::from_secs(1);
 /// gone, then open `bundle` again with `args`. Never opens something that
 /// is still running; the record says which way it went and the resume line
 /// is always the command that opens it.
-pub fn restart_app(
+fn restart_app(
     g: &AppGroup,
     root: u32,
     bundle: &Path,
@@ -478,6 +478,11 @@ pub fn restart_app(
         }
     };
     ActionRecord {
+        id: None,
+        status: "legacy".into(),
+        identities: Vec::new(),
+        target_identity: None,
+        termination: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -511,7 +516,8 @@ const NEVER_QUIT: &[&str] = &[
 ];
 
 /// What the app verbs act on once the shared checks pass.
-pub struct AppTarget {
+struct AppTarget {
+    identities: Vec<ProcessIdentity>,
     pub group: AppGroup,
     /// The app's main process: the one whose parent is outside the group.
     pub root: u32,
@@ -597,6 +603,7 @@ fn app_target(name: &str, t: &Thresholds, force: bool) -> Result<AppTarget> {
         .filter_map(|pid| sys.process(Pid::from_u32(pid)).and_then(|p| p.exe()))
         .find_map(groups::bundle_path);
     Ok(AppTarget {
+        identities: termination::capture(&sys, &g.pids),
         group: g.clone(),
         root,
         bundle,
@@ -614,9 +621,11 @@ pub fn quit_app_by_name(
     mode: &str,
 ) -> Result<ActionRecord> {
     let tgt = app_target(name, t, force)?;
-    let rec = quit_app(&tgt.group, tgt.root, mode, dry_run);
-    log(&rec)?;
-    Ok(rec)
+    let mut plan = quit_app(&tgt.group, tgt.root, mode, true);
+    plan.identities = tgt.identities;
+    journal(plan, mode, dry_run, || {
+        quit_app(&tgt.group, tgt.root, mode, false)
+    })
 }
 
 /// Restart an app by its group name with the checks `quit` makes, plus two
@@ -639,36 +648,157 @@ pub fn restart_app_by_name(
         );
     };
     let args = browser::relaunch_args(name);
-    let rec = restart_app(&tgt.group, tgt.root, bundle, args, mode, dry_run);
-    log(&rec)?;
-    Ok(rec)
+    let mut plan = restart_app(&tgt.group, tgt.root, bundle, args, mode, true);
+    plan.resume = Some(reopen_command(bundle, args));
+    plan.identities = tgt.identities;
+    journal(plan, mode, dry_run, || {
+        restart_app(&tgt.group, tgt.root, bundle, args, mode, false)
+    })
 }
 
-pub fn log(rec: &ActionRecord) -> Result<()> {
-    let dir = paths::data_dir().context("no data directory")?;
-    fs::create_dir_all(&dir)?;
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("actions.jsonl"))?;
-    serde_json::to_writer(&mut f, rec)?;
-    f.write_all(b"\n")?;
-    Ok(())
+/// Append and sync before returning. A leading newline isolates any torn prior
+/// write, and an OS file lock prevents concurrent CLI/tray/daemon interleaving.
+fn append_record(path: &Path, rec: &ActionRecord) -> Result<()> {
+    let mut bytes = vec![b'\n'];
+    serde_json::to_writer(&mut bytes, rec)?;
+    bytes.push(b'\n');
+    crate::storage::append_journal(path, &bytes)
 }
-
-pub fn read_log(last: usize) -> Result<Vec<ActionRecord>> {
+fn log(rec: &ActionRecord) -> Result<()> {
     let dir = paths::data_dir().context("no data directory")?;
-    let path = dir.join("actions.jsonl");
-    if !path.exists() {
-        return Ok(Vec::new());
+    append_record(&dir.join("actions.jsonl"), rec)
+}
+fn outcome_status(rec: &ActionRecord) -> &'static str {
+    if let Some(out) = &rec.termination {
+        return if out.success() { "success" } else { "partial" };
     }
-    let text = fs::read_to_string(path)?;
-    let all: Vec<ActionRecord> = text
+    if rec.result.starts_with("skipped:") {
+        "skipped"
+    } else if rec.result == "quit"
+        || rec.result == "quit and relaunched"
+        || rec.result.starts_with("closed")
+        || rec.result.starts_with("already gone")
+        || rec.result.starts_with("not open any more")
+    {
+        "success"
+    } else {
+        "failure"
+    }
+}
+fn journal(
+    plan: ActionRecord,
+    mode: &str,
+    dry_run: bool,
+    execute: impl FnOnce() -> ActionRecord,
+) -> Result<ActionRecord> {
+    journal_with(plan, mode, dry_run, log, execute)
+}
+fn journal_with(
+    mut plan: ActionRecord,
+    mode: &str,
+    dry_run: bool,
+    mut persist: impl FnMut(&ActionRecord) -> Result<()>,
+    execute: impl FnOnce() -> ActionRecord,
+) -> Result<ActionRecord> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    plan.id = Some(format!(
+        "{}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    plan.mode = if dry_run { "dry-run" } else { mode }.into();
+    plan.status = if dry_run { "dry_run" } else { "intent" }.into();
+    plan.result = if dry_run {
+        "dry run, nothing done"
+    } else {
+        "incomplete: execution outcome unknown; inspect the target before retrying"
+    }
+    .into();
+    persist(&plan).context("could not persist action intent; nothing executed")?;
+    if dry_run {
+        return Ok(plan);
+    }
+    let executed = execute();
+    if executed.resume.is_some() {
+        plan.resume = executed.resume;
+    }
+    plan.result = executed.result;
+    plan.termination = executed.termination;
+    plan.status = outcome_status(&plan).into();
+    persist(&plan).context(
+        "action executed but completion could not be persisted; intent remains incomplete",
+    )?;
+    Ok(plan)
+}
+#[cfg(test)]
+fn parse_log(text: &str, last: usize) -> Vec<ActionRecord> {
+    let mut all: Vec<ActionRecord> = Vec::new();
+    let mut indices = std::collections::HashMap::new();
+    for rec in text
         .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
-    let start = all.len().saturating_sub(last);
-    Ok(all[start..].to_vec())
+        .filter_map(|l| serde_json::from_str::<ActionRecord>(l).ok())
+    {
+        if let Some(id) = &rec.id {
+            if let Some(&index) = indices.get(id) {
+                all[index] = rec;
+                continue;
+            }
+            indices.insert(id.clone(), all.len());
+        }
+        all.push(rec);
+    }
+    all.drain(..all.len().saturating_sub(last));
+    all
+}
+pub fn read_log(last: usize) -> Result<Vec<ActionRecord>> {
+    let path = paths::data_dir()
+        .context("no data directory")?
+        .join("actions.jsonl");
+    read_log_at(&path, last)
+}
+
+fn read_log_at(path: &Path, last: usize) -> Result<Vec<ActionRecord>> {
+    let mut seen = std::collections::HashSet::new();
+    crate::storage::tail_records(path, last, |line| {
+        let rec: ActionRecord = serde_json::from_str(line).ok()?;
+        if let Some(id) = &rec.id
+            && !seen.insert(id.clone())
+        {
+            return None;
+        }
+        Some(rec)
+    })
+}
+
+#[cfg(test)]
+mod rotated_journal_tests {
+    use super::*;
+
+    #[test]
+    fn recent_actions_merge_intent_and_completion_across_rotated_files() {
+        let dir = crate::storage::tests::Scratch::new();
+        let path = dir.0.join("actions.jsonl");
+        let mut value = serde_json::json!({"id": "one", "status": "intent", "ts": 1,
+            "mode": "manual", "action": "close_tab", "pid": 0, "target": "fixture",
+            "rss": 1, "result": "unknown"});
+        crate::storage::append_json(&dir.0.join("actions.jsonl.1"), &value).unwrap();
+        value["status"] = "success".into();
+        value["result"] = "closed".into();
+        crate::storage::append_json(&path, &value).unwrap();
+        value["id"] = "two".into();
+        value["status"] = "intent".into();
+        crate::storage::append_json(&path, &value).unwrap();
+        crate::storage::append_log(&path, b"torn JSON").unwrap();
+        let records = read_log_at(&path, 10).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].status, "success");
+        assert_eq!(records[1].status, "intent");
+        assert_eq!(read_log_at(&path, 1).unwrap()[0].id.as_deref(), Some("two"));
+    }
 }
 
 pub fn describe(rec: &ActionRecord) -> String {
@@ -747,9 +877,7 @@ fn close_by_pid_checked(
             s.host
         );
     }
-    let rec = close_session(s, mode, dry_run);
-    log(&rec)?;
-    Ok(rec)
+    execute_process(close_session(s, mode, true), &sys, &s.pids, mode, dry_run)
 }
 
 /// Stop a listening process by pid: only unmanaged ones without `force`.
@@ -760,11 +888,22 @@ pub fn stop_by_pid(
     force: bool,
     mode: &str,
 ) -> Result<ActionRecord> {
+    stop_reviewed_pid(pid, None, t, dry_run, force, mode)
+}
+pub fn stop_reviewed_pid(
+    pid: u32,
+    expected_start_time: Option<u64>,
+    t: &Thresholds,
+    dry_run: bool,
+    force: bool,
+    mode: &str,
+) -> Result<ActionRecord> {
     let mut sys = System::new();
     let snap = take_snapshot(&mut sys, Some(Duration::from_millis(1000)), t);
     let Some(p) = snap.ports.iter().find(|p| p.pid == pid) else {
         anyhow::bail!("pid {pid} is not listening on anything");
     };
+    check_session_identity(p.start_time, expected_start_time)?;
     if p.owner_managed && !force {
         anyhow::bail!(
             "pid {pid} ({}) belongs to {}, which manages its own lifecycle; use force to stop it anyway",
@@ -772,9 +911,116 @@ pub fn stop_by_pid(
             p.owner
         );
     }
-    let rec = stop_server(p, mode, dry_run);
-    log(&rec)?;
-    Ok(rec)
+    check_self_tree(&sys, &[p.pid])?;
+    execute_process(stop_server(p, mode, true), &sys, &[p.pid], mode, dry_run)
+}
+
+/// Automatic callers supply a freshly sampled snapshot carrying the daemon's
+/// existing observation window. This boundary never substitutes age-only evidence.
+pub(crate) fn execute_auto(
+    target: &crate::policy::Target,
+    snap: &crate::Snapshot,
+    sys: &System,
+    cfg: &crate::daemon::DaemonConfig,
+) -> Result<ActionRecord> {
+    use crate::policy::{Target, auto_server_candidates, auto_session_candidates};
+    let eligible = auto_target_eligible(target, snap, cfg);
+    let (mut plan, pids) = match target {
+        Target::Session(old) => {
+            let current = auto_session_candidates(snap, &cfg.auto, &cfg.thresholds)
+                .into_iter()
+                .find(|s| s.pid == old.pid && s.start_time == old.start_time);
+            let s = current.unwrap_or(old);
+            (close_session(s, "auto", true), s.pids.clone())
+        }
+        Target::Server(old) => {
+            let current = auto_server_candidates(snap, &cfg.thresholds)
+                .into_iter()
+                .find(|p| p.pid == old.pid && p.start_time == old.start_time);
+            let p = current.unwrap_or(old);
+            (stop_server(p, "auto", true), vec![p.pid])
+        }
+    };
+    if !eligible {
+        plan.identities = vec![match target {
+            Target::Session(s) => ProcessIdentity {
+                pid: s.pid,
+                start_time: s.start_time,
+            },
+            Target::Server(p) => ProcessIdentity {
+                pid: p.pid,
+                start_time: p.start_time,
+            },
+        }];
+        let result = plan.clone();
+        return journal(plan, "auto", false, || {
+            let mut rec = result;
+            rec.result = "skipped: target disappeared, changed identity, resumed activity, or current settings prohibit cleanup".into();
+            rec
+        });
+    }
+    execute_process(plan, sys, &pids, "auto", cfg.auto.dry_run)
+}
+fn auto_target_eligible(
+    target: &crate::policy::Target,
+    snap: &crate::Snapshot,
+    cfg: &crate::daemon::DaemonConfig,
+) -> bool {
+    use crate::policy::{Target, auto_server_candidates, auto_session_candidates};
+    match target {
+        Target::Session(old) => {
+            cfg.auto.close_sessions
+                && auto_session_candidates(snap, &cfg.auto, &cfg.thresholds)
+                    .iter()
+                    .any(|s| {
+                        s.pid == old.pid
+                            && s.start_time == old.start_time
+                            && s.cpu < cfg.thresholds.quiet_cpu
+                    })
+        }
+        Target::Server(old) => {
+            cfg.auto.stop_servers
+                && auto_server_candidates(snap, &cfg.thresholds)
+                    .iter()
+                    .any(|p| p.pid == old.pid && p.start_time == old.start_time)
+        }
+    }
+}
+
+fn check_self_tree(sys: &System, pids: &[u32]) -> Result<()> {
+    let mut current = Some(Pid::from_u32(std::process::id()));
+    for _ in 0..128 {
+        let Some(pid) = current else { break };
+        anyhow::ensure!(
+            !pids.contains(&pid.as_u32()),
+            "target contains this command or its host"
+        );
+        current = sys.process(pid).and_then(|p| p.parent());
+    }
+    Ok(())
+}
+fn execute_process(
+    mut plan: ActionRecord,
+    sys: &System,
+    pids: &[u32],
+    mode: &str,
+    dry_run: bool,
+) -> Result<ActionRecord> {
+    check_self_tree(sys, pids)?;
+    plan.identities = termination::capture(sys, pids);
+    anyhow::ensure!(
+        plan.identities.len() == pids.len(),
+        "target tree changed during validation; review it again"
+    );
+    let identities = plan.identities.clone();
+    let result = plan.clone();
+    journal(plan, mode, dry_run, || {
+        let mut result = result;
+        let outcome = termination::terminate(&identities, Duration::from_secs(10));
+        result.result = outcome.describe();
+        result.termination = Some(outcome);
+        result
+    })
 }
 
 /// One line describing a session for a confirmation or a log.
@@ -887,5 +1133,167 @@ mod tests {
             reopen_command(Path::new("/Applications/Slack.app"), &[]),
             "open /Applications/Slack.app"
         );
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use crate::test_support::*;
+    use std::cell::Cell;
+    #[test]
+    fn journal_fails_closed_and_keeps_incomplete_intent() {
+        let plan = close_session(&session(), "manual", true);
+        let ran = Cell::new(false);
+        assert!(
+            journal_with(
+                plan.clone(),
+                "manual",
+                false,
+                |_| anyhow::bail!("disk full"),
+                || {
+                    ran.set(true);
+                    plan.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(!ran.get());
+        let mut records = Vec::new();
+        let result = journal_with(
+            plan.clone(),
+            "manual",
+            false,
+            |r| {
+                if records.is_empty() {
+                    records.push(r.clone());
+                    Ok(())
+                } else {
+                    anyhow::bail!("completion failed")
+                }
+            },
+            || {
+                ran.set(true);
+                plan.clone()
+            },
+        );
+        assert!(result.is_err());
+        assert!(ran.get());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, "intent");
+        assert!(records[0].resume == plan.resume && records[0].transcript == plan.transcript);
+        assert!(records[0].result.contains("unknown"));
+        let mut writes = Vec::new();
+        let done = journal_with(
+            plan.clone(),
+            "auto",
+            false,
+            |r| {
+                writes.push(r.clone());
+                Ok(())
+            },
+            || {
+                let mut r = plan.clone();
+                r.result = "failed: fixture".into();
+                r
+            },
+        )
+        .unwrap();
+        assert_eq!(done.status, "failure");
+        assert_eq!(writes[0].id, writes[1].id);
+        let mut log_text = serde_json::to_string(&plan).unwrap();
+        log_text.push('\n');
+        for rec in writes {
+            log_text += &serde_json::to_string(&rec).unwrap();
+            log_text.push('\n');
+        }
+        let merged = parse_log(&log_text, 10);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[1].status, "failure");
+        let dry = journal_with(
+            plan.clone(),
+            "auto",
+            true,
+            |_| Ok(()),
+            || panic!("dry run executed"),
+        )
+        .unwrap();
+        assert_eq!(dry.status, "dry_run");
+        assert_eq!(dry.mode, "dry-run");
+    }
+    #[test]
+    fn interruption_is_visible_and_legacy_records_still_parse() {
+        let plan = close_session(&session(), "manual", true);
+        let mut records = Vec::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = journal_with(
+                plan,
+                "manual",
+                false,
+                |r| {
+                    records.push(r.clone());
+                    Ok(())
+                },
+                || panic!("interrupted"),
+            );
+        }));
+        assert!(result.is_err());
+        assert_eq!(records[0].status, "intent");
+        let mut value = serde_json::to_value(&records[0]).unwrap();
+        for field in [
+            "id",
+            "status",
+            "identities",
+            "target_identity",
+            "termination",
+        ] {
+            value.as_object_mut().unwrap().remove(field);
+        }
+        let legacy: ActionRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.status, "legacy");
+    }
+    #[test]
+    fn revalidation_rejects_changes_between_batch_targets() {
+        let mut cfg = crate::daemon::DaemonConfig::from_config(
+            &crate::config::Config::default(),
+            &crate::daemon::Overrides::default(),
+        );
+        cfg.auto.close_sessions = true;
+        cfg.auto.stop_servers = true;
+        cfg.auto.hosts = vec!["terminal".into()];
+        let mut snap = snapshot();
+        let mut s = session();
+        s.project = None;
+        snap.sessions.push(s.clone());
+        snap.ports.push(port());
+        let selected = crate::policy::Target::Session(s.clone());
+        assert!(auto_target_eligible(&selected, &snap, &cfg));
+        for change in [
+            (|s: &mut AgentSession| s.start_time += 1) as fn(&mut AgentSession),
+            |s| s.cpu = 3.,
+            |s| s.idle_secs = Some(0),
+            |s| s.engine = true,
+            |s| s.is_self = true,
+            |s| s.quiet_for_secs = None,
+            |s| s.cpu_window_mean = None,
+        ] {
+            snap.sessions[0] = s.clone();
+            change(&mut snap.sessions[0]);
+            snap.sessions[0].state =
+                crate::rules::session_state(&snap.sessions[0], &cfg.thresholds);
+            assert!(!auto_target_eligible(&selected, &snap, &cfg));
+        }
+        snap.sessions.clear();
+        assert!(!auto_target_eligible(&selected, &snap, &cfg));
+        snap.sessions.push(s);
+        cfg.auto.close_sessions = false;
+        assert!(!auto_target_eligible(&selected, &snap, &cfg));
+        let server = crate::policy::Target::Server(snap.ports[0].clone());
+        assert!(auto_target_eligible(&server, &snap, &cfg));
+        cfg.auto.stop_servers = false;
+        assert!(!auto_target_eligible(&server, &snap, &cfg));
+        cfg.auto.stop_servers = true;
+        snap.ports[0].start_time += 1;
+        assert!(!auto_target_eligible(&server, &snap, &cfg));
     }
 }

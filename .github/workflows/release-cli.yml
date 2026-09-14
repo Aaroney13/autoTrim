@@ -1,0 +1,108 @@
+name: CLI draft release
+on:
+  push:
+    tags: ['cli-v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to rebuild (cli-vX.Y.Z)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: cli-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: version
+        name: Validate tag against package version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python scripts/package-release.py --tag "$RELEASE_TAG" --check-version
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p autotrim --target ${{ matrix.target }}
+      - run: cargo build --locked --release -p autotrim --target ${{ matrix.target }}
+      - name: Package, extract, check hashes, and smoke-test
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: python scripts/package-release.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+  draft:
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: dist
+      - name: Attach the complete verified set to a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          test "$(find . -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 4
+          printf 'CLI artifact upload in progress. This draft is incomplete until all four targets are attached.\n' > /tmp/release-body.md
+          if gh release view "$RELEASE_TAG" --json isDraft > /tmp/release.json 2>/tmp/release-error; then
+            test "$(jq -r .isDraft /tmp/release.json)" = true || { echo 'Refusing to change a published release'; exit 1; }
+            gh release edit "$RELEASE_TAG" --draft --latest=false --notes-file /tmp/release-body.md
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false --title "autoTrim $RELEASE_TAG" --notes-file /tmp/release-body.md
+          fi
+          gh release upload "$RELEASE_TAG" ./*.tar.gz ./*.zip SHA256SUMS --clobber
+          printf 'All four CLI archives passed native checksum, --version, and --help checks.\n\nUnsigned binaries; desktop functionality on Linux/Windows has not been validated. See docs/cli-releases.md for installation and limitations.\n\nMaintainer review is required before publishing this draft.\n' > /tmp/release-body.md
+          gh release edit "$RELEASE_TAG" --draft --latest=false --notes-file /tmp/release-body.md

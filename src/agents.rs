@@ -95,7 +95,7 @@ pub struct AgentSession {
     /// CPU percent summed over the session's process tree.
     pub cpu: f32,
     /// Memory summed over the session's process tree: `phys_footprint` on
-    /// macOS, so what closing it returns; resident size elsewhere.
+    /// macOS; resident size elsewhere. This is not measured action savings.
     pub rss: u64,
     pub procs: usize,
     pub state: SessionState,
