@@ -43,6 +43,15 @@ fn options() -> OpenOptions {
     opts
 }
 
+fn append_options() -> OpenOptions {
+    let mut opts = options();
+    // Windows append mode removes FILE_WRITE_DATA, so set_len fails during
+    // rotation or rollback. Use write access there and seek to EOF under the
+    // file lock. Keep atomic append on Unix for launchd's external log writer.
+    opts.create(true).append(!cfg!(windows));
+    opts
+}
+
 fn secure_file(file: &File) -> Result<()> {
     if !file.metadata()?.is_file() {
         bail!("state/log path must be a regular file");
@@ -160,7 +169,7 @@ fn append_with_lock(
         bail!("log record exceeds {limit} bytes");
     }
     private_dir(path.parent().context("log path has no parent")?)?;
-    let mut file = options().create(true).append(true).open(path)?;
+    let mut file = append_options().open(path)?;
     secure_file(&file)?;
     if nonblocking {
         file.try_lock()?;
@@ -172,7 +181,7 @@ fn append_with_lock(
     }
     // Serialize before opening the file so an encoding error never leaves
     // half a JSON record behind. Roll back a short/failed write as well.
-    let before = file.metadata()?.len();
+    let before = file.seek(SeekFrom::End(0))?;
     if let Err(error) = file.write_all(bytes) {
         let _ = file.set_len(before);
         return Err(error.into());
@@ -224,10 +233,10 @@ pub fn append_history(path: &Path, value: &impl serde::Serialize) -> Result<()> 
     let mut bytes = serde_json::to_vec(value)?;
     bytes.push(b'\n');
     private_dir(path.parent().context("history path has no parent")?)?;
-    let mut file = options().create(true).append(true).open(path)?;
+    let mut file = append_options().open(path)?;
     secure_file(&file)?;
     file.lock()?;
-    let before = file.metadata()?.len();
+    let before = file.seek(SeekFrom::End(0))?;
     if let Err(error) = file.write_all(&bytes) {
         let _ = file.set_len(before);
         return Err(error.into());
@@ -430,6 +439,19 @@ pub(crate) mod tests {
             .map(|v| (v["worker"].as_u64().unwrap(), v["i"].as_u64().unwrap()))
             .collect();
         assert_eq!(distinct.len(), 80);
+    }
+
+    #[test]
+    fn history_appends_preserve_existing_records() {
+        let dir = Scratch::new();
+        let path = dir.0.join("history-2026-09-14.jsonl");
+        fs::write(&path, b"\"existing\"\n").unwrap();
+        append_history(&path, &"second").unwrap();
+        append_history(&path, &"third").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "\"existing\"\n\"second\"\n\"third\"\n"
+        );
     }
 
     #[test]
