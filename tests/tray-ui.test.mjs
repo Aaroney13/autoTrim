@@ -6,14 +6,20 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('../tray/ui/index.html', import.meta.url), 'utf8');
-const moduleSource = name => readFileSync(new URL(`../tray/ui/${name}.js`, import.meta.url), 'utf8')
+const readModule = name => readFileSync(new URL(`../tray/ui/${name}.js`, import.meta.url), 'utf8');
+const moduleSource = source => source
+  // Git checkouts on Windows may use CRLF. Normalize before matching
+  // module declarations and the injected action factory's closing brace.
+  .replace(/\r\n?/g, '\n')
   .replace(/^import .*;\n/gm, '').replace(/^export \{[^}]*\};?\n/gm, '')
   .replace(/^export function createActions[^\n]*\n/m, '')
   .replace(/^return \{[^\n]*\n\}\n?$/m, '')
   .replace(/^const \{[^\n]* = createActions[^\n]*\n/m, '');
-const script = ['format', 'state', 'actions', 'render'].map(moduleSource).join('\n');
+const buildScript = (readSource = readModule) => ['format', 'state', 'actions', 'render']
+  .map(name => moduleSource(readSource(name))).join('\n');
+const script = buildScript();
 
-function load(invoke = async () => {}) {
+function load(invoke = async () => {}, source = script) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -28,7 +34,7 @@ function load(invoke = async () => {}) {
     document, window: { __TAURI__: { core: { invoke } } },
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0,
   });
-  vm.runInContext(script, context);
+  vm.runInContext(source, context);
   // Rendering is tested in the browser. These tests check decisions and
   // bridge calls independently from the DOM implementation.
   vm.runInContext('const actualRefresh = refresh; renderAll = () => {}; renderHeader = () => {}; renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
@@ -38,6 +44,24 @@ function load(invoke = async () => {}) {
     setReview(value) { state.actionReview = value; } })`, context);
   return { ...api, elements, context };
 }
+
+test('fixture loader executes real UI modules with LF, CRLF, and mixed line endings', async () => {
+  for (const newline of ['\n', '\r\n', 'mixed']) {
+    const source = buildScript(name => readModule(name).replace(/\r\n?/g, '\n')
+      .split('\n').map((line, index, lines) => line + (index === lines.length - 1 ? ''
+        : newline === 'mixed' ? (index % 2 ? '\r\n' : '\n') : newline)).join(''));
+    const calls = [];
+    const ui = load(async (command, args) => {
+      calls.push([command, args.pid, args.expectedStartTime]);
+      return { status: 'success', result: 'terminated', target: 'Fixture' };
+    }, source);
+    ui.setReview({ kind: 'sessions', targets: [{ id: 42, name: 'Fixture', startTime: 123 }],
+      selected: new Set([42]), busy: false });
+    await ui.executeReview();
+    assert.deepEqual(calls, [['close_session', 42, 123]], newline);
+    assert.equal(ui.state.gone.pids.has(42), true, newline);
+  }
+});
 
 const sessions = [
   { pid: 1, state: 'stale', session_name: 'Billing', project: 'atlas', rss: 300, idle_secs: 100 },
