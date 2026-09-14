@@ -21,7 +21,7 @@ function holders(s) {
     const sessions = g.kind === "agent" ? s.sessions.filter(x => g.pids.includes(x.pid)) : [];
     const kind = g.kind === "agent" ? "agent" : browser ? "browser" : g.kind === "app" ? "app" : "other";
     let count;
-    if (kind === "agent") { const live = sessions.filter(x => !goneSession(x)), stale = live.filter(x => x.state === "stale").length; count = plural(live.length, "session") + (stale ? ` · ${stale} stale` : ""); }
+    if (kind === "agent") { const live = sessions.filter(x => !goneSession(x)), stale = live.filter(x => x.state === "stale").length; count = sessionCount(live) + (stale ? ` · ${stale} stale` : ""); }
     else if (browser) { const live = browser.tabs.filter(t => !goneTab(t)), stale = live.filter(t => isStale(browser, t)).length; count = live.length ? plural(live.length, "tab") + (stale ? ` · ${stale} stale` : "") : plural(g.procs, "proc"); }
     else count = plural(g.procs, "proc");
     return { key: "g:" + g.name, name: g.name, kind, rss: g.rss, cpu: g.cpu, procs: g.procs, pids: g.pids, app: g.app || null, count, group: g, browser, sessions };
@@ -47,6 +47,14 @@ const sessionKey = x => `${x.pid}:${x.start_time}`;
 const tabKey = (b, t) => JSON.stringify([b.name, t.id, t.profile, t.url]);
 
 const sessionName = x => x.session_name || x.project || "Unnamed session";
+
+function sessionCount(list) {
+  const engines = list.filter(x => x.engine).length, standalone = list.length - engines;
+  const tasks = list.flatMap(x => x.threads || []).filter(t => !t.helper).length;
+  return [engines ? plural(engines, "backend") : "", standalone ? plural(standalone, "session") : "", tasks ? plural(tasks, "loaded task") : ""].filter(Boolean).join(" · ") || "0 sessions";
+}
+
+const taskSearch = t => [t.name, t.first_prompt, t.cwd, t.id].join(" ").toLowerCase();
 
 const sessionProtection = x => goneSession(x) ? "Closed" : x.is_self ? "This session" : x.engine ? "App engine" : x.state === "active" ? "In use" : "";
 
@@ -84,7 +92,7 @@ const canCloseTab = (b, t) => b.can_close_tabs && !goneTab(t) && !t.pinned && !t
 
 function filteredSessions(list) {
   const q = state.sessFilter.trim().toLowerCase();
-  return list.filter(x => !goneSession(x) && (state.sessState === "all" || x.state === state.sessState) && (!q || [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q)))
+  return list.filter(x => !goneSession(x) && (state.sessState === "all" || x.state === state.sessState) && (!q || [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q) || (x.threads || []).some(t => taskSearch(t).includes(q))))
     .sort((a, b) => state.sessSort === "idle" ? (b.idle_secs ?? b.quiet_for_secs ?? -1) - (a.idle_secs ?? a.quiet_for_secs ?? -1) : state.sessSort === "age" ? b.age_secs - a.age_secs : state.sessSort === "name" ? String(a.session_name ?? a.project).localeCompare(String(b.session_name ?? b.project)) : b.rss - a.rss);
 }
 
@@ -105,4 +113,4 @@ function actionSucceeded(record) {
   return /^(terminated|killed|stopped|closed|already gone|not open any more)/.test(record.result) && !/partial|failed|still running/i.test(record.result);
 }
 
-export { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };
+export { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };

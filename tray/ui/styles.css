@@ -289,3 +289,7 @@
   @media (max-width: 850px) { nav { width: 190px; padding: 13px 7px; } main { padding: 19px 18px 32px; } header { gap: 16px; padding: 12px 15px; } header .sync { max-width: 170px; } .mode-choices { gap: 6px; } .card .mode-choice { padding: 8px; } }
   @media (max-width: 620px) { header { flex-wrap: wrap; } header .mem { max-width: none; flex: 1; min-width: 190px; } header .sync { max-width: none; width: 100%; } .body { flex-direction: column; } nav { width: 100%; max-height: 140px; border-right: 0; border-bottom: 1px solid var(--line); display: block; } nav .item { margin: 2px 0; } .nav-status { display: none; } .nav-primary { display: flex; flex-wrap: wrap; } .nav-holders { display: none; } .observation { grid-template-columns: 16px minmax(0, 1fr); } .observation a { grid-column: 2; } .advice-row { grid-template-columns: 1fr; gap: 10px; } .advice-row a { justify-self: start; } main { padding: 18px 12px; } .mode-choices { grid-template-columns: 1fr; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+.task-details { margin: 20px 0; }
+.task-details > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.task-details > summary .muted { font-weight: 400; }

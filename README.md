@@ -148,7 +148,10 @@ guarantee restoration of unsaved drafts, temporary chats, or in-memory work.
   OpenClaw by name. Each with its host, project, name (your title, else your
   first prompt), age, idle time, and memory. The agent's own client (the
   Claude app, ChatGPT) is folded into the group, so it is not listed beside
-  its sessions as a second holder. Closing a session logs the resume command.
+  its sessions as a second holder. Codex backends expand into the tasks whose
+  transcripts they hold open, with titles, projects, last activity, and labeled
+  helpers. Memory and CPU remain shared at the backend; saved history is not
+  counted as loaded tasks. Closing a session logs the resume command.
 - **Browser tabs** in every running Chrome, Chromium, Brave, Edge, and
   Vivaldi profile: title, site, pinned, and how long since you last looked,
   read from the browser's own session files rather than by asking it.

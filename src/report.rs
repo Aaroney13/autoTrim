@@ -44,12 +44,32 @@ pub fn render(s: &Snapshot) -> String {
     for g in s.groups.iter().take(12) {
         let (count, unit) = match g.kind {
             crate::groups::GroupKind::Agent => {
-                let n = s
+                let sessions: Vec<_> = s
                     .sessions
                     .iter()
                     .filter(|x| g.pids.contains(&x.pid))
+                    .collect();
+                let n = sessions.len();
+                let noun = if sessions.iter().all(|x| x.engine) {
+                    if n == 1 { "backend" } else { "backends" }
+                } else if n == 1 {
+                    "session"
+                } else {
+                    "sessions"
+                };
+                let tasks = sessions
+                    .iter()
+                    .flat_map(|x| &x.threads)
+                    .filter(|t| !t.helper)
                     .count();
-                let noun = if n == 1 { "session" } else { "sessions" };
+                let noun = if tasks > 0 {
+                    format!(
+                        "{noun} · {tasks} loaded task{}",
+                        if tasks == 1 { "" } else { "s" }
+                    )
+                } else {
+                    noun.to_string()
+                };
                 let unit = match &g.app {
                     Some(a) => format!("{noun} + the {a} app"),
                     None => noun.to_string(),
@@ -238,6 +258,34 @@ pub fn render(s: &Snapshot) -> String {
                 state,
                 tag
             );
+            if !x.threads.is_empty() {
+                let _ = writeln!(
+                    o,
+                    "    Loaded tasks (shared memory above; only open transcripts are visible)"
+                );
+                for t in &x.threads {
+                    let name = t
+                        .name
+                        .as_deref()
+                        .or(t.first_prompt.as_deref())
+                        .or(t.id.as_deref())
+                        .unwrap_or("Unnamed task");
+                    let activity = t
+                        .last_activity
+                        .map(|ts| {
+                            format!("last activity {} ago", dur(s.taken_at.saturating_sub(ts)))
+                        })
+                        .unwrap_or_else(|| "activity unknown".to_string());
+                    let _ = writeln!(
+                        o,
+                        "      {}{} · {} · {}",
+                        if t.helper { "[helper] " } else { "" },
+                        name,
+                        t.cwd.as_deref().unwrap_or("project unknown"),
+                        activity
+                    );
+                }
+            }
         }
     }
 

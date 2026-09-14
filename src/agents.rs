@@ -78,6 +78,9 @@ pub enum SessionState {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AgentSession {
+    /// Tasks observed through open transcripts; memory/CPU remain shared here.
+    #[serde(default)]
+    pub threads: Vec<transcripts::AgentThread>,
     pub pid: u32,
     pub kind: AgentKind,
     /// What launched it: a desktop app, an editor, or a terminal.
@@ -388,6 +391,7 @@ pub fn detect(table: &ProcTable, stale_after_secs: u64) -> Detection {
             (None, None) => None,
         };
         sessions.push(AgentSession {
+            threads: t.map(|t| t.details.clone()).unwrap_or_default(),
             pid: p.pid,
             kind,
             host,

@@ -102,7 +102,15 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   named from its thread index, Copilot sessions from `workspace.yaml`,
   Cursor chats from the chat store's own name, each falling back to the
   first prompt. An app's engine (Codex `app-server`, Copilot `--server`) is
-  one session serving every thread the app shows; with nothing open it is
+  one process tree serving multiple tasks. Codex scans open rollouts across
+  the entire tree, deduplicates paths, and retains each task's ID, title (or
+  first prompt), project, transcript, last activity, and helper marker in
+  the snapshot. The window shows a backend count and expandable, searchable
+  loaded tasks; the CLI also lists each observed task. Saved history without
+  an open transcript is excluded. Task activity does not establish execution
+  state, and memory/CPU cannot be divided among tasks. Close controls and
+  resource trends remain attached to the process tree. Older snapshots without
+  task details still load. With nothing open the engine is
   part of the app, not a session, and auto mode never closes an engine
   because the app would restart it. Closing any of them logs the resume
   command: `claude --resume`, `codex resume`, `copilot --resume=`,

@@ -1,6 +1,6 @@
 // Dashboard markup and DOM rendering.
 import { icon, GB, bytes, dur, pct, esc, plural, kindTag, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes, MB } from "./format.js";
-import { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
+import { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
 import { createActions } from "./actions.js";
 const { toast, copyText, copyCommand, twoStep, afterAction, report, refresh, navigate, saveAuto, reviewSessions, reviewTabs, reviewPorts, reviewNoun, reviewVerb, openReview, updateReviewTotal, executeReview, markGone, pruneGone, runUpdate, wire } = createActions({ renderAll: (...a) => renderAll(...a), renderMain: (...a) => renderMain(...a), renderSide: (...a) => renderSide(...a), renderHeader: (...a) => renderHeader(...a) });
 function renderHeader() {
@@ -197,7 +197,7 @@ function viewOverview() {
   const trends = (s.trends || []).filter(t => t.kind !== "renderer" && t.span_secs >= 600).slice(0, 8);
   const observations = s.advice.filter(isObservation), advice = s.advice.filter(a => !isObservation(a));
   return `<h1>Overview <span class="monitor-status ${state.src.daemon_running ? "on" : ""}">${icon(state.src.daemon_running ? "check" : "info")}${state.src.daemon_running ? "Monitoring" : "Manual scans"}</span></h1>
-    <div class="sub"><span><b>${plural(s.sessions.filter(x => !goneSession(x)).length, "agent session")}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span></div>
+    <div class="sub"><span><b>${sessionCount(s.sessions.filter(x => !goneSession(x)))}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span></div>
     ${a && a.pending.length ? `<div class="card">${pendingList(a)}</div>` : ""}
     <h2>Worth a look <small>Choose what to review</small></h2>${adviceCards(advice)}
     ${observations.length ? observationCards(observations) : ""}
@@ -266,13 +266,36 @@ function sessionTable(list) {
   const rows = list.filter(x => !goneSession(x)).map(x => {
     const idle = x.idle_secs ?? x.quiet_for_secs, protection = sessionProtection(x);
     const engineNote = `${x.host}'s agent engine serves the app's threads. Close those threads in the app.`;
-    return { id: sessionKey(x), data: x, title: sessionName(x), context: x.project || x.host, type: "Agent", status: x.state, statusLabel: protection || (x.state === "stale" ? "Stale" : "Idle"), idle, idleLabel: x.idle_secs != null ? "Last activity" : "CPU quiet for", idleIsDuration: x.idle_secs == null,
-      metric: bytes(x.rss), metricLabel: "In memory now", rss: x.rss, eligible: canCloseSession(x), protection,
+    return { id: sessionKey(x), data: x, title: x.engine ? `${AGENT_LABEL[x.kind] || "Agent"} backend` : sessionName(x), context: x.engine ? `${sessionCount([x])} · ${x.host}` : x.project || x.host, type: x.engine ? "Shared backend" : "Agent", status: x.state, statusLabel: protection || (x.state === "stale" ? "Stale" : "Idle"), idle, idleLabel: x.idle_secs != null ? "Last activity" : "CPU quiet for", idleIsDuration: x.idle_secs == null,
+      metric: bytes(x.rss), metricLabel: x.engine ? "Shared memory across loaded tasks" : "In memory now", rss: x.rss, eligible: canCloseSession(x), protection,
       facts: [["Host", x.host], ["Open", dur(x.age_secs)], ["CPU", (x.cpu_window_mean ?? x.cpu ?? 0).toFixed(1) + "%"], ["PID", x.pid], ["Ports", (x.ports || []).join(", ") || "None"], [x.idle_secs != null ? "Last activity" : "CPU quiet for", x.state === "active" ? "Working now" : idle != null ? dur(idle) + (x.idle_secs != null ? " ago" : "") : "Unknown"]],
       note: x.engine ? engineNote : `${x.first_prompt && x.first_prompt !== sessionName(x) ? x.first_prompt + '\n\n' : ''}${x.idle_secs != null ? 'The transcript stays on disk. Available resume commands are saved in Actions before closing.' : 'Idle time comes from CPU observations; transcript activity is unavailable. Available resume commands are saved in Actions.'}`,
       action: protection ? `<button disabled>${esc(protection)} · kept open</button>` : `<button class="primary" data-close-session="${x.pid}">Review close</button>` };
   });
-  return compactList("sessions", rows, { label: "Agent sessions", title: "Session / project", metric: "Memory", noun: "session", plural: "sessions", review: chosen => reviewSessions(chosen.map(r => r.data)), empty: "No sessions match. Try another search or choose All sessions." });
+  const resourceList = compactList("sessions", rows, { label: "Agent sessions", title: "Session / project", metric: "Memory", noun: "session", plural: "sessions", review: chosen => reviewSessions(chosen.map(r => r.data)), empty: "No sessions match. Try another search or choose All sessions." });
+  const live = list.filter(x => !goneSession(x));
+  const resources = live.length && live.every(x => x.engine && x.threads?.length)
+    ? `<details class="task-details" data-keep-open="backend-resources"><summary>Shared backend resources · ${esc(bytes(live.reduce((sum, x) => sum + x.rss, 0)))}</summary>${resourceList}</details>`
+    : resourceList;
+  return resources + live.map(taskTable).join("");
+}
+
+
+function taskTable(x) {
+  const threads = x.threads || [];
+  if (!threads.length) return x.engine ? `<p class="help">Task details are unavailable in this snapshot. A backend can serve several tasks; its session count is not a task count.</p>` : "";
+  const q = state.sessFilter.trim().toLowerCase();
+  const matchesBackend = [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q);
+  const visible = threads.filter(t => !q || matchesBackend || taskSearch(t).includes(q));
+  const rows = visible.map(t => {
+    const ago = t.last_activity == null || state.snap?.taken_at == null ? null : Math.max(0, state.snap.taken_at - t.last_activity);
+    const activity = ago == null ? "Unknown" : `${dur(ago)} ago`;
+    return { id: t.id || t.transcript, title: t.name || t.first_prompt || t.id || "Unnamed task", context: `${t.helper ? "Helper · " : ""}${t.cwd || "Project unknown"}`, type: t.helper ? "Helper task" : "Loaded task",
+      metric: activity, metricLabel: "Last transcript activity", facts: [["Project", t.cwd || "Unknown"], ["Task ID", t.id || "Unknown"], ["Backend PID", x.pid], ["Visibility", "Transcript held open"], ["Memory / CPU", "Shared by the backend"]],
+      note: "An open transcript shows this task is loaded. Last activity does not prove it is running or finished. Manage this task in its host app." };
+  });
+  const own = threads.filter(t => !t.helper).length, helpers = threads.length - own;
+  return `<details class="task-details" data-keep-open="tasks:${esc(sessionKey(x))}" open><summary>${esc(plural(own, "loaded task"))}${helpers ? ` · ${esc(plural(helpers, "helper"))}` : ""} <span class="muted">· ${esc(x.host)} · PID ${x.pid}</span></summary><p class="help">Tasks with open transcripts appear here. Saved history is not counted. Memory and CPU are shared by the backend above.</p>${compactList("tasks:" + sessionKey(x), rows, { label: "Loaded tasks", title: "Task / project", metric: "Last activity", noun: "task", plural: "tasks", empty: "No loaded tasks match this search." })}</details>`;
 }
 
 
@@ -281,8 +304,8 @@ function viewAgents(h) {
   const appRss = h.app ? Math.max(0, h.rss - h.sessions.reduce((n, x) => n + x.rss, 0)) : 0;
   const ports = s.ports.filter(p => h.pids.includes(p.pid) && !h.sessions.some(x => (x.pids || []).includes(p.pid)));
   const trend = (s.trends || []).find(t => t.key === h.key && t.span_secs >= 600);
-  return `<h1>${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> total</span><span>${plural(live.length, "session")}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
-    <div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-session-filter aria-label="Search sessions" placeholder="Search sessions or projects" value="${esc(state.sessFilter)}"></label><select data-sess-sort aria-label="Sort sessions">${["rss", "idle", "age", "name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"Most memory",idle:"Longest idle",age:"Oldest",name:"Name"}[k]}</option>`).join("")}</select></div>
+  return `<h1>${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> total</span><span>${sessionCount(live)}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
+    <div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-session-filter aria-label="Search sessions" placeholder="Search tasks, sessions or projects" value="${esc(state.sessFilter)}"></label><select data-sess-sort aria-label="Sort sessions">${["rss", "idle", "age", "name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"Most memory",idle:"Longest idle",age:"Oldest",name:"Name"}[k]}</option>`).join("")}</select></div>
     <div class="filter-row">${filterChips("session", state.sessState, [["all", "All sessions"], ["stale", "Stale"], ["active", "Active"]])}<span class="muted">${visible.length} shown</span></div>
     ${sessionTable(visible)}<p class="help">Select a session name for its age, CPU, host, and ports. Active sessions and app engines stay open.</p>
     ${h.app ? `<details class="help" data-keep-open="app-memory"><summary>What is included in ${bytes(h.rss)}?</summary><p>The ${esc(h.app)} app holds ${bytes(appRss)}. The remaining memory belongs to its sessions, including those running in terminals.</p></details>` : ""}

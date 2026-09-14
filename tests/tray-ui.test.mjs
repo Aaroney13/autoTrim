@@ -307,3 +307,33 @@ test('two-step confirmation does not call IPC on its first click', async () => {
   ui.twoStep(button, 'fixture', run); assert.equal(calls, 0); assert.equal(button.textContent, 'Confirm');
   ui.twoStep(button, 'fixture', run); await Promise.resolve(); assert.equal(calls, 1);
 });
+
+
+test('shared Codex backend exposes older tasks and helpers without task-level close or memory', () => {
+  const ui = load();
+  ui.state.snap = { taken_at: 50000 };
+  const backend = { ...sessions[2], kind: 'codex', host: 'Codex app', engine: true, start_time: 10,
+    threads: [
+      { id: 'current', name: 'Current work', cwd: '/project/current', last_activity: 49990 },
+      { id: 'old', name: 'Older <project>', cwd: '/project/archive', last_activity: 100 },
+      { id: 'helper', name: 'Review helper', helper: true, last_activity: null },
+    ] };
+  const markup = ui.sessionTable([backend]);
+  assert.match(markup, /Codex backend/);
+  assert.match(markup, /2 loaded tasks/);
+  assert.match(markup, /1 helper/);
+  assert.match(markup, /Older &lt;project&gt;/);
+  assert.match(markup, /Review helper/);
+  assert.match(markup, /Shared memory across loaded tasks/);
+  assert.doesNotMatch(markup, /data-close-session=/);
+  assert.doesNotMatch(markup, /data-list-review=/);
+  const taskLists = vm.runInContext('[...listModels.values()].filter(m => m.options.noun === "task")', ui.context);
+  assert.equal(taskLists[0].rows.length, 3);
+  assert.ok(taskLists[0].rows.every(r => r.rss == null && !r.eligible && !r.action));
+  ui.state.sessFilter = 'archive';
+  assert.equal(ui.filteredSessions([backend]).length, 1);
+  const filtered = ui.sessionTable(ui.filteredSessions([backend]));
+  assert.match(filtered, /Older &lt;project&gt;/);
+  assert.doesNotMatch(filtered, /Review helper/);
+  assert.doesNotThrow(() => ui.sessionTable([{ ...backend, threads: undefined }]));
+});

@@ -494,6 +494,7 @@ mod tests {
 
     fn session(pid: u32, kind: AgentKind, rss: u64, procs: usize) -> AgentSession {
         AgentSession {
+            threads: Vec::new(),
             pid,
             kind,
             host: "app".to_string(),
