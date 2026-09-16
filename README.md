@@ -191,6 +191,13 @@ AUTOTRIM_DATA_DIR=/tmp/scratch ./target/debug/autotrim daemon --once   # never t
 cargo run -p autotrim-tray --release                                   # the app, unbundled
 ```
 
+For browser interaction checks with synthetic data, install Playwright with
+`npm install --no-save --package-lock=false playwright`, run
+`npx playwright install chromium`, then `node tests/tray-interactions.browser.cjs`.
+The checks cover full-row clicks and highlighting, keyboard and checkbox
+selection, and clicks during background refresh in light and dark themes.
+`AUTOTRIM_TEST_CHROMIUM` can point to an existing Chromium executable.
+
 Everything upstream of `rules.rs` produces one `Snapshot` (`src/lib.rs`),
 serialized to JSON, and the daemon, the tray, `scan`, and `status` all
 consume it. Roughly: `system.rs`, `procs.rs`, `footprint.rs`, and `groups.rs`
