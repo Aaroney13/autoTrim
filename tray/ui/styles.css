@@ -140,6 +140,7 @@
 
   [hidden] { display: none !important; }
   button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+  html[data-list-input="pointer"] [data-list-control]:focus { outline: none; }
   a[data-goto]:hover { text-decoration: underline; }
   .memory-detail { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
   header { flex: none; }
@@ -191,8 +192,9 @@
   .compact-table th { padding: 8px 7px; font-size: 10px; font-weight: 500; background: transparent; color: var(--muted); border-bottom: 1px solid var(--line); }
   .compact-table td { height: 53px; padding: 10px 7px; border-bottom: 1px solid var(--line); background: transparent; }
   .compact-table tbody tr:nth-child(even) { --row-bg: transparent; }
+  .compact-table tbody tr { cursor: pointer; }
   .compact-table tbody tr:hover > td, .compact-table tbody tr:focus-within > td { background: var(--hover); }
-  .compact-table tr.inspected > td, .compact-table tr.selected > td { background: var(--sel); }
+  .compact-table tbody tr.inspected > td, .compact-table tbody tr.selected > td { background: var(--sel); }
   .compact-table tr.inspected > td:first-child { box-shadow: inset 2px 0 var(--accent); }
   .compact-table .check { width: 29px; padding-left: 4px; padding-right: 6px; }
   .compact-table .metric { width: 85px; font-size: 12px; }

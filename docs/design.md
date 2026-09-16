@@ -171,7 +171,17 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   app and service actions retain their two-click confirmation. Server stopping
   uses the same target review dialog, with one entry per process. Sessions,
   tabs, sites, ports, and trends use compact lists with a details pane; stale
-  rows show a small idle duration next to the status dot. Selection follows
+  rows show a small idle duration next to the status dot. Clicking anywhere
+  on a row opens its details, including the subtitle, metric, and padding;
+  checkboxes select independently. The title remains a keyboard-operable
+  button. The selected fill covers every cell and takes precedence over
+  hover and focus styling. A background refresh waits for an active pointer
+  press to finish so it cannot remove the control before its click fires.
+  Dragging to select row text keeps the selection through refresh, and clicked
+  row controls retain keyboard focus after rendering on the system web view.
+  Mouse clicks use the row fill without a title or checkbox focus outline;
+  keyboard navigation and activation show the focus outline, including after refresh.
+  Selection follows
   the visible filters and excludes protected items. The pane stacks below
   the list in narrow windows. The tray
   reads the daemon's snapshot every five seconds and only scans on its own

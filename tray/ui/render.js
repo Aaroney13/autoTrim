@@ -259,7 +259,7 @@ function compactList(key, rows, options) {
   const controls = r => `data-list="${esc(key)}" data-row="${esc(r.id)}"`;
   const selectedMemory = chosen.reduce((n, r) => n + (r.rss || 0), 0);
   const stale = eligible.filter(r => r.status === "stale");
-  return `<section class="compact-section" aria-label="${esc(options.label)}"><div class="compact-layout"><div class="compact-list"><table class="compact-table"><thead><tr>${options.review ? `<th class="check"><input type="checkbox" data-list-all="${esc(key)}" data-list-control="${esc(key)}:all" aria-label="Select all eligible ${esc(options.plural)}" ${chosen.length && chosen.length === eligible.length ? "checked" : ""} ${eligible.length ? "" : "disabled"}></th>` : ""}<th>${esc(options.title)}</th><th class="num metric">${esc(options.metric)}</th></tr></thead><tbody>${rows.map(r => `<tr class="${r.id === saved.inspected ? 'inspected' : ''} ${saved.selected.has(r.id) ? 'selected' : ''}">${options.review ? `<td class="check">${r.eligible ? `<input type="checkbox" data-list-select ${controls(r)} data-list-control="${esc(key + ':select:' + r.id)}" aria-label="Select ${esc(r.title)}" ${saved.selected.has(r.id) ? "checked" : ""}>` : `<span class="row-lock" title="${esc(r.protection)}" aria-label="${esc(r.protection)}">${icon("lock")}</span>`}</td>` : ""}<td><button class="row-title" data-list-inspect ${controls(r)} data-list-control="${esc(key + ':inspect:' + r.id)}" aria-pressed="${r.id === saved.inspected}" title="${esc(r.title)}">${esc(r.title)}</button><span class="row-sub">${r.status ? `<i class="state-symbol ${esc(r.status)}" role="img" aria-label="${esc(r.statusLabel)}" title="${esc(r.statusLabel)}"></i>` : ""}${r.status === "stale" && compactDuration(r.idle) ? `<span class="stale-time" title="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}" aria-label="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}">${esc(compactDuration(r.idle))}</span>` : ""}<span class="row-context">${esc(r.context)}</span></span></td><td class="num metric">${esc(r.metric)}</td></tr>`).join("")}</tbody></table>${options.review ? `<div class="list-footer"><span>${chosen.length ? `${plural(chosen.length, options.noun)} selected${selectedMemory ? ` · ${options.estimated ? '≈ ' : ''}${bytes(selectedMemory)}${options.estimated ? ' estimated' : ''}` : ''}` : 'Select a name for details.'}</span><div class="list-actions">${chosen.length ? `<button data-list-clear="${esc(key)}">Clear</button><button class="primary" data-list-review="${esc(key)}">Review ${plural(chosen.length, options.noun)}</button>` : `${stale.length ? `<button data-list-stale="${esc(key)}">Review ${plural(stale.length, 'stale ' + options.noun)}</button>` : ''}<button data-list-eligible="${esc(key)}" ${eligible.length ? '' : 'disabled'}>Select eligible rows</button>`}</div></div>` : ""}</div>${compactInspector(inspected, options.noun)}</div></section>`;
+  return `<section class="compact-section" aria-label="${esc(options.label)}"><div class="compact-layout"><div class="compact-list"><table class="compact-table"><thead><tr>${options.review ? `<th class="check"><input type="checkbox" data-list-all="${esc(key)}" data-list-control="${esc(key)}:all" aria-label="Select all eligible ${esc(options.plural)}" ${chosen.length && chosen.length === eligible.length ? "checked" : ""} ${eligible.length ? "" : "disabled"}></th>` : ""}<th>${esc(options.title)}</th><th class="num metric">${esc(options.metric)}</th></tr></thead><tbody>${rows.map(r => `<tr class="${r.id === saved.inspected ? 'inspected' : ''} ${saved.selected.has(r.id) ? 'selected' : ''}">${options.review ? `<td class="check">${r.eligible ? `<input type="checkbox" data-list-select ${controls(r)} data-list-control="${esc(key + ':select:' + r.id)}" aria-label="Select ${esc(r.title)}" ${saved.selected.has(r.id) ? "checked" : ""}>` : `<span class="row-lock" title="${esc(r.protection)}" aria-label="${esc(r.protection)}">${icon("lock")}</span>`}</td>` : ""}<td><button class="row-title" data-list-inspect ${controls(r)} data-list-control="${esc(key + ':inspect:' + r.id)}" aria-pressed="${r.id === saved.inspected}" title="${esc(r.title)}">${esc(r.title)}</button><span class="row-sub">${r.status ? `<i class="state-symbol ${esc(r.status)}" role="img" aria-label="${esc(r.statusLabel)}" title="${esc(r.statusLabel)}"></i>` : ""}${r.status === "stale" && compactDuration(r.idle) ? `<span class="stale-time" title="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}" aria-label="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}">${esc(compactDuration(r.idle))}</span>` : ""}<span class="row-context">${esc(r.context)}</span></span></td><td class="num metric">${esc(r.metric)}</td></tr>`).join("")}</tbody></table>${options.review ? `<div class="list-footer"><span>${chosen.length ? `${plural(chosen.length, options.noun)} selected${selectedMemory ? ` · ${options.estimated ? '≈ ' : ''}${bytes(selectedMemory)}${options.estimated ? ' estimated' : ''}` : ''}` : 'Click a row for details.'}</span><div class="list-actions">${chosen.length ? `<button data-list-clear="${esc(key)}">Clear</button><button class="primary" data-list-review="${esc(key)}">Review ${plural(chosen.length, options.noun)}</button>` : `${stale.length ? `<button data-list-stale="${esc(key)}">Review ${plural(stale.length, 'stale ' + options.noun)}</button>` : ''}<button data-list-eligible="${esc(key)}" ${eligible.length ? '' : 'disabled'}>Select eligible rows</button>`}</div></div>` : ""}</div>${compactInspector(inspected, options.noun)}</div></section>`;
 }
 
 function sessionTable(list) {
@@ -450,6 +450,8 @@ function viewActions() {
 function renderMain(viewChanged, force = false) {
   const main = document.getElementById("main");
   const active = document.activeElement;
+  const selection = window.getSelection?.();
+  if (!force && !viewChanged && selection && !selection.isCollapsed && main.contains(selection.anchorNode)) return; // copying text; keep the selection
   if (!force && !viewChanged && active && main.contains(active) && active.matches("input:not([type=checkbox]), select")) return; // typing; leave it alone
   // Keep copy feedback visible through background refreshes.
   if (!viewChanged && state.view === "actions" && main.querySelector(".copy-command.copying, .copy-command.copy-feedback")) return;
@@ -478,7 +480,30 @@ function renderMain(viewChanged, force = false) {
 }
 
 
-function renderAll(viewChanged) { renderHeader(); renderSide(); renderMain(viewChanged); }
+// Keep the pressed element alive until its click fires, even if a poll completes.
+let pointerHeld = false, renderPending = false;
+document.onpointerdown = e => {
+  document.documentElement.dataset.listInput = "pointer";
+  if (e.isPrimary && e.button === 0) pointerHeld = true;
+};
+// WebKit can treat focus restored after a mouse click as keyboard focus.
+// Keep the actual focus, but only show its outline again when using the keyboard.
+document.onkeydown = e => {
+  if (!e.metaKey && !e.ctrlKey && !e.altKey && !["Shift", "Control", "Alt", "Meta"].includes(e.key))
+    delete document.documentElement.dataset.listInput;
+};
+function finishPointer() {
+  pointerHeld = false;
+  if (renderPending) setTimeout(() => { if (renderPending) renderAll(false); }, 0);
+}
+document.onpointerup = e => { if (e.isPrimary) finishPointer(); };
+document.onpointercancel = finishPointer;
+window.onblur = finishPointer;
+function renderAll(viewChanged) {
+  if (!viewChanged && pointerHeld) { renderPending = true; return; }
+  renderPending = false;
+  renderHeader(); renderSide(); renderMain(viewChanged);
+}
 
 // `fresh` asks the app to scan now instead of reading the daemon's last
 // tick. What is on screen is never replaced by something older, so a fresh

@@ -291,9 +291,19 @@ function wire(root) {
   root.querySelectorAll("[data-tab-state]").forEach(b => b.onclick = () => { state.tabState = b.dataset.tabState; renderMain(true); });
   root.querySelectorAll("[data-session-state]").forEach(b => b.onclick = () => { state.sessState = b.dataset.sessionState; renderMain(true); });
   root.querySelectorAll("[data-list-inspect]").forEach(b => b.onclick = () => {
+    b.focus({ preventScroll: true });
     listModels.get(b.dataset.list).saved.inspected = b.dataset.row; renderMain(false, true);
   });
+  root.querySelectorAll(".compact-table tbody tr").forEach(row => row.onclick = e => {
+    // The whole highlighted row opens details; embedded controls act on their own.
+    if (e.target.closest("button, input, a, select, textarea, label")) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && row.contains(selection.anchorNode)) return;
+    const button = row.querySelector("[data-list-inspect]");
+    button.click();
+  });
   root.querySelectorAll("[data-list-select]").forEach(cb => cb.onchange = () => {
+    cb.focus({ preventScroll: true });
     const model = listModels.get(cb.dataset.list), row = model.rows.find(r => r.id === cb.dataset.row);
     if (cb.checked && row?.eligible) model.saved.selected.add(row.id); else model.saved.selected.delete(cb.dataset.row);
     renderMain(false, true);
@@ -301,7 +311,7 @@ function wire(root) {
   root.querySelectorAll("[data-list-all]").forEach(cb => {
     const model = listModels.get(cb.dataset.listAll), count = model.saved.selected.size, total = model.rows.filter(r => r.eligible).length;
     cb.indeterminate = count > 0 && count < total;
-    cb.onchange = () => { model.saved.selected = new Set(cb.checked ? model.rows.filter(r => r.eligible).map(r => r.id) : []); renderMain(false, true); };
+    cb.onchange = () => { cb.focus({ preventScroll: true }); model.saved.selected = new Set(cb.checked ? model.rows.filter(r => r.eligible).map(r => r.id) : []); renderMain(false, true); };
   });
   for (const [attribute, action] of [["data-list-clear", m => m.saved.selected.clear()], ["data-list-eligible", m => { m.saved.selected = new Set(m.rows.filter(r => r.eligible).map(r => r.id)); }], ["data-list-review", m => m.options.review(m.rows.filter(r => r.eligible && m.saved.selected.has(r.id)))], ["data-list-stale", m => m.options.review(m.rows.filter(r => r.eligible && r.status === "stale"))]]) {
     root.querySelectorAll(`[${attribute}]`).forEach(b => b.onclick = () => { const model = listModels.get(b.getAttribute(attribute)); action(model); if (!state.actionReview) renderMain(false, true); });
