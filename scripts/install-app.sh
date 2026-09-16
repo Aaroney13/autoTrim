@@ -16,17 +16,12 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # The daemon is the command-line binary, not the app. A copy rides along
 # inside the bundle so the window's "Run in background" can install it as
 # the login service on a machine that never ran cargo.
-cargo build --release
+bash scripts/prepare-bundle.sh
 
 cd tray
-npx --yes @tauri-apps/cli@2 build --bundles app
+npx --yes @tauri-apps/cli@2 build --bundles app --config tauri.bundle.conf.json
 
 APP="../target/release/bundle/macos/autoTrim.app"
-mkdir -p "$APP/Contents/Resources"
-cp ../target/release/autotrim "$APP/Contents/Resources/autotrim"
-# The bundle only carries the linker's ad-hoc signature; re-sign it so the
-# added binary is covered too.
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 
 DEST="/Applications/autoTrim.app"
 if [ ! -w /Applications ]; then

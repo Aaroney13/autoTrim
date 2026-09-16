@@ -5,6 +5,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod updates;
+
 use autotrim::agents::SessionState;
 use autotrim::config::Config;
 use autotrim::rules::{self, Thresholds};
@@ -293,6 +295,13 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(
         app,
+        "updates",
+        app.state::<updates::Updates>().menu_label(),
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&MenuItem::with_id(
+        app,
         "quit",
         "Quit autoTrim",
         true,
@@ -342,18 +351,35 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
 /// tray is only the menu item: no web view sitting in memory for nothing.
 /// `main` keeps the app alive once the last window is gone.
 fn show_window<R: Runtime>(app: &AppHandle<R>) {
+    show_window_at(app, false);
+}
+
+fn show_window_at<R: Runtime>(app: &AppHandle<R>, settings: bool) {
     if let Some(w) = app.get_webview_window("main") {
+        if settings {
+            let _ = w.eval("state.view = 'settings'; renderAll(true);");
+        }
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
         return;
     }
-    let built =
-        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-            .title("autoTrim")
-            .inner_size(1000.0, 740.0)
-            .min_inner_size(760.0, 500.0)
-            .build();
+    let built = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App(
+            if settings {
+                "index.html#settings"
+            } else {
+                "index.html"
+            }
+            .into(),
+        ),
+    )
+    .title("autoTrim")
+    .inner_size(1000.0, 740.0)
+    .min_inner_size(760.0, 500.0)
+    .build();
     match built {
         Ok(w) => {
             let _ = w.set_focus();
@@ -522,10 +548,14 @@ async fn close_session(
 async fn stop_server(
     pid: u32,
     force: bool,
+    expected_start_time: Option<u64>,
     state: tauri::State<'_, AppState>,
 ) -> Result<actions::ActionRecord, String> {
     let t = thresholds(&state);
-    off_thread(move || actions::stop_by_pid(pid, &t, false, force, "manual")).await
+    off_thread(move || {
+        actions::stop_reviewed_pid(pid, expected_start_time, &t, false, force, "manual")
+    })
+    .await
 }
 
 #[tauri::command]
@@ -571,6 +601,8 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_window(app);
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Updates::new())
         .manage(AppState {
             thresholds: Mutex::new(cfg.thresholds()),
             interval_secs: cfg.interval_secs,
@@ -592,7 +624,10 @@ fn main() {
             close_tabs,
             quit_app,
             restart_app,
-            action_log
+            action_log,
+            updates::update_status,
+            updates::check_updates,
+            updates::install_update
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -605,6 +640,13 @@ fn main() {
                 .tooltip("autoTrim")
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "open" => show_window(app),
+                    "updates" => {
+                        show_window_at(app, true);
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = updates::check_updates(handle).await;
+                        });
+                    }
                     "refresh" => {
                         let app = app.clone();
                         std::thread::spawn(move || refresh(&app));
@@ -627,6 +669,7 @@ fn main() {
                 .build(app)?;
 
             refresh(&handle);
+            updates::start(handle.clone());
             // Show the window on launch so the app is not just a small icon
             // among many, unless the person asked for the menu bar item
             // only. Closing it leaves the tray running either way.

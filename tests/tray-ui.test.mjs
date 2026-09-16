@@ -6,10 +6,20 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('../tray/ui/index.html', import.meta.url), 'utf8');
-const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
-  .replace(/\nrefresh\(\);\nsetInterval\(tickSync, 1000\);\s*$/, '');
+const readModule = name => readFileSync(new URL(`../tray/ui/${name}.js`, import.meta.url), 'utf8');
+const moduleSource = source => source
+  // Git checkouts on Windows may use CRLF. Normalize before matching
+  // module declarations and the injected action factory's closing brace.
+  .replace(/\r\n?/g, '\n')
+  .replace(/^import .*;\n/gm, '').replace(/^export \{[^}]*\};?\n/gm, '')
+  .replace(/^export function createActions[^\n]*\n/m, '')
+  .replace(/^return \{[^\n]*\n\}\n?$/m, '')
+  .replace(/^const \{[^\n]* = createActions[^\n]*\n/m, '');
+const buildScript = (readSource = readModule) => ['format', 'state', 'actions', 'render']
+  .map(name => moduleSource(readSource(name))).join('\n');
+const script = buildScript();
 
-function load(invoke = async () => {}) {
+function load(invoke = async () => {}, source = script) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -24,16 +34,34 @@ function load(invoke = async () => {}) {
     document, window: { __TAURI__: { core: { invoke } } },
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0,
   });
-  vm.runInContext(script, context);
+  vm.runInContext(source, context);
   // Rendering is tested in the browser. These tests check decisions and
   // bridge calls independently from the DOM implementation.
-  vm.runInContext('renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
+  vm.runInContext('const actualRefresh = refresh; renderAll = () => {}; renderHeader = () => {}; renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
   const api = vm.runInContext(`({ state, filteredSessions, filteredTabs,
     canCloseSession, canCloseTab, isStale, autoMode, autoModeValues,
-    viewActions, sessionTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts,
-    setReview(value) { actionReview = value; } })`, context);
+    refreshNow: actualRefresh, actionSucceeded, twoStep, viewActions, sessionTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts, updateCard, runUpdate,
+    setReview(value) { state.actionReview = value; } })`, context);
   return { ...api, elements, context };
 }
+
+test('fixture loader executes real UI modules with LF, CRLF, and mixed line endings', async () => {
+  for (const newline of ['\n', '\r\n', 'mixed']) {
+    const source = buildScript(name => readModule(name).replace(/\r\n?/g, '\n')
+      .split('\n').map((line, index, lines) => line + (index === lines.length - 1 ? ''
+        : newline === 'mixed' ? (index % 2 ? '\r\n' : '\n') : newline)).join(''));
+    const calls = [];
+    const ui = load(async (command, args) => {
+      calls.push([command, args.pid, args.expectedStartTime]);
+      return { status: 'success', result: 'terminated', target: 'Fixture' };
+    }, source);
+    ui.setReview({ kind: 'sessions', targets: [{ id: 42, name: 'Fixture', startTime: 123 }],
+      selected: new Set([42]), busy: false });
+    await ui.executeReview();
+    assert.deepEqual(calls, [['close_session', 42, 123]], newline);
+    assert.equal(ui.state.gone.pids.has(42), true, newline);
+  }
+});
 
 const sessions = [
   { pid: 1, state: 'stale', session_name: 'Billing', project: 'atlas', rss: 300, idle_secs: 100 },
@@ -203,7 +231,7 @@ test('inspection follows the same item across reordering and recovers when it di
 test('port review excludes managed services and stops each selected process once', async () => {
   const calls = [];
   const ui = load(async (command, args) => { calls.push({ command, args }); return { result: 'terminated' }; });
-  vm.runInContext('openReview = (kind, targets) => { actionReview = {kind, targets, selected: new Set(targets.map(t => t.id)), busy: false}; };', ui.context);
+  vm.runInContext('openReview = (kind, targets) => { state.actionReview = {kind, targets, selected: new Set(targets.map(t => t.id)), busy: false}; };', ui.context);
   ui.state.snap = { ports: [
     { pid: 7, port: 3000, process: 'node', owner: 'Terminal', owner_managed: false },
     { pid: 7, port: 3001, process: 'node', owner: 'Terminal', owner_managed: false },
@@ -213,4 +241,99 @@ test('port review excludes managed services and stops each selected process once
   await ui.executeReview();
   assert.deepEqual(calls.map(c => [c.command, c.args.pid, c.args.force]), [['stop_server', 7, false]]);
   assert.match(ui.elements.get('review-status').textContent, /1 of 1 server stopped/);
+});
+
+test('updates escape release notes and disable installation during a download', () => {
+  const ui = load();
+  ui.state.update = { enabled: true, current_version: '0.2.0', phase: 'available', version: '0.3.0', notes: '<img src=x onerror=alert(1)>', error: null };
+  assert.match(ui.updateCard(), /Install and restart/);
+  assert.doesNotMatch(ui.updateCard(), /<img/);
+  assert.match(ui.updateCard(), /&lt;img/);
+  ui.state.update.phase = 'installing';
+  assert.match(ui.updateCard(), /data-update="install" disabled/);
+  ui.state.update.enabled = false;
+  assert.doesNotMatch(ui.updateCard(), /data-update=/);
+});
+
+test('update clicks cannot overlap and cannot choose an arbitrary download', async () => {
+  const calls = [];
+  let finish;
+  const ui = load((name, args) => {
+    calls.push([name, args]);
+    if (name === 'install_update') return new Promise(resolve => { finish = resolve; });
+    return Promise.resolve({ enabled: true, phase: 'available', version: '0.3.0' });
+  });
+  ui.state.update = { enabled: true, phase: 'available', version: '0.3.0' };
+  const first = ui.runUpdate('install');
+  await ui.runUpdate('install');
+  await ui.runUpdate('check');
+  assert.deepEqual(calls, [['install_update', undefined]]);
+  finish();
+  await first;
+  assert.equal(ui.state.updateBusy, false);
+});
+
+test('older and same-second daemon snapshots cannot undo a fresh post-action scan', async () => {
+  let snap = { taken_at: 200, sessions: [], browsers: [], marker: 'fresh' };
+  const ui = load(async command => command === 'snapshot' ? snap : command === 'action_log' ? [] : {});
+  await ui.refreshNow({ fresh: true });
+  assert.equal(ui.state.snap.marker, 'fresh');
+  snap = { ...snap, marker: 'stale daemon' };
+  await ui.refreshNow(); assert.equal(ui.state.snap.marker, 'fresh');
+  snap = { ...snap, taken_at: 199 };
+  await ui.refreshNow(); assert.equal(ui.state.snap.marker, 'fresh');
+  snap = { ...snap, taken_at: 201, marker: 'next tick' };
+  await ui.refreshNow(); assert.equal(ui.state.snap.marker, 'next tick');
+});
+
+test('failed actions remain visible when log polling fails', async () => {
+  const ui = load(async command => {
+    if (command === 'action_log') throw new Error('temporary log read failure');
+    if (command === 'snapshot') return {taken_at: 1, sessions: [], browsers: []};
+    return {};
+  });
+  ui.state.log = [{status:'partial', target:'fixture', result:'partial failure: child survived'}];
+  await ui.refreshNow(); assert.equal(ui.state.log.length, 1);
+  for (const status of ['partial','failure','intent','dry_run','skipped']) {
+    assert.equal(ui.actionSucceeded({status, result:'terminated', mode:'auto'}), false);
+  }
+  assert.equal(ui.actionSucceeded({status:'success', result:'terminated', mode:'dry-run'}), false);
+});
+
+test('two-step confirmation does not call IPC on its first click', async () => {
+  const ui = load(); let calls = 0;
+  const button = {dataset:{}, textContent:'Quit', classList:{add(){},remove(){}}};
+  const run = async () => { calls++; };
+  ui.twoStep(button, 'fixture', run); assert.equal(calls, 0); assert.equal(button.textContent, 'Confirm');
+  ui.twoStep(button, 'fixture', run); await Promise.resolve(); assert.equal(calls, 1);
+});
+
+
+test('shared Codex backend exposes older tasks and helpers without task-level close or memory', () => {
+  const ui = load();
+  ui.state.snap = { taken_at: 50000 };
+  const backend = { ...sessions[2], kind: 'codex', host: 'Codex app', engine: true, start_time: 10,
+    threads: [
+      { id: 'current', name: 'Current work', cwd: '/project/current', last_activity: 49990 },
+      { id: 'old', name: 'Older <project>', cwd: '/project/archive', last_activity: 100 },
+      { id: 'helper', name: 'Review helper', helper: true, last_activity: null },
+    ] };
+  const markup = ui.sessionTable([backend]);
+  assert.match(markup, /Codex backend/);
+  assert.match(markup, /2 loaded tasks/);
+  assert.match(markup, /1 helper/);
+  assert.match(markup, /Older &lt;project&gt;/);
+  assert.match(markup, /Review helper/);
+  assert.match(markup, /Shared memory across loaded tasks/);
+  assert.doesNotMatch(markup, /data-close-session=/);
+  assert.doesNotMatch(markup, /data-list-review=/);
+  const taskLists = vm.runInContext('[...listModels.values()].filter(m => m.options.noun === "task")', ui.context);
+  assert.equal(taskLists[0].rows.length, 3);
+  assert.ok(taskLists[0].rows.every(r => r.rss == null && !r.eligible && !r.action));
+  ui.state.sessFilter = 'archive';
+  assert.equal(ui.filteredSessions([backend]).length, 1);
+  const filtered = ui.sessionTable(ui.filteredSessions([backend]));
+  assert.match(filtered, /Older &lt;project&gt;/);
+  assert.doesNotMatch(filtered, /Review helper/);
+  assert.doesNotThrow(() => ui.sessionTable([{ ...backend, threads: undefined }]));
 });

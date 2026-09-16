@@ -1,15 +1,31 @@
 // Run with: node tests/tray-interactions.browser.cjs (requires Playwright + Chromium).
 // Real rendering and input with synthetic snapshots; never calls the daemon or native actions.
 const fs = require('node:fs');
+const path = require('node:path');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const html = fs.readFileSync(require('node:path').join(__dirname, '../tray/ui/index.html'), 'utf8').replace(/\nrefresh\(\);\nsetInterval\(tickSync, 1000\);\s*/, '');
+const uiDir = path.join(__dirname, '../tray/ui');
 (async () => {
   const browser = await chromium.launch({executablePath: process.env.AUTOTRIM_TEST_CHROMIUM});
   const failures = []; let passed = 0;
   try {
     const page = await browser.newPage({viewport:{width:1000,height:740}});
-    await page.setContent(html);
+    // Load the real ES modules and styles without starting the native poll loop.
+    // Every request is fulfilled locally; the test cannot contact external services.
+    const files = new Set(['index.html', 'styles.css', 'format.js', 'state.js', 'actions.js', 'render.js']);
+    await page.route('**/*', route => {
+      const file = new URL(route.request().url()).pathname.slice(1) || 'index.html';
+      if (file === 'main.js') return route.fulfill({contentType:'text/javascript',body:`
+        import { GB, epochNow } from './format.js';
+        import { state } from './state.js';
+        import { renderAll, refresh } from './render.js';
+        Object.assign(window, { GB, epochNow, state, renderAll, refresh,
+          navigate: view => document.querySelector('[data-view="' + view + '"]').click() });
+      `});
+      if (!files.has(file)) return route.abort();
+      return route.fulfill({path:path.join(uiDir,file),contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html'});
+    });
+    await page.goto('http://autotrim.test/');
     await page.evaluate(() => {
       const port = (pid, port, label, managed=false) => ({pid,port,label,process:'node',protocol:'TCP',addr:'127.0.0.1',owner:'Terminal',owner_managed:managed,open_for_secs:3600});
       const trend = (key,name,growth) => ({key,name,growth,kind:'group',span_secs:7200,rss_now:4*GB,bytes_per_hour:GB,cpu_mean:5,rising_frac:.8});

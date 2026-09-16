@@ -17,6 +17,7 @@
 use crate::fmt::days_from_civil;
 use crate::openfiles::open_files;
 use crate::system::home;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -108,8 +109,22 @@ fn find_transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
 
 /// The threads an agent process is serving, read from the transcripts it
 /// holds open. One process can serve several: an app's engine does.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentThread {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub first_prompt: Option<String>,
+    pub cwd: Option<String>,
+    pub transcript: PathBuf,
+    pub last_activity: Option<u64>,
+    pub helper: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Threads {
+    /// Individually observed Codex tasks, including labeled helpers. Resource
+    /// usage belongs to the owning process tree, never to these rows.
+    pub details: Vec<AgentThread>,
     /// Live threads a person opened, not counting helpers the agent started
     /// for itself (a Codex guardian review, a sub-agent).
     pub count: usize,
@@ -126,21 +141,6 @@ pub struct Threads {
     pub name: Option<String>,
     /// The first thing the user asked in that thread, shortened.
     pub first_prompt: Option<String>,
-}
-
-/// Files matching `keep` that the process tree holds open, from the first
-/// process (root first) that holds any. The root usually does; the loop is
-/// for agents that hand their transcript to a worker.
-fn open_in_tree(pids: &[u32], keep: fn(&Path) -> bool) -> Vec<PathBuf> {
-    for pid in pids {
-        let mut found: Vec<PathBuf> = open_files(*pid).into_iter().filter(|p| keep(p)).collect();
-        if !found.is_empty() {
-            found.sort();
-            found.dedup();
-            return found;
-        }
-    }
-    Vec::new()
 }
 
 /// The session directory an open file belongs to: the directory `depth`
@@ -246,14 +246,29 @@ pub fn rollout_uuid(path: &Path) -> Option<String> {
 /// open; the caller falls back to CPU evidence, or drops an app server
 /// with nothing loaded.
 pub fn codex_threads(pids: &[u32]) -> Option<Threads> {
-    let rollouts = open_in_tree(pids, |p| {
-        p.file_name()
-            .map(|f| {
-                let f = f.to_string_lossy();
-                f.starts_with("rollout-") && f.ends_with(".jsonl")
-            })
-            .unwrap_or(false)
-    });
+    codex_rollouts(&codex_open_rollouts(pids, open_files))
+}
+
+fn codex_open_rollouts(pids: &[u32], mut files: impl FnMut(u32) -> Vec<PathBuf>) -> Vec<PathBuf> {
+    // A child can hold additional rollouts even when the root has some open.
+    let mut rollouts: Vec<_> = pids
+        .iter()
+        .flat_map(|pid| files(*pid))
+        .filter(|p| {
+            p.file_name()
+                .map(|f| {
+                    let f = f.to_string_lossy();
+                    f.starts_with("rollout-") && f.ends_with(".jsonl")
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    rollouts.sort();
+    rollouts.dedup();
+    rollouts
+}
+
+fn codex_rollouts(rollouts: &[PathBuf]) -> Option<Threads> {
     if rollouts.is_empty() {
         return None;
     }
@@ -278,7 +293,30 @@ pub fn codex_threads(pids: &[u32]) -> Option<Threads> {
     let transcript = newest.1.clone();
     let meta = codex_meta(&transcript);
     let id = meta.id.clone().or_else(|| rollout_uuid(&transcript));
+    let mut details: Vec<_> = scanned
+        .iter()
+        .map(|(last_activity, path, helper)| {
+            let meta = codex_meta(path);
+            let id = meta.id.or_else(|| rollout_uuid(path));
+            AgentThread {
+                name: id.as_deref().and_then(|id| codex_thread_name(path, id)),
+                first_prompt: names_in(path, &CODEX_LINES).first_prompt,
+                id,
+                cwd: meta.cwd,
+                transcript: (*path).clone(),
+                last_activity: *last_activity,
+                helper: *helper,
+            }
+        })
+        .collect();
+    details.sort_by(|a, b| {
+        a.helper
+            .cmp(&b.helper)
+            .then_with(|| b.last_activity.cmp(&a.last_activity))
+            .then_with(|| a.transcript.cmp(&b.transcript))
+    });
     Some(Threads {
+        details,
         count: own.len(),
         last_activity: scanned.iter().filter_map(|s| s.0).max(),
         name: id
@@ -399,6 +437,7 @@ pub fn copilot_threads(pids: &[u32]) -> Option<Threads> {
         .map(|l| names_in(l, &COPILOT_LINES))
         .unwrap_or_default();
     Some(Threads {
+        details: Vec::new(),
         count: dirs.len(),
         last_activity: scanned.iter().filter_map(|s| s.0).max(),
         name: yaml_top_level(&yaml, "name"),
@@ -529,6 +568,7 @@ pub fn cursor_threads(pids: &[u32], cwd: Option<&str>) -> Option<Threads> {
     let id = dir.file_name()?.to_string_lossy().into_owned();
     let store = dir.join("store.db");
     Some(Threads {
+        details: Vec::new(),
         count: dirs.len(),
         last_activity,
         name: cursor_chat_name(&store, &id),
@@ -747,28 +787,12 @@ pub fn last_activity_in(path: &Path) -> Option<u64> {
 }
 
 fn last_activity_with(path: &Path, pick: fn(&str) -> Option<u64>) -> Option<u64> {
-    let mut f = fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    for chunk in [256 * 1024u64, 4 * 1024 * 1024, u64::MAX] {
-        let start = len.saturating_sub(chunk);
-        f.seek(SeekFrom::Start(start)).ok()?;
-        let mut buf = Vec::with_capacity((len - start) as usize);
-        f.read_to_end(&mut buf).ok()?;
-        let text = String::from_utf8_lossy(&buf);
-        let mut lines: Vec<&str> = text.lines().collect();
-        if start > 0 && !lines.is_empty() {
-            lines.remove(0); // partial line
-        }
-        for line in lines.iter().rev() {
-            if let Some(ts) = pick(line) {
-                return Some(ts);
-            }
-        }
-        if start == 0 {
-            break;
-        }
-    }
-    None
+    static CACHE: LazyLock<Mutex<crate::activity_cache::ActivityCache>> =
+        LazyLock::new(|| Mutex::new(Default::default()));
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .read(path, pick)
 }
 
 fn activity_timestamp(line: &str) -> Option<u64> {
@@ -994,6 +1018,62 @@ pub fn parse_iso8601(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_tasks_include_child_rollouts_without_duplicate_fds() {
+        let paths = codex_open_rollouts(&[10, 11], |pid| {
+            if pid == 10 {
+                vec!["/rollout-one.jsonl".into(), "/unrelated.log".into()]
+            } else {
+                vec!["/rollout-one.jsonl".into(), "/rollout-two.jsonl".into()]
+            }
+        });
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/rollout-one.jsonl"),
+                PathBuf::from("/rollout-two.jsonl")
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_retains_every_task_and_helper_without_changing_backend_activity() {
+        let dir =
+            std::env::temp_dir().join(format!("autotrim-task-details-{}", std::process::id()));
+        let sessions = dir.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(dir.join("session_index.jsonl"), "{\"id\":\"a\",\"thread_name\":\"Older project\"}\n{\"id\":\"b\",\"thread_name\":\"Current project\"}\n").unwrap();
+        let mut paths = Vec::new();
+        for (id, source, seconds) in [
+            ("a", serde_json::json!("cli"), "01"),
+            ("b", serde_json::json!("cli"), "02"),
+            ("helper", serde_json::json!({"subagent":"review"}), "03"),
+        ] {
+            let path = sessions.join(format!("rollout-{id}.jsonl"));
+            let metadata = serde_json::json!({"type":"session_meta","payload":{"id":id,"cwd":format!("/work/{id}"),"source":source}});
+            let activity = serde_json::json!({"type":"event_msg","timestamp":format!("1970-01-01T00:00:{seconds}Z"),"payload":{"type":"user_message","message":format!("Work on {id}")}});
+            fs::write(&path, format!("{metadata}\n{activity}\n")).unwrap();
+            paths.push(path);
+        }
+        let threads = codex_rollouts(&paths).unwrap();
+        assert_eq!(threads.count, 2);
+        assert_eq!(threads.session_id.as_deref(), Some("b"));
+        assert_eq!(threads.last_activity, Some(3));
+        assert_eq!(threads.details.len(), 3);
+        assert_eq!(threads.details[0].name.as_deref(), Some("Current project"));
+        assert_eq!(threads.details[1].name.as_deref(), Some("Older project"));
+        assert_eq!(threads.details[1].cwd.as_deref(), Some("/work/a"));
+        assert_eq!(threads.details[1].last_activity, Some(1));
+        assert!(threads.details[2].helper);
+        let mut session = crate::test_support::session();
+        assert!(session.threads.is_empty()); // Old snapshots remain readable.
+        session.threads = threads.details;
+        let encoded = serde_json::to_string(&session).unwrap();
+        let decoded: crate::agents::AgentSession = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.threads.len(), 3);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn iso8601_roundtrip() {

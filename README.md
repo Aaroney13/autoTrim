@@ -14,6 +14,12 @@ action attached.
 
 ## Install
 
+For the CLI without Rust, use the published `cli-vVERSION` archives on
+[GitHub Releases](https://github.com/Aaroney13/autoTrim/releases).
+[Download, verify, install, upgrade, and remove](docs/cli-releases.md) documents
+the four supported targets and unsigned-binary restrictions. If no CLI release
+has been published yet, build from source below.
+
 macOS, with [Rust](https://rustup.rs) installed (and Node, for the menu bar app):
 
 ```bash
@@ -21,9 +27,15 @@ git clone https://github.com/Aaroney13/autoTrim.git && cd autoTrim && ./scripts/
 ```
 
 That builds the `autotrim` command and puts it on your PATH, starts the
-daemon now and at every login, and puts autoTrim.app in Applications. Run
-the same command again after `git pull` to upgrade. One command takes it
-all off again, and your data stays:
+daemon now and at every login, and puts autoTrim.app in Applications.
+Starting with 0.2.0, the macOS app checks GitHub Releases at launch and
+every six hours. Use **Settings → App updates → Install and restart** to
+install a signed update, including its background daemon. The installed
+command follows the app via a symlink, so it updates too.
+
+Older installations need one manual upgrade: `git pull && ./scripts/install.sh`.
+CLI-only installations still upgrade by running the installer after pulling.
+One command takes it all off again, and your data stays:
 
 ```bash
 ./scripts/install.sh --uninstall
@@ -41,6 +53,9 @@ cargo install --path . && autotrim service install
 Linux and Windows build and run `scan` and `daemon`. The login service, the
 app, and the tab and quit verbs are macOS only for now.
 
+Maintainers: [publishing updates](docs/releases.md) describes the signing
+setup, version tags, and draft-release publishing step.
+
 ## Use
 
 ```
@@ -55,19 +70,20 @@ autotrim service       install | uninstall | restart | status
 autotrim log -f        follow the daemon log
 ```
 
-The reclaim verbs, each with `--dry-run`, each logged with how to undo it:
+The reclaim verbs, each with `--dry-run` and available recovery instructions:
 
 ```
 autotrim close <pid>        close an idle agent session; logs the resume command
 autotrim stop <pid>         stop an old local dev server
 autotrim close-tab <id>…    close browser tabs by id, as `tabs` lists them
 autotrim quit <app>         ask an app to quit, as ⌘Q would
-autotrim restart <app>      quit, wait, open again fresh; browsers restore tabs lazily
+autotrim restart <app>      quit, wait, reopen; browser session restoration is best effort
 ```
 
 `close` refuses anything that is not a detected agent session, the session
 running the command, and an active session without `--force`; it sends the
-polite signal and waits ten seconds before killing. `stop` refuses a process
+polite signal, waits up to ten seconds, escalates surviving targets, and verifies
+the result. Partial failures remain visible in Actions. `stop` refuses a process
 that belongs to an app, the system, or an agent session without `--force`.
 `quit` and `restart` never touch an app hosting agent sessions without
 `--force`, the app running the command, the Finder, or the tray.
@@ -80,12 +96,14 @@ app is running; a browser's worst sites and every tab with Close per tab,
 per site, or for every stale tab at once; an app's trend and ports with Quit
 and Restart. Session and tab lists support search and filters; batch
 actions apply to the displayed results. Closing opens a target review,
-with recovery instructions saved in Actions. Quit, Restart, and Stop
-still arm on the first click and act on the second. Settings offers
+with recovery instructions saved in Actions. Server stops also use a target
+review; Quit and Restart arm on the first click and act on the second. Settings offers
 Off, Preview only, and On for auto mode, plus "Run in background", which
-installs the login service. The app reads the daemon's files and only scans
-on its own when no daemon is running. It is Tauri on the system web view,
-about 60 MB idle; the daemon itself stays under 20 MB.
+installs the login service. The app reads the daemon's files and scans
+when no daemon is running, on Refresh, and after actions. Commands use the
+shared library directly. It is Tauri on the system web view,
+about 60 MB idle in earlier measurements. The daemon targets under 20 MB;
+see the measured limits in [design notes](docs/design.md#transcript-activity-cache).
 
 **Auto mode** is off by default. Turn it on in the window, from the menu,
 or with `autotrim config set auto_close_sessions=true`; the daemon re-reads
@@ -96,31 +114,51 @@ evidence of idleness, a quiet CPU window agreeing, a host on the
 `auto_hosts` allowlist, and the most recently active session in each
 project is always spared. Servers are only stopped when the owner is a known
 dev runtime. `auto_dry_run = true` logs what it would have done and does
-nothing, which is how to try it for a week.
+nothing, which is how to try it for a week. Every target is checked again
+against fresh activity, process identities, exclusions, and current settings
+immediately before execution.
 
 Data lives in `~/Library/Application Support/autotrim` on macOS,
 `$XDG_DATA_HOME/autotrim` on Linux, and `%LOCALAPPDATA%\autotrim` on Windows
 (`AUTOTRIM_DATA_DIR` overrides it): `latest.json`, daily history, the action
 log, `config.toml`, and `daemon.log`.
 
+**Privacy:** snapshots contain prompt excerpts, full tab URLs, and browser
+profile details. Data stays local; Unix files are private to your user. Logs
+rotate at 5 MiB with three backups. The [privacy statement](PRIVACY.md) lists
+what is read and saved, network requests, retention, permissions, and deletion.
+Storage failures retry on later ticks and notify you; fatal errors and Rust
+panics produce a local `crash.json` when storage is available.
+
+Before any real cleanup, the shared journal durably saves an action ID, target
+identity, and available recovery details. A failed intent write prevents execution.
+Completion distinguishes success, failure, and partial results; an interrupted
+intent stays marked incomplete. Reopening a URL or resuming a transcript cannot
+guarantee restoration of unsaved drafts, temporary chats, or in-memory work.
+
 ## What it sees
 
-- **Memory that closing would return.** On macOS every figure is
-  `phys_footprint`, the number in Activity Monitor's Memory column, which is
-  what a process gives back when it exits. Helpers roll up under their app.
+- **Memory currently held.** macOS figures use `phys_footprint`, the counter
+  behind Activity Monitor's Memory column. Helpers roll up under their app.
+  These are pre-action footprints, not measured savings; Linux/Windows RSS
+  can count shared pages more than once.
 - **Agent sessions.** Claude Code (the CLI, the Claude app, VS Code, a
   terminal), Codex (the CLI and the app server behind the ChatGPT app and VS
   Code), Copilot CLI, Cursor's CLI, plus Gemini CLI, Aider, OpenCode, and
   OpenClaw by name. Each with its host, project, name (your title, else your
   first prompt), age, idle time, and memory. The agent's own client (the
   Claude app, ChatGPT) is folded into the group, so it is not listed beside
-  its sessions as a second holder. Closing a session logs the resume command.
+  its sessions as a second holder. Codex backends expand into the tasks whose
+  transcripts they hold open, with titles, projects, last activity, and labeled
+  helpers. Memory and CPU remain shared at the backend; saved history is not
+  counted as loaded tasks. Closing a session logs the resume command.
 - **Browser tabs** in every running Chrome, Chromium, Brave, Edge, and
   Vivaldi profile: title, site, pinned, and how long since you last looked,
   read from the browser's own session files rather than by asking it.
   Conversation pages (chatgpt.com, claude.ai, and friends) are flagged,
-  since they grow with use and a background tab never gives that back.
-  Per-tab memory is an estimate and is labelled as one.
+  because they can grow with use. Inactive tabs may already be deactivated.
+  Per-tab estimates divide renderer memory by all tabs; site estimates
+  multiply that average by the selected count. Age does not prove retained memory.
 - **Trends.** A rolling series per app and per session, warmed from history
   on restart, with rules for leak-like growth, sustained CPU, and swap
   rising, naming the fastest-growing apps. Growth is advice, never an action.
@@ -130,7 +168,9 @@ log, `config.toml`, and `daemon.log`.
 
 How "idle" is decided, strongest evidence first:
 
-1. Busy CPU right now means active, whatever else is known.
+1. Busy window-mean CPU means active at the configured threshold (default
+   2%). With transcript evidence, a one-shot sample must reach the larger
+   of that threshold and 10% to override it.
 2. Claude Code's transcript tail gives the last real exchange, so a session
    idle past the stale threshold (6 h by default) is stale, even on a
    one-shot scan.
@@ -145,9 +185,8 @@ How "idle" is decided, strongest evidence first:
 In scope: observe cheaply and continuously; attribute memory to agent
 sessions and browsers as first-class groups; advise with deterministic
 rules; notify with rate limits; reclaim with a few narrow, logged,
-reversible verbs; and expose the snapshot and the same verbs to your own
-agent over localhost. One binary, three modes: `scan`, `daemon`, and the
-tray.
+cleanup verbs. The CLI supports one-shot and continuous operation; the tray
+is a separate binary. An MCP/localhost interface is future work.
 
 Out of scope, deliberately:
 
@@ -164,8 +203,8 @@ Out of scope, deliberately:
 
 Principles: a daemon footprint under 20 MB as Activity Monitor counts it,
 and it logs its own number; the same snapshot always gives the same advice,
-with the thresholds in one config file; every action is logged with its
-undo; never surprise, so auto mode is off by default, warns first, and
+with the thresholds in one config file; every action is logged with available
+recovery instructions; never surprise, so auto mode is off by default, warns first, and
 spares the session you are sitting in; the daemon and the agent session it
 runs under are excluded from its own actions; open source, normal user
 permissions, one command to uninstall.
@@ -175,8 +214,9 @@ permissions, one command to uninstall.
 - Per-tab memory is not something Chrome exposes; tabs get a count, an age,
   and an average.
 - Closing tabs, quitting, and restarting apps are macOS only (Apple Events).
-- Codex sessions belong to the ChatGPT app or VS Code, which restart them,
-  so auto mode never targets them and `close` needs `--force`.
+- Host-managed Codex/Copilot engines are excluded from auto mode and need
+  `close --force`. Standalone Codex CLI sessions follow the same activity
+  and host restrictions as other standalone sessions.
 - Notifications have no buttons and no quiet hours yet.
 - The localhost interface for your own agent is planned, not built.
 - Linux and Windows build in CI and have not been used on a real desktop.
@@ -211,8 +251,8 @@ and memory trends. Stale rows show a small idle duration beside their status dot
 Selections follow the visible filters, and protected items cannot be selected.
 The details pane stacks below the list in narrow windows.
 
-`tray/` is the Tauri app, with its window in `tray/ui/index.html`, embedded
-at compile time. Platform-specific code stays behind `cfg`, and CI builds
+`tray/` is the Tauri app. Its HTML, stylesheet, and ES modules in `tray/ui/`
+are embedded at compile time; no frontend server or network is required. Platform-specific code stays behind `cfg`, and CI builds
 macOS, Linux, and Windows.
 
 The reasoning behind the design, the fine print on each part, and the full

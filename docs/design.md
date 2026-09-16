@@ -5,23 +5,22 @@ how "idle" is decided, what is measured, the known gaps, and the decisions
 that came up along the way. The README has the short version, the scope,
 and the principles.
 
-## The plan
+## Current interfaces and future work
 
-1. `autotrim scan`: one-shot report. System totals, top app groups, agent
-   sessions with idle state, browser breakdown, advice cards. Text and JSON.
-2. `autotrim daemon`: continuous sampling, rolling history on disk, rule
-   evaluation, notifications. Installable as a launchd agent.
-3. `autotrim tray`: menu bar item showing pressure and the current advice, with
-   one-click actions that talk to the daemon.
-4. Actions: close idle agent session, with logging and resume command.
-   Auto mode behind a flag.
-5. MCP server inside the daemon exposing snapshot, history, sessions, and
-   actions.
+`autotrim scan` produces a one-shot text or JSON report. `autotrim daemon`
+maintains observations, history, advice, and optional automatic cleanup.
+`autotrim-tray` is a separate Tauri executable; `autotrim open` opens its window.
+The tray reads snapshot/configuration/action files and invokes the shared library
+for actions. It has no daemon RPC connection. Refresh and post-action updates
+request fresh scans even while a daemon is running.
 
-Later: Windows and Linux ports, localhost dashboard. (Chrome per-tab
-attribution had its feasibility spike: tabs, titles, and last-viewed times
-come from the browser's own session files, and a tab can be closed by its
-session id. Per-tab memory is still not something stable Chrome exposes.)
+Implemented actions are `close`, `stop`, `close-tab`, `quit`, and `restart`.
+They share a journal and guarded action layer. macOS supports the login service
+and Apple Event actions. Linux and Windows have CI build coverage for monitoring
+and process actions, without verified real-desktop functionality.
+
+An MCP server and a localhost API/dashboard remain ideas, not supported commands.
+Exact per-tab attribution and browser discarding also remain unimplemented.
 
 ## How each part works
 
@@ -35,8 +34,9 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
   are still idle then. Its bar is higher than the advice's: a session
   needs transcript evidence of idleness, a warm quiet window agreeing, a
   host on the `auto_hosts` allowlist, and it always spares the most
-  recently active session in each project so you keep your place. Codex
-  sessions are never targets: the app that owns them restarts them.
+  recently active session in each project so you keep your place. Host-managed
+  engines are never targets: their app restarts them. Standalone Codex CLI
+  sessions are eligible under the same rules as other standalone sessions.
   Servers are only stopped when the owner is a known dev runtime (node,
   python, ruby, and friends); a VM manager or database left running is
   reported, never killed. `auto_dry_run = true` logs and notifies what it
@@ -77,12 +77,12 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
 - **Conversation pages, and pages that grow.** Tabs are classed by site:
   chatgpt.com, claude.ai, gemini.google.com and the other chat UIs are
   conversations, localhost and friends are local apps, the rest are pages.
-  A conversation page keeps the whole exchange in the DOM and grows with
-  it, and a background tab never gives that back, so the report, the
+  Conversation pages can grow with use. The browser may deactivate inactive
+  tabs, so age alone is not proof that they still hold memory. The report,
   window and `autotrim tabs` mark them, the browser view has a "Close N
   stale conversations" button, and a rule fires at two stale conversation
-  tabs (`chat_stale_tabs`); the services keep the history, so closing
-  loses nothing. The daemon also follows every tab renderer on its own,
+  tabs (`chat_stale_tabs`). Reopening a URL or saved conversation does not
+  restore unsaved drafts or temporary chats. The daemon also follows every tab renderer on its own,
   and a page that grows steadily gets its own advice card, with the
   long-lived pages that are open listed as the candidates. Chrome does not
   say which tab a process is, and autoTrim says so rather than guessing.
@@ -102,7 +102,15 @@ session id. Per-tab memory is still not something stable Chrome exposes.)
   named from its thread index, Copilot sessions from `workspace.yaml`,
   Cursor chats from the chat store's own name, each falling back to the
   first prompt. An app's engine (Codex `app-server`, Copilot `--server`) is
-  one session serving every thread the app shows; with nothing open it is
+  one process tree serving multiple tasks. Codex scans open rollouts across
+  the entire tree, deduplicates paths, and retains each task's ID, title (or
+  first prompt), project, transcript, last activity, and helper marker in
+  the snapshot. The window shows a backend count and expandable, searchable
+  loaded tasks; the CLI also lists each observed task. Saved history without
+  an open transcript is excluded. Task activity does not establish execution
+  state, and memory/CPU cannot be divided among tasks. Close controls and
+  resource trends remain attached to the process tree. Older snapshots without
+  task details still load. With nothing open the engine is
   part of the app, not a session, and auto mode never closes an engine
   because the app would restart it. Closing any of them logs the resume
   command: `claude --resume`, `codex resume`, `copilot --resume=`,
@@ -211,7 +219,8 @@ The daemon tracks port age across ticks (a port cannot predate its process,
 so first sight uses the owner's start time), and a fifth rule reports old
 local servers: a listener that is not an app, not a system process, and not
 part of an agent session, quiet, and open longer than a day by default. The
-verb that stops one is part of the reclaim work still to come.
+implemented `autotrim stop <pid>` uses the shared process guard. It requires
+`--force` for managed owners and always protects the command and its ancestors.
 
 ## How "idle" is decided
 
@@ -252,9 +261,9 @@ Memory counters on macOS come from `host_statistics64` and the
 `memory_pressure` print, with no subprocesses. Per-process memory on macOS
 is `phys_footprint` from `proc_pid_rusage`, the number Activity Monitor's
 Memory column and `footprint(1)` show: private, compressed and IOKit
-memory, not the pages shared with every other process. That is what a
-process gives back when it exits, so a session's figure, and the recovery
-on an advice card, is what closing it returns. Linux and Windows use
+memory, not the pages shared with every other process. A session's figure and the recovery field on advice cards describe its
+pre-action footprint or an estimated opportunity. They are not measured
+reductions in system memory; this version does not measure causal savings. Linux and Windows use
 resident size from sysinfo, which charges shared pages to every process
 and over-counts a tree.
 
@@ -262,8 +271,6 @@ and over-counts a tree.
 
 In the order they should be fixed:
 
-- **Transcript tails are re-read every tick.** A Codex server with a dozen
-  threads open costs a few megabytes of reads per tick. Cache by file length.
 - **Notifications carry no buttons.** A bare binary cannot register
   actionable notifications on macOS; that needs an app bundle, which comes
   with the tray.
@@ -277,9 +284,9 @@ In the order they should be fixed:
 - **Tab closing, quitting and restarting are macOS only** for now: Apple
   Events to the app, the same as pressing ⌘W or ⌘Q, and `open` to bring it
   back. Linux and Windows list tabs but cannot close them yet.
-- **Codex sessions cannot be closed usefully.** The Codex process is a
-  server owned by the ChatGPT app or VS Code, which restarts it. Auto mode
-  never targets it; `close` will, with `--force`, and it will come back.
+- **Managed engines restart.** Codex app servers and Copilot server engines
+  belong to their host application, which may restart them. Auto mode never
+  targets engines; manual close requires force. Standalone CLIs are distinct.
 - **Auto mode never closes the only stale session in a project.** Sparing
   the most recently active session per project is what keeps your place,
   but a project with one forgotten session keeps it forever. A horizon
@@ -325,7 +332,7 @@ Things that came up and where they landed.
   directory, and a one-request HTTP fingerprint identify nearly every dev
   port precisely for free, and a model would be guessing from the same
   evidence with less rigour. The leftovers are exactly what the planned
-  MCP interface is for: your own agent, with the snapshot in hand, can go
+  planned MCP interface could support: your own agent, with the snapshot in hand, can go
   and look.
 
 - **Footprint, not resident size.** Resident size charges the shared
@@ -363,8 +370,8 @@ Things that came up and where they landed.
 
 - **The UI is a Tauri tray app** that reads the daemon's files rather than
   talking to it over a socket. The daemon writes `latest.json` every tick
-  and the action log is append-only, so a file is the simplest possible
-  interface and the tray never needs the daemon to answer. The terminal
+  and the action log appends records with bounded rotation, so files keep the
+  interface simple and the tray never needs the daemon to answer. The terminal
   `watch` view stays for people who live in a terminal.
 - **Tabs come from Chrome's session files, not from Chrome.** The
   alternatives were AppleScript (a subprocess and an Automation prompt on
@@ -383,3 +390,131 @@ Things that came up and where they landed.
   One trap: Chrome hands that id over as text, and AppleScript's integer
   stops at 2^29, so an id near two billion coerced to integer silently
   becomes a real and matches nothing. The script compares ids as text.
+
+## Persistence and diagnostics
+
+Each tick attempts the snapshot, history, and tracker writes independently.
+Failures keep the loop alive, retry at the normal sampling interval, and produce
+an immediate notification with hourly reminders and a recovery notification.
+`daemon --once` returns an error if any output fails. Atomic state replacement
+preserves the previous complete snapshot on failed writes. Missed history
+samples are not queued for replay. Logging itself ignores stderr/disk failures
+instead of panicking on a broken pipe or full disk.
+
+`storage.rs` centralizes private Unix directories/files (0700/0600), migration of
+older permissions, unique atomic temporary files, and log retention. Both
+`daemon.log` and `actions.jsonl` use 5 MiB files and three numbered backups.
+Writers use OS file locks across processes and copy/truncate the current log,
+keeping the inode valid for launchd's open stdout/stderr handles. Readers scan
+backward in blocks and stop after the requested number of valid records, crossing
+backups as needed; action readers keep the newest record for each journal ID.
+Action journal writes retain their sync-before-execution guarantee. Oversized
+legacy logs contribute only a bounded tail on their first rotation.
+
+The CLI daemon installs a Rust panic hook before loading settings. Panics and
+fatal startup errors save the most recent local `crash.json`, with source/stack
+information for panics but no panic payload. Native notifications report the
+failure; launchd is throttled to a 60-second minimum launch interval. A new
+service installation also sets umask 077. Existing installations need
+`autotrim service install` to refresh their plist. SIGKILL/OOM termination cannot
+run a panic hook. Diagnostics and notifications are best effort if disk or OS
+services are unavailable. No crash data is uploaded.
+
+[PRIVACY.md](../PRIVACY.md) inventories the sensitive fields, local paths,
+retention rules, permission boundaries, notifications, network use, and removal.
+
+## App updates
+
+The macOS companion checks a GitHub Releases feed at launch and every six
+hours. Updates require an explicit Install and restart action and a valid
+Tauri signature. A universal app archive contains the CLI/daemon as a
+signed sidecar, so the app and monitor ship together. After an app version
+change, an existing login service is rebound to that daemon; a disabled
+service stays disabled. The source installer links its PATH command to the
+bundled CLI. Development and CLI-only builds retain manual upgrades.
+See [releases.md](releases.md) for bootstrap, signing, and publishing.
+
+
+## Guarded cleanup and journal lifecycle
+
+The classification boundaries are covered by synthetic tests in `rules.rs`.
+Transcript age takes precedence over quiet-window warm-up for classification;
+automatic cleanup additionally requires a recorded activity timestamp and warm
+quiet mean. This resolves the former documentation claim that warm-up delayed
+all stale classification. The pure `policy.rs` component handles candidate
+selection and warning/grace/cancellation state. Tied newest project timestamps
+are all protected. Leaving preview mode starts a new grace period after a
+reported dry run. Server state keys now include process start time; older pending
+server keys are cancelled rather than inherited by a reused PID.
+
+Before each automatic action the adapter reloads settings and samples again,
+preserving prior daemon quiet evidence and vetoing renewed instantaneous CPU.
+The shared action boundary checks identity, eligibility, exclusions, self and
+engine protections. Manual review carries PID/start time too. Captured descendant
+identities are rechecked before each signal. Targets receive SIGTERM where
+supported, a bounded grace period, then a hard kill for survivors with bounded
+verification. Results retain signal failures, unsupported signals, identity
+changes, and surviving processes. Platforms without SIGTERM start with hard kill.
+As with any PID-based API, start-time checks narrow but cannot atomically eliminate
+the OS race between identity inspection and signal delivery.
+
+Every real session close, server stop, tab close, app quit, or restart saves a
+synced intent before execution. The intent includes one stable action ID,
+process identities or browser/tab/URL/profile identity, and available recovery
+information. No side effect runs if this write fails. A completion with the same
+ID records success, failure, partial completion, or a skip; readers merge both
+entries into one logical action and retain compatibility with older logs.
+Interrupted actions remain incomplete, including completion-write failures.
+Dry runs have one explicitly labeled record and execute nothing. These changes
+address [the journal issue](https://github.com/Aaroney13/autoTrim/issues/3);
+recovery means reopening/resuming, not guaranteed restoration of unsaved state.
+
+## Transcript activity cache
+
+`activity_cache.rs` caches 128 paths/parser identities with LRU eviction. Each
+check opens/stats the file but unchanged files read no contents. Unix device/inode
+and Windows volume/file-index identities distinguish replacements; modification,
+creation, change times and length detect rewrites or truncation. Appends start
+at the previous unfinished final line and retain the last complete activity.
+Initial historical lookup scans backward in 64 KiB blocks instead of allocating
+the whole file. Missing or changing files return unknown until a stable read.
+
+A single line longer than 1 MiB returns unknown activity, preventing automatic
+cleanup from relying on an old timestamp. This is a deliberate conservative
+limit; files dominated by oversized lines remain cached as unknown until the file changes.
+Arbitrary in-place rewriting followed by regrowth beyond the cached size can
+resemble an append; supported agent transcript writers append or replace files.
+The separate session-name readers and OS process/browser scans remain outside
+this cache's memory bound.
+
+Repeat the synthetic benchmark with:
+
+```sh
+cargo test -p autotrim activity_cache::tests::benchmark -- --ignored --nocapture
+```
+
+On this development Mac, a 136,192,011-byte transcript followed by 100 checks
+read 136,192,011 bytes in total. Appending one 11-byte activity entry read only
+11 more bytes. The tracked peak read buffer was 65,600 bytes; debug execution
+was about 2.6 seconds. The isolated benchmark process reported a peak
+`phys_footprint` of 2,245,064 bytes (about 2.1 MiB). The buffer measurement excludes parser allocations,
+other caches, and the Rust test harness. It does not establish a whole-daemon
+under-20-MB guarantee; a scratch daemon on this Mac reported 7 MB current and peak footprint
+on one tick with six sessions. That is below the goal for this sample, not
+a long-duration or worst-case guarantee. Bounded transcript buffers avoid the previous full-file
+allocation, but other components can still exceed the footprint goal.
+
+## Dashboard modules
+
+`tray/ui/index.html` loads `styles.css` and `main.js`. `state.js` owns state and
+selectors; `format.js` formats values; `render.js` produces markup; `actions.js`
+owns IPC, polling and confirmations using injected rendering callbacks. Imports
+have no cycle. Tauri bundles the directory without a build server. A fresh scan
+wins over older daemon snapshots, including equal-second timestamps. Log-read
+failures preserve the last action view, and partial process results never mark
+the session gone.
+
+`node --test tests/tray-ui.test.mjs` uses synthetic IPC. For an interactive
+fixture, run `python3 tests/preview-tray.py` and open localhost:8766; that server
+injects fake IPC into the production modules and refuses unsupported commands.
+It cannot close real sessions, tabs, or apps.

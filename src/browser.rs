@@ -88,9 +88,8 @@ const CLOSE_BY_ID: &[&str] = &[
 ];
 
 /// Arguments to open a browser with again after a restart. The Chromium
-/// family restores the last session when asked and loads the tabs lazily,
-/// which is the point of restarting it. Other apps restore their own
-/// windows unasked.
+/// family is asked to restore the last session. Restoration and lazy loading
+/// depend on browser state/settings; drafts and temporary chats may be lost.
 pub fn relaunch_args(name: &str) -> &'static [&'static str] {
     if CLOSE_BY_ID.contains(&name) {
         &["--restore-last-session"]

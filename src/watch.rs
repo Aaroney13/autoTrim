@@ -32,17 +32,14 @@ pub fn run(interval: Duration, log_lines: usize, thresholds: rules::Thresholds) 
         ));
         out.push_str(&report::render(&snap));
         if let Some(p) = &log_path
-            && let Ok(text) = fs::read_to_string(p)
+            && let Ok(tail) = crate::storage::tail_lines(p, log_lines)
+            && !tail.is_empty()
         {
-            let lines: Vec<&str> = text.lines().collect();
-            let tail = &lines[lines.len().saturating_sub(log_lines)..];
-            if !tail.is_empty() {
-                out.push_str("\nDaemon log\n");
-                for l in tail {
-                    out.push_str("  ");
-                    out.push_str(l);
-                    out.push('\n');
-                }
+            out.push_str("\nDaemon log\n");
+            for l in &tail {
+                out.push_str("  ");
+                out.push_str(l);
+                out.push('\n');
             }
         }
         let mut stdout = std::io::stdout().lock();
@@ -62,33 +59,37 @@ pub fn print_log(lines: usize, follow: bool) -> Result<()> {
         println!("no daemon log yet at {}", path.display());
         return Ok(());
     }
-    let text = fs::read_to_string(&path)?;
-    let all: Vec<&str> = text.lines().collect();
-    for l in &all[all.len().saturating_sub(lines)..] {
+    // Capture the follow offset before tailing so new writes are not skipped.
+    let mut seen = fs::metadata(&path)?.len();
+    let mut rotation = crate::storage::rotation_stamp(&path);
+    for l in crate::storage::tail_lines(&path, lines)? {
         println!("{l}");
     }
     if !follow {
         return Ok(());
     }
-    let mut seen = text.len() as u64;
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        let Ok(meta) = fs::metadata(&path) else {
+        let Ok(mut f) = fs::File::open(&path) else {
             continue;
         };
-        let len = meta.len();
-        if len < seen {
+        f.lock_shared()?;
+        let len = f.metadata()?.len();
+        let current_rotation = crate::storage::rotation_stamp(&path);
+        if len < seen || current_rotation != rotation {
             seen = 0; // rotated or truncated
         }
+        rotation = current_rotation;
         if len > seen {
             use std::io::{Read, Seek, SeekFrom};
-            let mut f = fs::File::open(&path)?;
             f.seek(SeekFrom::Start(seen))?;
-            let mut buf = String::new();
-            f.read_to_string(&mut buf)?;
-            print!("{buf}");
-            std::io::stdout().flush()?;
-            seen = len;
+            let mut buf = Vec::new();
+            f.take((len - seen).min(crate::storage::LOG_BYTES))
+                .read_to_end(&mut buf)?;
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(&buf)?;
+            stdout.flush()?;
+            seen += buf.len() as u64;
         }
     }
 }

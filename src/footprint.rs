@@ -1,4 +1,4 @@
-//! What a process would give back if it exited. On macOS that is
+//! Memory attributed to a process, not a measurement of action savings. On macOS:
 //! `phys_footprint`: private, compressed and IOKit memory, the number
 //! Activity Monitor's Memory column and `footprint(1)` show. It leaves out
 //! the pages shared with every other process (the dyld cache, framework

@@ -2,3 +2,5 @@
 /node_modules
 /tray/gen/schemas
 /.claude/worktrees
+/.release-keys/
+/tray/binaries/

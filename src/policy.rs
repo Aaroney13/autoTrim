@@ -1,0 +1,308 @@
+//! Pure automatic cleanup decisions. No I/O, clock reads, or actions.
+use crate::{
+    Snapshot,
+    agents::{AgentSession, SessionState},
+    daemon::{AutoConfig, DaemonConfig, PendingTarget},
+    fmt::dur,
+    rules::Thresholds,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap, HashSet};
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct PolicyState {
+    #[serde(default)]
+    pub pending: HashMap<String, u64>,
+    #[serde(default)]
+    pub dry_done: HashSet<String>,
+}
+pub(crate) enum Target {
+    Session(AgentSession),
+    Server(crate::ports::PortInfo),
+}
+impl Target {
+    pub fn key(&self) -> String {
+        match self {
+            Self::Session(s) => format!("s:{}:{}", s.pid, s.start_time),
+            Self::Server(p) => format!("p:{}:{}:{}", p.pid, p.start_time, p.port),
+        }
+    }
+}
+pub(crate) struct Decisions {
+    pub warned: Vec<String>,
+    pub pending: Vec<PendingTarget>,
+    pub eligible: Vec<Target>,
+    pub cancelled: Vec<String>,
+}
+/// Sessions auto mode may close this tick. Stricter than the advice: it
+/// needs transcript evidence of idleness, a warm quiet window agreeing,
+/// an allowed host, never an app's own engine (the app would restart it),
+/// and it spares the most recently active session in each project so a
+/// person always keeps their place.
+pub(crate) fn auto_session_candidates<'a>(
+    snap: &'a Snapshot,
+    auto: &AutoConfig,
+    t: &Thresholds,
+) -> Vec<&'a AgentSession> {
+    let mut newest: HashMap<&str, u64> = HashMap::new();
+    for s in &snap.sessions {
+        if let (Some(p), Some(la)) = (s.project.as_deref(), s.last_activity) {
+            let e = newest.entry(p).or_insert(0);
+            if la > *e {
+                *e = la;
+            }
+        }
+    }
+    snap.sessions
+        .iter()
+        .filter(|s| s.state == SessionState::Stale && !s.is_self)
+        // An app's agent engine (Codex's server, Copilot's) is restarted by
+        // its app, so closing it frees nothing for long. Only `close --force`
+        // will.
+        .filter(|s| !s.engine)
+        .filter(|s| s.last_activity.is_some() && s.cpu_window_mean.is_some())
+        .filter(|s| s.idle_secs.is_some_and(|i| i >= t.stale_after_secs))
+        .filter(|s| s.quiet_for_secs.is_some_and(|q| q >= t.min_quiet_secs))
+        .filter(|s| auto.hosts.iter().any(|h| h == &s.host))
+        .filter(|s| {
+            let path = s.cwd.as_deref().or(s.project.as_deref()).unwrap_or("");
+            !t.ignore_projects
+                .iter()
+                .any(|p| !p.is_empty() && path.contains(p.as_str()))
+        })
+        .filter(|s| match (s.project.as_deref(), s.last_activity) {
+            (Some(p), Some(la)) => newest.get(p).is_none_or(|n| la < *n),
+            _ => true,
+        })
+        .collect()
+}
+
+/// Servers auto mode may stop: the old-servers rule's targets, narrowed to
+/// known dev runtimes. Anything else old and unmanaged is only reported.
+pub(crate) fn auto_server_candidates<'a>(
+    snap: &'a Snapshot,
+    t: &Thresholds,
+) -> Vec<&'a crate::ports::PortInfo> {
+    let mut seen = BTreeSet::new();
+    snap.ports
+        .iter()
+        .filter(|p| !p.owner_managed && p.dev_runtime)
+        .filter(|p| !t.ignore_ports.contains(&p.port))
+        .filter(|p| p.open_for_secs >= t.port_stale_after_secs)
+        .filter(|p| p.owner_cpu < t.quiet_cpu)
+        .filter(|p| seen.insert(p.pid))
+        .collect()
+}
+
+/// One pass of auto mode: warn about new candidates, act on ones whose
+/// grace has run out, forget ones that went away or woke up. Returns what
+/// the snapshot should say about it. With auto mode off the pending list
+/// is emptied, so switching it on later starts every grace period afresh.
+pub(crate) fn decide(
+    state: &mut PolicyState,
+    snap: &Snapshot,
+    cfg: &DaemonConfig,
+    now: u64,
+) -> Decisions {
+    let previous: Vec<_> = state.pending.keys().cloned().collect();
+    let auto = &cfg.auto;
+    let grace = auto.grace.as_secs();
+    let mut live = std::collections::HashSet::new();
+    let mut warned: Vec<String> = Vec::new();
+    let mut acted: Vec<Target> = Vec::new();
+    let mut pending: Vec<PendingTarget> = Vec::new();
+
+    if !auto.dry_run {
+        state.dry_done.clear();
+    }
+    if auto.close_sessions {
+        for s in auto_session_candidates(snap, auto, &cfg.thresholds) {
+            let k = format!("s:{}:{}", s.pid, s.start_time);
+            live.insert(k.clone());
+            if auto.dry_run && state.dry_done.contains(&k) {
+                continue;
+            }
+            let name = s
+                .session_name
+                .as_deref()
+                .or(s.project.as_deref())
+                .unwrap_or("?");
+            let detail = format!("idle {}", dur(s.idle_secs.unwrap_or(0)));
+            let first = *state.pending.entry(k.clone()).or_insert_with(|| {
+                warned.push(format!("{} · {} ({})", s.kind.label(), name, detail));
+                now
+            });
+            if now.saturating_sub(first) >= grace {
+                acted.push(Target::Session(s.clone()));
+                if auto.dry_run {
+                    state.dry_done.insert(k);
+                }
+            } else {
+                pending.push(PendingTarget {
+                    kind: "session".to_string(),
+                    pid: s.pid,
+                    target: format!("{} · {}", s.kind.label(), name),
+                    detail,
+                    rss: s.rss,
+                    since: first,
+                    due_at: first + grace,
+                });
+            }
+        }
+    }
+    if auto.stop_servers {
+        for p in auto_server_candidates(snap, &cfg.thresholds) {
+            let k = format!("p:{}:{}:{}", p.pid, p.start_time, p.port);
+            live.insert(k.clone());
+            if auto.dry_run && state.dry_done.contains(&k) {
+                continue;
+            }
+            let detail = format!("open {}", dur(p.open_for_secs));
+            let first = *state.pending.entry(k.clone()).or_insert_with(|| {
+                warned.push(format!(
+                    "{} on {}:{} ({})",
+                    p.process, p.addr, p.port, detail
+                ));
+                now
+            });
+            if now.saturating_sub(first) >= grace {
+                acted.push(Target::Server(p.clone()));
+                if auto.dry_run {
+                    state.dry_done.insert(k);
+                }
+            } else {
+                pending.push(PendingTarget {
+                    kind: "server".to_string(),
+                    pid: p.pid,
+                    target: format!("{} on {}:{}", p.process, p.addr, p.port),
+                    detail,
+                    rss: p.owner_rss,
+                    since: first,
+                    due_at: first + grace,
+                });
+            }
+        }
+    }
+    state.pending.retain(|k, _| live.contains(k));
+    state.dry_done.retain(|k| live.contains(k));
+
+    let cancelled = previous.into_iter().filter(|k| !live.contains(k)).collect();
+    Decisions {
+        warned,
+        pending,
+        eligible: acted,
+        cancelled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::Config, daemon::Overrides, test_support::*};
+    fn config() -> DaemonConfig {
+        let mut cfg = DaemonConfig::from_config(&Config::default(), &Overrides::default());
+        cfg.auto = AutoConfig {
+            close_sessions: true,
+            stop_servers: true,
+            grace: std::time::Duration::from_secs(60),
+            hosts: vec!["terminal".into()],
+            dry_run: false,
+        };
+        cfg
+    }
+    fn eligible_snapshot() -> Snapshot {
+        let mut snap = snapshot();
+        let old = session();
+        let mut new = old.clone();
+        new.pid += 1;
+        new.last_activity = Some(200);
+        snap.sessions = vec![old, new];
+        snap.ports = vec![port()];
+        snap
+    }
+    #[test]
+    fn session_exclusions_and_newest_ties() {
+        let cfg = config();
+        let changes: Vec<fn(&mut AgentSession)> = vec![
+            |s| s.is_self = true,
+            |s| s.engine = true,
+            |s| s.idle_secs = None,
+            |s| s.last_activity = None,
+            |s| s.cpu_window_mean = None,
+            |s| s.quiet_for_secs = None,
+            |s| s.quiet_for_secs = Some(899),
+            |s| s.host = "unknown".into(),
+            |s| s.state = SessionState::Active,
+            |s| s.idle_secs = Some(21599),
+            |s| s.last_activity = Some(200),
+        ];
+        assert_eq!(
+            auto_session_candidates(&eligible_snapshot(), &cfg.auto, &cfg.thresholds).len(),
+            1
+        );
+        for change in changes {
+            let mut snap = eligible_snapshot();
+            change(&mut snap.sessions[0]);
+            assert!(auto_session_candidates(&snap, &cfg.auto, &cfg.thresholds).is_empty());
+        }
+        let mut t = cfg.thresholds;
+        t.ignore_projects = vec!["/work".into()];
+        assert!(auto_session_candidates(&eligible_snapshot(), &cfg.auto, &t).is_empty());
+    }
+    #[test]
+    fn server_exclusions_thresholds_and_dedup() {
+        let cfg = config();
+        for change in [
+            (|p: &mut crate::ports::PortInfo| p.owner_managed = true)
+                as fn(&mut crate::ports::PortInfo),
+            |p| p.dev_runtime = false,
+            |p| p.open_for_secs = 86399,
+            |p| p.owner_cpu = 2.,
+        ] {
+            let mut snap = eligible_snapshot();
+            change(&mut snap.ports[0]);
+            assert!(auto_server_candidates(&snap, &cfg.thresholds).is_empty());
+        }
+        let mut snap = eligible_snapshot();
+        snap.ports[0].open_for_secs = 86400;
+        snap.ports[0].owner_cpu = 1.99;
+        let mut second = snap.ports[0].clone();
+        second.port += 1;
+        snap.ports.push(second);
+        assert_eq!(auto_server_candidates(&snap, &cfg.thresholds).len(), 1);
+        let mut t = cfg.thresholds;
+        t.ignore_ports = vec![3000, 3001];
+        assert!(auto_server_candidates(&snap, &t).is_empty());
+    }
+    #[test]
+    fn grace_cancellation_restart_and_mode_switches() {
+        let mut cfg = config();
+        let mut state = PolicyState::default();
+        let mut snap = eligible_snapshot();
+        let first = decide(&mut state, &snap, &cfg, 1000);
+        assert_eq!(first.warned.len(), 2);
+        assert_eq!(first.pending.len(), 2);
+        assert!(first.eligible.is_empty());
+        assert!(decide(&mut state, &snap, &cfg, 1059).eligible.is_empty());
+        state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(decide(&mut state, &snap, &cfg, 1060).eligible.len(), 2);
+        snap.sessions[0].state = SessionState::Active;
+        snap.ports.clear();
+        assert_eq!(decide(&mut state, &snap, &cfg, 1061).cancelled.len(), 2);
+        snap = eligible_snapshot();
+        assert_eq!(decide(&mut state, &snap, &cfg, 1070).warned.len(), 2);
+        cfg.auto.close_sessions = false;
+        cfg.auto.stop_servers = false;
+        assert_eq!(decide(&mut state, &snap, &cfg, 1071).cancelled.len(), 2);
+        cfg = config();
+        cfg.auto.dry_run = true;
+        assert_eq!(decide(&mut state, &snap, &cfg, 1080).warned.len(), 2);
+        assert_eq!(decide(&mut state, &snap, &cfg, 1140).eligible.len(), 2);
+        assert!(decide(&mut state, &snap, &cfg, 1200).eligible.is_empty());
+        // The adapter removes completed pending entries. Leaving preview requires a fresh warning.
+        state.pending.clear();
+        cfg.auto.dry_run = false;
+        assert_eq!(decide(&mut state, &snap, &cfg, 1201).warned.len(), 2);
+        assert!(decide(&mut state, &snap, &cfg, 1260).eligible.is_empty());
+        assert_eq!(decide(&mut state, &snap, &cfg, 1261).eligible.len(), 2);
+    }
+}
