@@ -144,6 +144,7 @@ impl AutoStatus {
         if self.stop_servers {
             what.push("stops old servers");
         }
+        what.push("closes empty Chrome New Tab pages");
         let mut s = format!(
             "{} after a {} warning",
             what.join(" and "),
@@ -159,7 +160,7 @@ impl AutoStatus {
 /// One target auto mode has warned about.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PendingTarget {
-    /// "session" or "server".
+    /// "session", "server", or "tab". Tabs have no individual pid.
     pub kind: String,
     pub pid: u32,
     pub target: String,

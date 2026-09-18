@@ -25,3 +25,25 @@ pub fn snapshot() -> Snapshot {
         "groups": [], "sessions": [], "browsers": [], "advice": []}))
     .unwrap()
 }
+
+pub fn chrome_snapshot() -> Snapshot {
+    serde_json::from_value(serde_json::json!({
+        "taken_at": 100, "scanner_pid": 1,
+        "system": {
+            "os": "test", "total_mem": 0, "used_mem": 0, "available_mem": 0,
+            "total_swap": 0, "used_swap": 0, "uptime_secs": 0
+        },
+        "groups": [], "sessions": [], "advice": [],
+        "browsers": [{
+            "name": "Google Chrome", "rss": 0, "procs": 1, "renderers": 0,
+            "extension_renderers": 0, "gpu": 0, "utility": 0,
+            "can_close_tabs": true,
+            "tabs": [{
+                "id": 7, "window_id": 1, "profile": "Default", "index": 1,
+                "url": "chrome://newtab/", "site": "chrome://newtab", "title": "New Tab",
+                "pinned": false, "active": false, "last_active": null, "idle_secs": null
+            }]
+        }]
+    }))
+    .unwrap()
+}

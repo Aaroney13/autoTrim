@@ -156,7 +156,8 @@ function autoCard() {
   for (const [key, label, checked, detail] of [["close_sessions", "Close stale agent sessions", c.auto_close_sessions, `Idle past ${dur(c.stale_after_secs ?? 21600)}, with transcript and CPU evidence.`], ["stop_servers", "Stop old local servers", c.auto_stop_servers, `Quiet dev servers open past ${dur(c.port_stale_after_secs ?? 86400)}.`]]) {
     html += `<div class="setting-row"><label><span>${label}<small class="muted" style="display:block">${detail}</small></span><input type="checkbox" data-auto="${key}" ${checked ? "checked" : ""} ${busy || mode === "off" || c.config_error ? "disabled" : ""}></label></div>`;
   }
-  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, and the newest session in each project. Only these hosts are allowed: ${esc(c.auto_hosts.join(", ") || "none")}. Activity during the grace period cancels that target’s close.</p></details>`;
+  html += `<p class="muted">Auto mode also closes empty Chrome New Tab pages after the warning period. Selected and pinned tabs stay open; visiting a tab or navigating away cancels its pending close.</p>`;
+  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, the newest session in each project, and selected or pinned browser tabs. Only these session hosts are allowed: ${esc(c.auto_hosts.join(", ") || "none")}. Activity during the grace period cancels that target’s close.</p></details>`;
   if (!state.src.daemon_running) html += `<p class="note">The background monitor is stopped. Start it below for auto mode to run.</p>`;
   else if (a) {
     const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.dry_run === c.auto_dry_run;
