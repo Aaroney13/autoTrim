@@ -17,8 +17,13 @@ pub const AVAILABLE: bool = cfg!(target_os = "macos");
 /// Close one tab of `app`, matched by the browser's own tab id and then by
 /// URL, so a tab that navigated since we looked is left alone. `app` must
 /// come from a fixed table, never from input.
-pub fn close_tab(app: &str, tab_id: i32, url: &str) -> anyhow::Result<String> {
-    platform::close_tab(app, tab_id, url)
+pub fn close_tab(
+    app: &str,
+    tab_id: i32,
+    url: &str,
+    protect_active: bool,
+) -> anyhow::Result<String> {
+    platform::close_tab(app, tab_id, url, protect_active)
 }
 
 /// Ask `app` to quit the way ⌘Q would.
@@ -63,12 +68,18 @@ mod platform {
     /// Tab ids are compared as text on both sides. Chrome hands them over
     /// as text, and AppleScript's integer stops at 2^29, so an id near two
     /// billion coerced to integer silently becomes a real and never matches.
-    pub fn close_tab(app: &str, tab_id: i32, url: &str) -> anyhow::Result<String> {
+    pub fn close_tab(
+        app: &str,
+        tab_id: i32,
+        url: &str,
+        protect_active: bool,
+    ) -> anyhow::Result<String> {
         let app = app.replace('"', "");
         let script = format!(
             r#"on run argv
   set wantId to (item 1 of argv) as text
   set wantUrl to item 2 of argv
+  set protectActive to (item 3 of argv) is "true"
   with timeout of 15 seconds
     tell application "{app}"
       repeat with w in windows
@@ -77,6 +88,9 @@ mod platform {
           if ((item i of ids) as text) is wantId then
             set t to tab i of w
             if (URL of t) is wantUrl then
+              if protectActive and (active tab index of w) is i then
+                return "left alone: the tab is active"
+              end if
               close t
               return "closed"
             else
@@ -90,7 +104,14 @@ mod platform {
   return "not found: the tab is already gone"
 end run"#
         );
-        osascript(&script, &[tab_id.to_string(), url.to_string()])
+        osascript(
+            &script,
+            &[
+                tab_id.to_string(),
+                url.to_string(),
+                protect_active.to_string(),
+            ],
+        )
     }
 
     pub fn quit_app(app: &str) -> anyhow::Result<String> {
@@ -140,7 +161,12 @@ return "asked to quit""#
 mod platform {
     use std::path::Path;
 
-    pub fn close_tab(_app: &str, _tab_id: i32, _url: &str) -> anyhow::Result<String> {
+    pub fn close_tab(
+        _app: &str,
+        _tab_id: i32,
+        _url: &str,
+        _protect_active: bool,
+    ) -> anyhow::Result<String> {
         anyhow::bail!("closing tabs is only implemented on macOS so far")
     }
 

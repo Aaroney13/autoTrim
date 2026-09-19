@@ -113,7 +113,10 @@ targets still idle then. Its bar is higher than the advice's: transcript
 evidence of idleness, a quiet CPU window agreeing, a host on the
 `auto_hosts` allowlist, and the most recently active session in each
 project is always spared. Servers are only stopped when the owner is a known
-dev runtime. `auto_dry_run = true` logs what it would have done and does
+dev runtime. Whenever auto mode is on, empty Chrome New Tab pages are also
+closed after the warning period. Selected and pinned tabs are spared;
+visiting a tab or navigating away from New Tab cancels its pending close.
+`auto_dry_run = true` logs what it would have done and does
 nothing, which is how to try it for a week. Every target is checked again
 against fresh activity, process identities, exclusions, and current settings
 immediately before execution.

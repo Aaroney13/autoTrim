@@ -47,6 +47,23 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   "closing X in 7 m" rather than leaving the notification as the only
   trace. Switching auto mode off empties that list, so switching it on
   again starts every grace period afresh.
+- **Empty Chrome tabs in auto mode.** Either auto-mode target switch also
+  enables closing empty Chrome New Tab pages after the same warning and
+  grace period (`auto_grace_minutes`, ten minutes by default). Only the
+  built-in `chrome://newtab/`, `chrome://new-tab-page/`, and
+  `chrome://new-tab-page-third-party/` URLs qualify (with or without their
+  trailing slash). Titles, ordinary websites, extension pages, and
+  `about:blank` are not enough evidence. A new tab needs no recorded idle
+  timestamp and does not wait for the one-day stale-tab threshold. Selected
+  and pinned tabs are excluded. Browser, profile, window, tab id, URL, and
+  last-active time identify a warning, so navigation or a recorded visit
+  starts a fresh grace period if the tab qualifies again. The shared tab
+  action takes another snapshot and rechecks eligibility, then Chrome
+  rechecks the URL and selected tab at the moment of closing. Pinned state
+  is checked from session files; Chrome's AppleScript interface does not
+  expose it. Dry runs are logged once per unchanged candidate, and switching
+  auto mode off clears tab warnings too. The window and `status` show pending
+  tabs alongside sessions and servers, and Actions saves their recovery URL.
 - **Trends.** The daemon keeps a rolling series per app and per session
   (two hours by default, warmed from the history files on restart, so a
   restart forgets nothing) and fits a line through each. Three rules read
