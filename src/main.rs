@@ -362,6 +362,7 @@ fn close_tab(args: &CloseTabArgs, cfg: &Config) -> Result<()> {
         &cfg.thresholds(),
         args.dry_run,
         "manual",
+        None,
     )?;
     for r in recs {
         println!("{}", actions::describe(&r));

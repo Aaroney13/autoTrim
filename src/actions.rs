@@ -210,10 +210,13 @@ fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionR
         .find(|p| p.dir == t.profile)
         .map(|p| p.label.clone())
         .unwrap_or_else(|| t.profile.clone());
-    let result = if dry_run {
+    let result = if mode == "auto" && !browser::can_auto_close_tab(b, t) {
+        "skipped: tab is no longer an unpinned, inactive Chrome New Tab page".to_string()
+    } else if dry_run {
         "dry run, nothing done".to_string()
     } else {
-        browser::close_tab(&b.name, t.id, &t.url).unwrap_or_else(|e| format!("failed: {e}"))
+        browser::close_tab(&b.name, t.id, &t.url, mode == "auto")
+            .unwrap_or_else(|e| format!("failed: {e}"))
     };
     let title = if t.title.trim().is_empty() {
         t.url.clone()
@@ -253,14 +256,17 @@ fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionR
 /// re-checked by the browser itself. One record per requested id, in the
 /// same order; an id the browser no longer lists gets a record saying so,
 /// which is not logged because nothing was done.
+/// Auto mode must also supply the tabs it warned about, including their
+/// last-active times, so activity during the final rescan cancels a close.
 pub fn close_tabs_by_id(
     browser: &str,
     ids: &[i32],
     t: &Thresholds,
     dry_run: bool,
     mode: &str,
+    warned: Option<&[&TabInfo]>,
 ) -> Result<Vec<ActionRecord>> {
-    close_tabs_checked(browser, ids, None, t, dry_run, mode)
+    close_tabs_checked(browser, ids, None, t, dry_run, mode, warned)
 }
 
 /// The identity of a tab shown in a persistent confirmation dialog.
@@ -277,7 +283,7 @@ pub fn close_reviewed_tabs(
     t: &Thresholds,
 ) -> Result<Vec<ActionRecord>> {
     let ids: Vec<_> = reviewed.iter().map(|tab| tab.id).collect();
-    close_tabs_checked(browser, &ids, Some(reviewed), t, false, "manual")
+    close_tabs_checked(browser, &ids, Some(reviewed), t, false, "manual", None)
 }
 
 fn reviewed_tab_error(tab: &TabInfo, expected: Option<&ReviewedTab>) -> Option<&'static str> {
@@ -293,6 +299,21 @@ fn reviewed_tab_error(tab: &TabInfo, expected: Option<&ReviewedTab>) -> Option<&
     None
 }
 
+fn warned_tab_error(tab: &TabInfo, expected: Option<&TabInfo>) -> Option<&'static str> {
+    let Some(expected) = expected else {
+        return Some("tab was not warned about");
+    };
+    if tab.id != expected.id
+        || tab.profile != expected.profile
+        || tab.window_id != expected.window_id
+        || tab.url != expected.url
+        || tab.last_active != expected.last_active
+    {
+        return Some("tab changed or was used since the warning");
+    }
+    None
+}
+
 fn close_tabs_checked(
     browser: &str,
     ids: &[i32],
@@ -300,6 +321,7 @@ fn close_tabs_checked(
     t: &Thresholds,
     dry_run: bool,
     mode: &str,
+    warned: Option<&[&TabInfo]>,
 ) -> Result<Vec<ActionRecord>> {
     let mut sys = System::new();
     let snap = take_snapshot(&mut sys, Some(Duration::from_millis(300)), t);
@@ -334,11 +356,22 @@ fn close_tabs_checked(
             continue;
         };
         found += 1;
-        if let Some(reviewed) = reviewed
-            && let Some(reason) = reviewed_tab_error(tab, reviewed.iter().find(|x| x.id == *id))
-        {
+        let reason = if mode == "auto" {
+            warned_tab_error(
+                tab,
+                warned.and_then(|tabs| tabs.iter().copied().find(|x| x.id == *id)),
+            )
+            .or_else(|| {
+                (!browser::can_auto_close_tab(b, tab))
+                    .then_some("tab is no longer an unpinned, inactive Chrome New Tab page")
+            })
+        } else {
+            reviewed.and_then(|tabs| reviewed_tab_error(tab, tabs.iter().find(|x| x.id == *id)))
+        };
+        if let Some(reason) = reason {
             let mut rec = close_tab(b, tab, mode, true);
-            rec.mode = mode.to_string();
+            rec.mode = if dry_run { "dry-run" } else { mode }.to_string();
+            rec.status = "skipped".into();
             rec.result = format!("skipped: {reason}");
             log(&rec)?;
             out.push(rec);
@@ -925,33 +958,55 @@ pub(crate) fn execute_auto(
 ) -> Result<ActionRecord> {
     use crate::policy::{Target, auto_server_candidates, auto_session_candidates};
     let eligible = auto_target_eligible(target, snap, cfg);
-    let (mut plan, pids) = match target {
+    let (mut plan, pids, identity) = match target {
         Target::Session(old) => {
             let current = auto_session_candidates(snap, &cfg.auto, &cfg.thresholds)
                 .into_iter()
                 .find(|s| s.pid == old.pid && s.start_time == old.start_time);
             let s = current.unwrap_or(old);
-            (close_session(s, "auto", true), s.pids.clone())
+            (
+                close_session(s, "auto", true),
+                s.pids.clone(),
+                ProcessIdentity {
+                    pid: old.pid,
+                    start_time: old.start_time,
+                },
+            )
         }
         Target::Server(old) => {
             let current = auto_server_candidates(snap, &cfg.thresholds)
                 .into_iter()
                 .find(|p| p.pid == old.pid && p.start_time == old.start_time);
             let p = current.unwrap_or(old);
-            (stop_server(p, "auto", true), vec![p.pid])
+            (
+                stop_server(p, "auto", true),
+                vec![p.pid],
+                ProcessIdentity {
+                    pid: old.pid,
+                    start_time: old.start_time,
+                },
+            )
+        }
+        Target::Tab { browser, tab } => {
+            anyhow::ensure!(
+                eligible,
+                "tab changed, was used, or current settings prohibit cleanup"
+            );
+            return close_tabs_by_id(
+                browser,
+                &[tab.id],
+                &cfg.thresholds,
+                cfg.auto.dry_run,
+                "auto",
+                Some(&[tab]),
+            )?
+            .into_iter()
+            .next()
+            .context("no tab action result");
         }
     };
     if !eligible {
-        plan.identities = vec![match target {
-            Target::Session(s) => ProcessIdentity {
-                pid: s.pid,
-                start_time: s.start_time,
-            },
-            Target::Server(p) => ProcessIdentity {
-                pid: p.pid,
-                start_time: p.start_time,
-            },
-        }];
+        plan.identities = vec![identity];
         let result = plan.clone();
         return journal(plan, "auto", false, || {
             let mut rec = result;
@@ -983,6 +1038,18 @@ fn auto_target_eligible(
                 && auto_server_candidates(snap, &cfg.thresholds)
                     .iter()
                     .any(|p| p.pid == old.pid && p.start_time == old.start_time)
+        }
+        Target::Tab {
+            browser: name,
+            tab: old,
+        } => {
+            (cfg.auto.close_sessions || cfg.auto.stop_servers)
+                && snap.browsers.iter().filter(|b| &b.name == name).any(|b| {
+                    b.tabs.iter().any(|tab| {
+                        browser::can_auto_close_tab(b, tab)
+                            && warned_tab_error(tab, Some(old)).is_none()
+                    })
+                })
         }
     }
 }
@@ -1046,6 +1113,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_tab_execution_rechecks_current_settings_and_activity() {
+        let mut snap = crate::test_support::chrome_snapshot();
+        let target = crate::policy::Target::Tab {
+            browser: snap.browsers[0].name.clone(),
+            tab: snap.browsers[0].tabs[0].clone(),
+        };
+        let mut cfg = crate::daemon::DaemonConfig::from_config(
+            &crate::config::Config {
+                auto_close_sessions: true,
+                ..Default::default()
+            },
+            &crate::daemon::Overrides::default(),
+        );
+        assert!(auto_target_eligible(&target, &snap, &cfg));
+        cfg.auto.close_sessions = false;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        cfg.auto.stop_servers = true;
+        assert!(auto_target_eligible(&target, &snap, &cfg));
+        snap.browsers[0].tabs[0].last_active = Some(650);
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        snap.browsers[0].tabs[0].last_active = None;
+        snap.browsers[0].tabs[0].pinned = true;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        snap.browsers[0].tabs[0].pinned = false;
+        snap.browsers[0].tabs[0].active = true;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        snap.browsers.clear();
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+    }
+
+    #[test]
+    fn automatic_tab_actions_recheck_empty_page_and_protections() {
+        let mut snap = crate::test_support::chrome_snapshot();
+        let b = &mut snap.browsers[0];
+        for url in [
+            "chrome://newtab",
+            "chrome://newtab/",
+            "chrome://new-tab-page/",
+            "chrome://new-tab-page-third-party/",
+        ] {
+            b.tabs[0].url = url.into();
+            let rec = close_tab(b, &b.tabs[0], "auto", true);
+            assert_eq!(rec.result, "dry run, nothing done", "{url}");
+            assert_eq!(rec.mode, "dry-run");
+        }
+        for url in [
+            "",
+            "about:blank",
+            "chrome://settings/",
+            "chrome://newtab/other",
+            "chrome://newtab/?q=work",
+            "chrome://newtab.evil/",
+            "https://www.google.com/",
+            "https://example.com",
+        ] {
+            b.tabs[0].url = url.into();
+            assert!(
+                close_tab(b, &b.tabs[0], "auto", true)
+                    .result
+                    .starts_with("skipped:"),
+                "{url}"
+            );
+        }
+        b.tabs[0].url = "chrome://newtab/".into();
+        b.tabs[0].active = true;
+        assert!(
+            close_tab(b, &b.tabs[0], "auto", true)
+                .result
+                .starts_with("skipped:")
+        );
+        b.tabs[0].active = false;
+        b.tabs[0].pinned = true;
+        assert!(
+            close_tab(b, &b.tabs[0], "auto", true)
+                .result
+                .starts_with("skipped:")
+        );
+        // An explicit manual close keeps its existing behavior.
+        assert_eq!(
+            close_tab(b, &b.tabs[0], "manual", true).result,
+            "dry run, nothing done"
+        );
+    }
+
+    #[test]
     fn reviewed_session_rejects_reused_pid() {
         assert!(check_session_identity(100, Some(100)).is_ok());
         assert!(check_session_identity(200, Some(100)).is_err());
@@ -1089,6 +1241,40 @@ mod tests {
         tab.active = false;
         tab.id += 1;
         assert!(reviewed_tab_error(&tab, Some(&expected)).is_some());
+    }
+
+    #[test]
+    fn automatic_close_rejects_changes_during_the_final_rescan() {
+        let warned = TabInfo {
+            id: 7,
+            window_id: 1,
+            profile: "Default".into(),
+            index: 0,
+            url: "chrome://newtab/".into(),
+            site: "chrome://newtab".into(),
+            title: "New Tab".into(),
+            pinned: false,
+            active: false,
+            last_active: Some(100),
+            idle_secs: Some(600),
+            kind: Default::default(),
+        };
+        assert!(warned_tab_error(&warned, Some(&warned)).is_none());
+        assert!(warned_tab_error(&warned, None).is_some());
+        for change in 0..5 {
+            let mut current = warned.clone();
+            match change {
+                0 => current.last_active = Some(650),
+                1 => current.window_id = 2,
+                2 => current.profile = "Profile 2".into(),
+                3 => current.url = "chrome://new-tab-page/".into(),
+                _ => current.id = 8,
+            }
+            assert!(
+                warned_tab_error(&current, Some(&warned)).is_some(),
+                "case {change}"
+            );
+        }
     }
 
     fn app(kind: GroupKind) -> AppGroup {

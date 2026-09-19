@@ -252,6 +252,19 @@ pub struct TabInfo {
     pub kind: PageKind,
 }
 
+/// Auto mode only reclaims Chrome's built-in empty New Tab pages. A title,
+/// an empty URL, or about:blank is not evidence that a tab has no work in it.
+pub fn can_auto_close_tab(browser: &BrowserInfo, tab: &TabInfo) -> bool {
+    browser.name == "Google Chrome"
+        && browser.can_close_tabs
+        && !tab.pinned
+        && !tab.active
+        && matches!(
+            tab.url.strip_suffix('/').unwrap_or(&tab.url),
+            "chrome://newtab" | "chrome://new-tab-page" | "chrome://new-tab-page-third-party"
+        )
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProfileInfo {
     pub dir: String,
@@ -638,11 +651,16 @@ pub fn detect(
 
 /// Ask the browser to close one tab, matched by id and then by URL so a tab
 /// that navigated since the snapshot is left alone. Returns what happened.
-pub fn close_tab(browser: &str, tab_id: i32, url: &str) -> anyhow::Result<String> {
+pub fn close_tab(
+    browser: &str,
+    tab_id: i32,
+    url: &str,
+    protect_active: bool,
+) -> anyhow::Result<String> {
     if !CLOSE_BY_ID.contains(&browser) {
         anyhow::bail!("{browser} tabs cannot be closed by id");
     }
-    automation::close_tab(browser, tab_id, url)
+    automation::close_tab(browser, tab_id, url, protect_active)
 }
 
 /// Profiles are the directories under the user-data root that carry a

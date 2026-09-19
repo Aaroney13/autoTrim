@@ -2,6 +2,7 @@
 use crate::{
     Snapshot,
     agents::{AgentSession, SessionState},
+    browser::{self, TabInfo},
     daemon::{AutoConfig, DaemonConfig, PendingTarget},
     fmt::dur,
     rules::Thresholds,
@@ -18,12 +19,25 @@ pub(crate) struct PolicyState {
 pub(crate) enum Target {
     Session(AgentSession),
     Server(crate::ports::PortInfo),
+    Tab { browser: String, tab: TabInfo },
 }
 impl Target {
     pub fn key(&self) -> String {
         match self {
             Self::Session(s) => format!("s:{}:{}", s.pid, s.start_time),
             Self::Server(p) => format!("p:{}:{}:{}", p.pid, p.start_time, p.port),
+            Self::Tab { browser, tab } => format!(
+                "t:{}",
+                serde_json::to_string(&(
+                    browser,
+                    &tab.profile,
+                    tab.window_id,
+                    tab.id,
+                    &tab.url,
+                    tab.last_active,
+                ))
+                .expect("tab identity is serializable")
+            ),
         }
     }
 }
@@ -182,6 +196,49 @@ pub(crate) fn decide(
             }
         }
     }
+    // Either auto-mode switch also includes empty Chrome New Tab pages.
+    // Their lack of content is enough evidence; a recorded idle time is
+    // not required. A visit changes the key and restarts the warning.
+    if auto.close_sessions || auto.stop_servers {
+        for b in &snap.browsers {
+            for tab in b
+                .tabs
+                .iter()
+                .filter(|tab| browser::can_auto_close_tab(b, tab))
+            {
+                let target = Target::Tab {
+                    browser: b.name.clone(),
+                    tab: tab.clone(),
+                };
+                let k = target.key();
+                live.insert(k.clone());
+                if auto.dry_run && state.dry_done.contains(&k) {
+                    continue;
+                }
+                let name = format!("{} · New Tab · {}", b.name, tab.profile);
+                let first = *state.pending.entry(k.clone()).or_insert_with(|| {
+                    warned.push(name.clone());
+                    now
+                });
+                if now.saturating_sub(first) >= grace {
+                    acted.push(target);
+                    if auto.dry_run {
+                        state.dry_done.insert(k);
+                    }
+                } else {
+                    pending.push(PendingTarget {
+                        kind: "tab".into(),
+                        pid: 0,
+                        target: name,
+                        detail: "empty New Tab page".into(),
+                        rss: b.per_tab_estimate.unwrap_or(0),
+                        since: first,
+                        due_at: first + grace,
+                    });
+                }
+            }
+        }
+    }
     state.pending.retain(|k, _| live.contains(k));
     state.dry_done.retain(|k| live.contains(k));
 
@@ -304,5 +361,140 @@ mod tests {
         assert_eq!(decide(&mut state, &snap, &cfg, 1201).warned.len(), 2);
         assert!(decide(&mut state, &snap, &cfg, 1260).eligible.is_empty());
         assert_eq!(decide(&mut state, &snap, &cfg, 1261).eligible.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod chrome_tab_tests {
+    use super::*;
+    use crate::{config::Config, daemon::Overrides};
+
+    use crate::test_support::chrome_snapshot;
+
+    fn auto_config() -> DaemonConfig {
+        DaemonConfig::from_config(
+            &Config {
+                auto_close_sessions: true,
+                notify: false,
+                ..Config::default()
+            },
+            &Overrides::default(),
+        )
+    }
+
+    #[test]
+    fn auto_warns_for_empty_chrome_tabs_without_an_idle_timestamp() {
+        let cfg = auto_config();
+        let mut tracker = PolicyState::default();
+        let status = decide(&mut tracker, &chrome_snapshot(), &cfg, 100);
+        assert_eq!(status.pending.len(), 1);
+        assert_eq!(status.pending[0].kind, "tab");
+        assert_eq!(status.pending[0].since, 100);
+        assert_eq!(status.pending[0].due_at, 700);
+        assert!(status.pending[0].target.contains("Default"));
+    }
+
+    #[test]
+    fn auto_spares_used_pinned_and_non_chrome_tabs() {
+        let cfg = auto_config();
+        for change in 0..5 {
+            let mut snap = chrome_snapshot();
+            let b = &mut snap.browsers[0];
+            match change {
+                0 => b.tabs[0].active = true,
+                1 => b.tabs[0].pinned = true,
+                2 => b.tabs[0].url = "https://www.google.com/search?q=rust".into(),
+                3 => b.name = "Microsoft Edge".into(),
+                _ => b.can_close_tabs = false,
+            }
+            let status = decide(&mut PolicyState::default(), &snap, &cfg, 100);
+            assert!(status.pending.is_empty(), "case {change}");
+        }
+    }
+
+    #[test]
+    fn using_a_pending_tab_restarts_its_grace_period() {
+        let cfg = auto_config();
+        for change in 0..4 {
+            let mut tracker = PolicyState::default();
+            let mut snap = chrome_snapshot();
+            decide(&mut tracker, &snap, &cfg, 100);
+            match change {
+                0 => snap.browsers[0].tabs[0].active = true,
+                1 => snap.browsers[0].tabs[0].pinned = true,
+                2 => snap.browsers[0].tabs[0].url = "https://example.com".into(),
+                _ => snap.browsers[0].tabs.clear(),
+            }
+            assert!(decide(&mut tracker, &snap, &cfg, 200).pending.is_empty());
+            let status = decide(&mut tracker, &chrome_snapshot(), &cfg, 300);
+            assert_eq!(status.pending.len(), 1);
+            assert_eq!(status.pending[0].due_at, 900);
+        }
+    }
+
+    #[test]
+    fn auto_off_cancels_tab_warnings_and_server_only_mode_includes_tabs() {
+        let mut cfg = auto_config();
+        cfg.auto.close_sessions = false;
+        cfg.auto.stop_servers = true;
+        let mut tracker = PolicyState::default();
+        assert_eq!(
+            decide(&mut tracker, &chrome_snapshot(), &cfg, 100)
+                .pending
+                .len(),
+            1
+        );
+        cfg.auto.stop_servers = false;
+        assert!(
+            decide(&mut tracker, &chrome_snapshot(), &cfg, 200)
+                .pending
+                .is_empty()
+        );
+        assert!(tracker.pending.is_empty());
+        cfg.auto.close_sessions = true;
+        assert_eq!(
+            decide(&mut tracker, &chrome_snapshot(), &cfg, 300).pending[0].due_at,
+            900
+        );
+    }
+
+    #[test]
+    fn tab_activity_between_samples_and_profile_changes_reset_the_warning() {
+        let cfg = auto_config();
+        let mut tracker = PolicyState::default();
+        let mut snap = chrome_snapshot();
+        decide(&mut tracker, &snap, &cfg, 100);
+        snap.browsers[0].tabs[0].last_active = Some(150);
+        let status = decide(&mut tracker, &snap, &cfg, 200);
+        assert_eq!(status.pending[0].due_at, 800);
+        snap.browsers[0].tabs[0].profile = "Profile 2".into();
+        let status = decide(&mut tracker, &snap, &cfg, 300);
+        assert_eq!(status.pending[0].due_at, 900);
+        assert_eq!(tracker.pending.len(), 1);
+    }
+
+    #[test]
+    fn empty_tab_preview_waits_the_full_grace_and_reports_once() {
+        let mut cfg = auto_config();
+        cfg.auto.dry_run = true;
+        let mut tracker = PolicyState::default();
+        let snap = chrome_snapshot();
+        assert_eq!(decide(&mut tracker, &snap, &cfg, 100).warned.len(), 1);
+        let before = decide(&mut tracker, &snap, &cfg, 699);
+        assert!(before.warned.is_empty());
+        assert!(before.eligible.is_empty());
+        let due = decide(&mut tracker, &snap, &cfg, 700);
+        assert_eq!(due.eligible.len(), 1);
+        assert!(matches!(due.eligible[0], Target::Tab { .. }));
+        // The daemon removes the completed pending entry before execution.
+        tracker.pending.remove(&due.eligible[0].key());
+        tracker = serde_json::from_str(&serde_json::to_string(&tracker).unwrap()).unwrap();
+        assert!(decide(&mut tracker, &snap, &cfg, 1300).eligible.is_empty());
+        cfg.auto.dry_run = false;
+        let live = decide(&mut tracker, &snap, &cfg, 1400);
+        assert_eq!(live.warned.len(), 1);
+        assert_eq!(live.pending[0].due_at, 2000);
+        assert!(live.eligible.is_empty());
+        assert!(tracker.dry_done.is_empty());
     }
 }
