@@ -179,7 +179,7 @@ fn stale_sessions(snap: &Snapshot) -> Vec<u32> {
         .collect()
 }
 
-fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<Menu<R>> {
+fn refresh_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<()> {
     // Refreshes create entries, never a temporary native Menu: dropping even a
     // temporary NSMenu asks AppKit to cancel menu tracking.
     let mut items = Vec::new();
@@ -320,15 +320,8 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
         true,
         None::<&str>,
     )?));
-    let menu = if let Some(current) = app.try_state::<Menu<R>>() {
-        current.inner().clone()
-    } else {
-        let menu = Menu::new(app)?;
-        app.manage(menu.clone());
-        menu
-    };
-    update_menu(&menu, &items)?;
-    Ok(menu)
+    let menu = app.state::<Menu<R>>();
+    update_menu(menu.inner(), &items)
 }
 
 /// Keep the attached native menu and its surviving entries alive. Dropping and
@@ -426,7 +419,7 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
             fmt::pct(snap.system.used_swap, snap.system.total_swap),
             snap.advice.len()
         )));
-        if let Err(error) = build_menu(app, &snap) {
+        if let Err(error) = refresh_menu(app, &snap) {
             eprintln!("could not refresh the autoTrim menu: {error}");
         }
         *app.state::<AppState>().latest.lock().unwrap() = Some(snap);

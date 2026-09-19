@@ -1,4 +1,5 @@
 use super::*;
+use tauri::test::MockRuntime;
 
 pub fn run() {
     let scratch = std::env::temp_dir().join(format!("autotrim-menu-test-{}", std::process::id()));
@@ -7,6 +8,8 @@ pub fn run() {
     unsafe { std::env::set_var("AUTOTRIM_DATA_DIR", &scratch) };
     let app = tauri::test::mock_app();
     app.manage(updates::Updates::new());
+    let menu = Menu::new(app.handle()).unwrap();
+    app.manage(menu.clone());
     let mut snap: Snapshot = serde_json::from_value(serde_json::json!({
         "taken_at": 50000, "scanner_pid": 1,
         "system": {"os": "fixture", "total_mem": 100, "used_mem": 90,
@@ -15,7 +18,7 @@ pub fn run() {
         "groups": [], "sessions": [], "browsers": [], "advice": []
     }))
     .unwrap();
-    let menu = build_menu(app.handle(), &snap).unwrap();
+    refresh_menu(app.handle(), &snap).unwrap();
     let head = menu.get("head").unwrap().as_menuitem_unchecked().clone();
     let close = menu
         .get("close_stale")
@@ -32,11 +35,11 @@ pub fn run() {
     assert!(!auto.is_checked().unwrap());
 
     snap.system.free_pct = Some(80);
-    let refreshed = build_menu(app.handle(), &snap).unwrap();
+    refresh_menu(app.handle(), &snap).unwrap();
     // Replacing/dropping this native menu cancels macOS menu tracking.
     assert_eq!(
         menu.id(),
-        refreshed.id(),
+        app.state::<Menu<MockRuntime>>().id(),
         "refresh must retain the open native menu"
     );
     assert!(
@@ -82,7 +85,7 @@ pub fn run() {
         ("auto_dry_run", "true".into()),
     ])
     .unwrap();
-    build_menu(app.handle(), &snap).unwrap();
+    refresh_menu(app.handle(), &snap).unwrap();
     assert!(menu.get("none").is_none());
     assert!(menu.get("advice:4").is_some());
     assert!(
@@ -101,7 +104,7 @@ pub fn run() {
     snap.advice.truncate(2);
     snap.advice[1].title = "Changed advice".into();
     snap.taken_at += 60;
-    build_menu(app.handle(), &snap).unwrap();
+    refresh_menu(app.handle(), &snap).unwrap();
     let advice_ids: Vec<String> = menu
         .items()
         .unwrap()
@@ -125,7 +128,8 @@ pub fn run() {
     snap.auto = None;
     Config::set_values(&[("auto_close_sessions", "false".into())]).unwrap();
     for _ in 0..4 {
-        assert_eq!(menu.id(), build_menu(app.handle(), &snap).unwrap().id());
+        refresh_menu(app.handle(), &snap).unwrap();
+        assert_eq!(menu.id(), app.state::<Menu<MockRuntime>>().id());
         assert_eq!(menu.items().unwrap().len(), 11);
     }
     assert!(menu.get("none").is_some());
