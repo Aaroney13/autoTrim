@@ -226,6 +226,7 @@ permissions, one command to uninstall.
 ```bash
 cargo build --release && ./target/release/autotrim scan
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+cargo test -p autotrim-tray --test menu-refresh                       # macOS native menu refresh
 node --test tests/tray-ui.test.mjs                                     # UI action/filter checks
 AUTOTRIM_DATA_DIR=/tmp/scratch ./target/debug/autotrim daemon --once   # never the real data dir
 cargo run -p autotrim-tray --release                                   # the app, unbundled
