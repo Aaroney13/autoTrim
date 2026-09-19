@@ -7,6 +7,11 @@
 
 mod updates;
 
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/support/menu-refresh-cases.rs"]
+pub mod menu_refresh_tests;
+
 use autotrim::agents::SessionState;
 use autotrim::config::Config;
 use autotrim::rules::{self, Thresholds};
@@ -14,7 +19,7 @@ use autotrim::{Snapshot, actions, app as cli, daemon, fmt, scan_now, service};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -174,8 +179,10 @@ fn stale_sessions(snap: &Snapshot) -> Vec<u32> {
         .collect()
 }
 
-fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<Menu<R>> {
-    let menu = Menu::new(app)?;
+fn refresh_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<()> {
+    // Refreshes create entries, never a temporary native Menu: dropping even a
+    // temporary NSMenu asks AppKit to cancel menu tracking.
+    let mut items = Vec::new();
     let sys = &snap.system;
     let mut head = vec![format!("swap {}", fmt::pct(sys.used_swap, sys.total_swap))];
     if let Some(f) = sys.free_pct {
@@ -183,23 +190,25 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
     }
     head.push(format!("cpu {:.0}%", sys.cpu_pct));
     head.push(format!("{} sessions", snap.sessions.len()));
-    menu.append(&MenuItem::with_id(
+    items.push(MenuItemKind::MenuItem(MenuItem::with_id(
         app,
         "head",
         head.join(" · "),
         false,
         None::<&str>,
-    )?)?;
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    )?));
+    items.push(MenuItemKind::Predefined(PredefinedMenuItem::separator(
+        app,
+    )?));
 
     if snap.advice.is_empty() {
-        menu.append(&MenuItem::with_id(
+        items.push(MenuItemKind::MenuItem(MenuItem::with_id(
             app,
             "none",
             "Nothing to do",
             false,
             None::<&str>,
-        )?)?;
+        )?));
     }
     for a in snap.advice.iter().take(5) {
         let glyph = match a.severity {
@@ -207,15 +216,17 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
             autotrim::rules::Severity::Medium => "◐",
             autotrim::rules::Severity::Low => "○",
         };
-        menu.append(&MenuItem::with_id(
+        items.push(MenuItemKind::MenuItem(MenuItem::with_id(
             app,
             format!("advice:{}", a.id),
             format!("{glyph} {}", a.title),
             false,
             None::<&str>,
-        )?)?;
+        )?));
     }
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    items.push(MenuItemKind::Predefined(PredefinedMenuItem::separator(
+        app,
+    )?));
 
     let stale = stale_sessions(snap);
     let label = if stale.is_empty() {
@@ -227,20 +238,20 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
             if stale.len() == 1 { "" } else { "s" }
         )
     };
-    menu.append(&MenuItem::with_id(
+    items.push(MenuItemKind::MenuItem(MenuItem::with_id(
         app,
         "open",
         "Open autoTrim…",
         true,
         None::<&str>,
-    )?)?;
-    menu.append(&MenuItem::with_id(
+    )?));
+    items.push(MenuItemKind::MenuItem(MenuItem::with_id(
         app,
         "close_stale",
         label,
         !stale.is_empty(),
         None::<&str>,
-    )?)?;
+    )?));
 
     // Auto mode: the file's setting as a check mark, and what the daemon
     // is about to do with it underneath.
@@ -251,14 +262,14 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
     } else {
         "Auto mode"
     };
-    menu.append(&CheckMenuItem::with_id(
+    items.push(MenuItemKind::Check(CheckMenuItem::with_id(
         app,
         "auto",
         auto_label,
         true,
         on,
         None::<&str>,
-    )?)?;
+    )?));
     if let Some(a) = &snap.auto
         && !a.pending.is_empty()
     {
@@ -268,7 +279,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
             .map(|p| p.due_at.saturating_sub(snap.taken_at))
             .min()
             .unwrap_or(0);
-        menu.append(&MenuItem::with_id(
+        items.push(MenuItemKind::MenuItem(MenuItem::with_id(
             app,
             "pending",
             format!(
@@ -283,31 +294,91 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Result<
             ),
             false,
             None::<&str>,
-        )?)?;
+        )?));
     }
-    menu.append(&MenuItem::with_id(
+    items.push(MenuItemKind::MenuItem(MenuItem::with_id(
         app,
         "refresh",
         "Refresh",
         true,
         None::<&str>,
-    )?)?;
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&MenuItem::with_id(
+    )?));
+    items.push(MenuItemKind::Predefined(PredefinedMenuItem::separator(
+        app,
+    )?));
+    items.push(MenuItemKind::MenuItem(MenuItem::with_id(
         app,
         "updates",
         app.state::<updates::Updates>().menu_label(),
         true,
         None::<&str>,
-    )?)?;
-    menu.append(&MenuItem::with_id(
+    )?));
+    items.push(MenuItemKind::MenuItem(MenuItem::with_id(
         app,
         "quit",
         "Quit autoTrim",
         true,
         None::<&str>,
-    )?)?;
-    Ok(menu)
+    )?));
+    let menu = app.state::<Menu<R>>();
+    update_menu(menu.inner(), &items)
+}
+
+/// Keep the attached native menu and its surviving entries alive. Dropping and
+/// replacing the menu cancels macOS menu tracking, dismissing it mid-interaction.
+/// Call on the main thread so simultaneous refreshes cannot interleave edits.
+fn update_menu<R: Runtime>(
+    current: &Menu<R>,
+    desired_items: &[MenuItemKind<R>],
+) -> tauri::Result<()> {
+    for item in current.items()? {
+        if !matches!(item, MenuItemKind::Predefined(_))
+            && !desired_items.iter().any(|new| new.id() == item.id())
+        {
+            current.remove(&item)?;
+        }
+    }
+    for (index, new) in desired_items.iter().enumerate() {
+        let items = current.items()?;
+        let existing = items.iter().enumerate().skip(index).find(|(_, old)| {
+            old.id() == new.id()
+                || matches!(
+                    (old, new),
+                    (MenuItemKind::Predefined(_), MenuItemKind::Predefined(_))
+                )
+        });
+        if let Some((old_index, old)) = existing {
+            if old_index != index {
+                current.remove(old)?;
+                current.insert(old, index)?;
+            }
+            match (old, new) {
+                (MenuItemKind::MenuItem(old), MenuItemKind::MenuItem(new)) => {
+                    if old.text()? != new.text()? {
+                        old.set_text(new.text()?)?;
+                    }
+                    if old.is_enabled()? != new.is_enabled()? {
+                        old.set_enabled(new.is_enabled()?)?;
+                    }
+                }
+                (MenuItemKind::Check(old), MenuItemKind::Check(new)) => {
+                    if old.text()? != new.text()? {
+                        old.set_text(new.text()?)?;
+                    }
+                    if old.is_checked()? != new.is_checked()? {
+                        old.set_checked(new.is_checked()?)?;
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            current.insert(new, index)?;
+        }
+    }
+    while current.items()?.len() > desired_items.len() {
+        current.remove_at(desired_items.len())?;
+    }
+    Ok(())
 }
 
 fn refresh<R: Runtime>(app: &AppHandle<R>) {
@@ -316,7 +387,15 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
         *state.thresholds.lock().unwrap() = c.thresholds();
     }
     let snap = current_snapshot(&thresholds(&state));
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+    let handle = app.clone();
+    // Native menu edits are one main-thread operation, including when Refresh
+    // or an action overlaps the periodic worker.
+    let _ = app.run_on_main_thread(move || {
+        let app = &handle;
+        let Some(tray) = app.tray_by_id(TRAY_ID) else {
+            *app.state::<AppState>().latest.lock().unwrap() = Some(snap);
+            return;
+        };
         let title = snap
             .system
             .free_pct
@@ -340,11 +419,11 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
             fmt::pct(snap.system.used_swap, snap.system.total_swap),
             snap.advice.len()
         )));
-        if let Ok(menu) = build_menu(app, &snap) {
-            let _ = tray.set_menu(Some(menu));
+        if let Err(error) = refresh_menu(app, &snap) {
+            eprintln!("could not refresh the autoTrim menu: {error}");
         }
-    }
-    *state.latest.lock().unwrap() = Some(snap);
+        *app.state::<AppState>().latest.lock().unwrap() = Some(snap);
+    });
 }
 
 /// The window is built on first open and destroyed on close, so an idle
@@ -634,10 +713,13 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let handle = app.handle().clone();
+            let menu = Menu::new(app)?;
+            app.manage(menu.clone());
             let _tray: TrayIcon = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_image())
                 .icon_as_template(true)
                 .tooltip("autoTrim")
+                .menu(&menu)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "open" => show_window(app),
                     "updates" => {

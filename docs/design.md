@@ -202,7 +202,9 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   the visible filters and excludes protected items. The pane stacks below
   the list in narrow windows. The tray
   reads the daemon's snapshot every five seconds and only scans on its own
-  when no daemon is running. No Dock icon. Launching it again only brings
+  when no daemon is running. Refreshes update the existing native menu and its
+  surviving entries in place, so an open menu stays open while numbers, advice,
+  and auto-mode status change. No Dock icon. Launching it again only brings
   the window forward. The window is created when you open it and destroyed
   when you close it, so an idle tray is only the menu item. Built with
   Tauri on the system web view: measured at about 60 MB resident idle on
