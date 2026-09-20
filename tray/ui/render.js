@@ -1,8 +1,8 @@
 // Dashboard markup and DOM rendering.
-import { icon, GB, bytes, dur, pct, esc, plural, kindTag, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes, MB } from "./format.js";
-import { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
+import { icon, GB, bytes, dur, esc, plural, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes } from "./format.js";
+import { domainInactivityLabel, state, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs } from "./state.js";
 import { createActions } from "./actions.js";
-const { toast, copyText, copyCommand, twoStep, afterAction, report, refresh, navigate, saveAuto, reviewSessions, reviewTabs, reviewPorts, reviewNoun, reviewVerb, openReview, updateReviewTotal, executeReview, markGone, pruneGone, runUpdate, wire } = createActions({ renderAll: (...a) => renderAll(...a), renderMain: (...a) => renderMain(...a), renderSide: (...a) => renderSide(...a), renderHeader: (...a) => renderHeader(...a) });
+const { refresh, navigate, reviewSessions, reviewTabs, reviewPorts, wire } = createActions({ renderAll: (...a) => renderAll(...a), renderMain: (...a) => renderMain(...a), renderSide: (...a) => renderSide(...a), renderHeader: (...a) => renderHeader(...a) });
 function renderHeader() {
   const sys = state.snap.system, total = sys.total_mem;
   const used = total > 0 ? Math.max(0, Math.min(100, sys.used_mem * 100 / total)) : 0;
@@ -161,11 +161,11 @@ function autoCard() {
   for (const [key, label, checked, detail] of [["close_sessions", "Close stale agent sessions", c.auto_close_sessions, `Idle past ${dur(c.stale_after_secs ?? 21600)}, with transcript and CPU evidence.`], ["stop_servers", "Stop old local servers", c.auto_stop_servers, `Quiet dev servers open past ${dur(c.port_stale_after_secs ?? 86400)}.`]]) {
     html += `<div class="setting-row"><label><span>${label}<small class="muted" style="display:block">${detail}</small></span><input type="checkbox" data-auto="${key}" ${checked ? "checked" : ""} ${busy || mode === "off" || c.config_error ? "disabled" : ""}></label></div>`;
   }
-  html += `<p class="muted">Auto mode also closes empty Chrome New Tab pages after the warning period. Selected and pinned tabs stay open; visiting a tab or navigating away cancels its pending close.</p>`;
-  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, the newest session in each project, and selected or pinned browser tabs. Only these session hosts are allowed: ${esc(c.auto_hosts.join(", ") || "none")}. Activity during the grace period cancels that target’s close.</p></details>`;
+  html += domainSettings(c, mode, busy);
+  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, the newest session in each project, and selected or pinned browser tabs. Only these session hosts are allowed: ${esc((c.auto_hosts || []).join(", ") || "none")}. Activity during the warning period cancels that target’s close.</p></details>`;
   if (!state.src.daemon_running) html += `<p class="note">The background monitor is stopped. Start it below for auto mode to run.</p>`;
   else if (a) {
-    const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.dry_run === c.auto_dry_run;
+    const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.close_tabs === c.auto_close_tabs && a.dry_run === c.auto_dry_run && a.tab_rules_revision === c.tab_rules_revision;
     if (!applied || busy) html += `<p class="muted" role="status">Applying… the background monitor picks up changes on its next sample.</p>`;
     if (a.pending.length) html += pendingList(a) + (mode !== "off" ? `<div class="row2"><button data-auto-off ${busy ? "disabled" : ""}>Turn off auto mode</button><span class="muted">Cancels pending closes when the change is picked up.</span></div>` : "");
     else if (mode !== "off" && applied) html += `<p class="muted">Nothing is waiting to be closed.</p>`;
@@ -173,6 +173,24 @@ function autoCard() {
   const dry = state.log.filter(r => r.mode === "dry-run");
   if (dry.length) html += `<p class="muted">Preview history: ${plural(dry.length, "would-be close")} among the last ${state.log.length} logged actions.</p>`;
   return html + `</div>`;
+}
+
+function domainSettings(c, mode, busy) {
+  const rules = c.auto_tab_domains || [];
+  const hours = c.auto_tab_inactive_hours ?? 24;
+  const presets = [10 / 60, 20 / 60, 30 / 60, 45 / 60, 1, 2, 6, 12, 24, 48, 168];
+  const choices = presets.includes(hours) ? presets : [...presets, hours].sort((a, b) => a - b);
+  const blocked = busy || !!c.config_error;
+  return `<section class="domain-settings" aria-labelledby="domain-settings-title">
+    <div class="domain-section-head"><div><h3 id="domain-settings-title">Chrome tab cleanup</h3><p class="muted">Preview your matches first. autoTrim can’t detect drafts, media, uploads, or work inside a page.</p></div><span class="tag">All profiles</span></div>
+    <div class="setting-row static-setting"><span>Empty New Tab pages<small class="muted">Included in Auto mode</small></span><span class="muted">Included</span></div>
+    <div class="setting-row"><label><span>Close tabs from listed domains<small class="muted">A separate target that can run without session or server cleanup.</small></span><input type="checkbox" data-auto-domain-target ${c.auto_close_tabs ? "checked" : ""} ${blocked ? "disabled" : ""}></label></div>
+    <div class="domain-controls"><label>Inactive for<select data-domain-hours aria-label="Domain inactivity" ${blocked ? "disabled" : ""}>${choices.map(value => `<option value="${value}" ${value === hours ? "selected" : ""}>${esc(domainInactivityLabel(value))}${!presets.includes(value) ? " (custom)" : ""}</option>`).join("")}</select></label><span class="muted">Then warn for ${dur((c.auto_grace_minutes ?? 10) * 60)}. This warning period is shared by all automatic cleanup.</span></div>
+    <div class="domain-list" aria-label="Auto-close domains">${rules.length ? rules.map((rule, index) => `<div class="domain-row"><div><b>${esc(rule.domain)}</b><span>${rule.include_subdomains ? "Includes subdomains" : "Exact domain"}</span></div><div><button data-edit-domain="${index}" ${blocked ? "disabled" : ""}>Edit</button><button data-remove-domain="${index}" ${blocked ? "disabled" : ""}>Remove</button></div></div>`).join("") : `<div class="domain-empty"><b>No domains yet</b><span>Add a domain, then review its matching Chrome tabs before enabling cleanup.</span></div>`}</div>
+    <div class="domain-actions"><button data-add-domain ${blocked ? "disabled" : ""}>Add domain</button><button class="primary" data-review-domains ${blocked || !rules.length ? "disabled" : ""}>Review matches</button></div>
+    <p class="scope">HTTP and HTTPS on every port. Selected and pinned tabs stay open. Unsaved page content may be lost.</p>
+    ${mode === "off" && rules.length ? `<p class="muted">Saved; Auto mode is off.</p>` : ""}
+  </section>`;
 }
 
 
@@ -448,7 +466,9 @@ function viewApp(h) {
 function sitesTable(b, tabs) {
   const rows = sitesOf(b, tabs).slice(0, 12).map(st => {
     const closable = tabs.filter(t => t.site === st.site && canCloseTab(b, t)), stale = closable.filter(t => isStale(b, t));
-    return { id: st.site, title: st.site, context: `${plural(st.tabs, "tab")} · ${st.stale_tabs} stale`, type: "Site", metric: b.per_tab_estimate ? "≈ " + bytes(st.est_rss) : "—", metricLabel: "Average per tab × selected site tabs (estimate)", facts: [["Tabs", st.tabs], ["Stale", st.stale_tabs], ["Oldest untouched", st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "Unknown"]], note: "These counts follow your search and profile filters. Pinned and active tabs stay open.", action: `<button class="primary" ${stale.length ? '' : 'disabled'} data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button><button ${closable.length ? '' : 'disabled'} data-close-tabs="${closable.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review all ${plural(closable.length, 'eligible tab')}</button>` };
+    const domains = siteHostChoices(b, st.site, tabs);
+    const domainAction = /^(Google )?Chrome$/.test(b.name) && domains.length ? `<button data-auto-domain-site="${esc(st.site)}" data-browser="${esc(b.name)}" ${state.settings?.config_error ? "disabled" : ""}>Auto-close this domain…</button>` : "";
+    return { id: st.site, title: st.site, context: `${plural(st.tabs, "tab")} · ${st.stale_tabs} stale`, type: "Site", metric: b.per_tab_estimate ? "≈ " + bytes(st.est_rss) : "—", metricLabel: "Average per tab × selected site tabs (estimate)", facts: [["Tabs", st.tabs], ["Stale", st.stale_tabs], ["Oldest untouched", st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "Unknown"]], note: "These counts follow your search and profile filters. Pinned and active tabs stay open.", action: `<button class="primary" ${stale.length ? '' : 'disabled'} data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button><button ${closable.length ? '' : 'disabled'} data-close-tabs="${closable.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review all ${plural(closable.length, 'eligible tab')}</button>${domainAction}` };
   });
   return compactList("sites", rows, { label: "Sites in these results", title: "Site / tabs", metric: "≈ Memory", noun: "site" });
 }

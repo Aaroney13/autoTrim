@@ -105,10 +105,13 @@ const fixture = fs.readFileSync(path.join(__dirname, 'tray-fixture.js'), 'utf8')
     assert.equal(await page.locator('#onboarding').evaluate(el=>el.open),false);
     assert.equal(await page.locator('.nav-holders .item .name').first().textContent(), 'Notes');
     await page.locator('.nav-primary [data-view=settings]').click();
+    await page.evaluate(() => Object.assign(setupSettings, { auto_close_sessions:false, auto_stop_servers:false, auto_close_tabs:true }));
     await page.locator('[data-setup]').click();
     await page.locator('#onboarding[open]').waitFor();
     assert.equal(await heading(), 'What brings you here?');
     assert.equal(await page.locator('[data-focus][value=app]').isChecked(),true);
+    await next();
+    assert.match(await page.locator('#onboarding').textContent(), /existing automatic cleanup settings will stay enabled/);
     await page.locator('#setup-later').click();
     await page.evaluate(() => sessionStorage.clear());
     await page.goto('http://autotrim.test/?unsupported');

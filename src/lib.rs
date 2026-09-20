@@ -28,6 +28,7 @@ pub mod service;
 pub mod snss;
 pub mod storage;
 pub mod system;
+pub mod tab_rules;
 pub mod termination;
 pub mod transcripts;
 pub mod trends;

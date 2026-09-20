@@ -158,6 +158,19 @@ pub fn run() {
         ]
     );
 
+    Config::set_values(&[("auto_close_tabs", "true".into())]).unwrap();
+    refresh_menu(app.handle(), &snap).unwrap();
+    assert!(
+        auto.is_checked().unwrap(),
+        "domain-only cleanup is auto mode"
+    );
+    toggle_auto(false).unwrap();
+    let saved = Config::load().unwrap().0;
+    assert!(
+        !saved.auto_on(),
+        "tray Off must disable all cleanup targets"
+    );
+
     drop(app);
     std::fs::remove_dir_all(scratch).unwrap();
     println!("native menu refresh regression passed");

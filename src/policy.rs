@@ -2,7 +2,7 @@
 use crate::{
     Snapshot,
     agents::{AgentSession, SessionState},
-    browser::{self, TabInfo},
+    browser::TabInfo,
     daemon::{AutoConfig, DaemonConfig, PendingTarget},
     fmt::dur,
     rules::Thresholds,
@@ -16,17 +16,26 @@ pub(crate) struct PolicyState {
     #[serde(default)]
     pub dry_done: HashSet<String>,
 }
+
 pub(crate) enum Target {
     Session(AgentSession),
     Server(crate::ports::PortInfo),
-    Tab { browser: String, tab: TabInfo },
+    Tab {
+        browser: String,
+        tab: TabInfo,
+        rule_revision: Option<String>,
+    },
 }
 impl Target {
     pub fn key(&self) -> String {
         match self {
             Self::Session(s) => format!("s:{}:{}", s.pid, s.start_time),
             Self::Server(p) => format!("p:{}:{}:{}", p.pid, p.start_time, p.port),
-            Self::Tab { browser, tab } => format!(
+            Self::Tab {
+                browser,
+                tab,
+                rule_revision,
+            } => format!(
                 "t:{}",
                 serde_json::to_string(&(
                     browser,
@@ -35,6 +44,7 @@ impl Target {
                     tab.id,
                     &tab.url,
                     tab.last_active,
+                    rule_revision,
                 ))
                 .expect("tab identity is serializable")
             ),
@@ -196,26 +206,45 @@ pub(crate) fn decide(
             }
         }
     }
-    // Either auto-mode switch also includes empty Chrome New Tab pages.
+    // Any auto-mode target also includes empty Chrome New Tab pages.
     // Their lack of content is enough evidence; a recorded idle time is
     // not required. A visit changes the key and restarts the warning.
-    if auto.close_sessions || auto.stop_servers {
+    if auto.on() {
         for b in &snap.browsers {
-            for tab in b
-                .tabs
-                .iter()
-                .filter(|tab| browser::can_auto_close_tab(b, tab))
-            {
+            for tab in &b.tabs {
+                let Some(reason) = auto.tab_reason(b, tab, now) else {
+                    continue;
+                };
+                let (label, detail, rule_revision) = match reason {
+                    crate::tab_rules::AutoTabReason::EmptyNewTab => (
+                        "New Tab".to_string(),
+                        "empty New Tab page".to_string(),
+                        None,
+                    ),
+                    crate::tab_rules::AutoTabReason::Domain { domain } => (
+                        if tab.title.is_empty() {
+                            domain.clone()
+                        } else {
+                            tab.title.clone()
+                        },
+                        format!(
+                            "{domain} · inactive {}",
+                            dur(now.saturating_sub(tab.last_active.unwrap_or(now)))
+                        ),
+                        Some(auto.tab_rules_revision()),
+                    ),
+                };
                 let target = Target::Tab {
                     browser: b.name.clone(),
                     tab: tab.clone(),
+                    rule_revision,
                 };
                 let k = target.key();
                 live.insert(k.clone());
                 if auto.dry_run && state.dry_done.contains(&k) {
                     continue;
                 }
-                let name = format!("{} · New Tab · {}", b.name, tab.profile);
+                let name = format!("{} · {} · {}", b.name, label, tab.profile);
                 let first = *state.pending.entry(k.clone()).or_insert_with(|| {
                     warned.push(name.clone());
                     now
@@ -230,7 +259,7 @@ pub(crate) fn decide(
                         kind: "tab".into(),
                         pid: 0,
                         target: name,
-                        detail: "empty New Tab page".into(),
+                        detail,
                         rss: b.per_tab_estimate.unwrap_or(0),
                         since: first,
                         due_at: first + grace,
@@ -263,6 +292,7 @@ mod tests {
             grace: std::time::Duration::from_secs(60),
             hosts: vec!["terminal".into()],
             dry_run: false,
+            ..AutoConfig::default()
         };
         cfg
     }
@@ -496,5 +526,103 @@ mod chrome_tab_tests {
         assert_eq!(live.pending[0].due_at, 2000);
         assert!(live.eligible.is_empty());
         assert!(tracker.dry_done.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod domain_tab_tests {
+    use super::*;
+    use crate::{config::Config, daemon::Overrides, test_support::chrome_snapshot};
+
+    fn fixture() -> (DaemonConfig, Snapshot) {
+        let file: Config = toml::from_str(
+            r#"
+            auto_close_tabs = true
+            auto_tab_inactive_hours = 24
+            auto_tab_domains = [{ domain = "reddit.com", include_subdomains = true }]
+        "#,
+        )
+        .unwrap();
+        let cfg = DaemonConfig::from_config(&file, &Overrides::default());
+        let mut snap = chrome_snapshot();
+        snap.taken_at = 100_000;
+        let tab = &mut snap.browsers[0].tabs[0];
+        tab.url = "https://old.reddit.com/r/rust".into();
+        tab.site = "old.reddit.com".into();
+        tab.title = "Rust discussion".into();
+        tab.last_active = Some(1);
+        (cfg, snap)
+    }
+
+    #[test]
+    fn domain_only_cleanup_waits_for_inactivity_and_full_warning() {
+        let (cfg, snap) = fixture();
+        let mut state = PolicyState::default();
+        assert!(decide(&mut state, &snap, &cfg, 86_400).pending.is_empty());
+        let first = decide(&mut state, &snap, &cfg, 100_000);
+        assert_eq!(first.pending.len(), 1);
+        assert!(first.pending[0].detail.contains("reddit.com"));
+        assert!(first.eligible.is_empty());
+        assert!(decide(&mut state, &snap, &cfg, 100_599).eligible.is_empty());
+        assert_eq!(decide(&mut state, &snap, &cfg, 100_600).eligible.len(), 1);
+    }
+
+    #[test]
+    fn domain_warning_is_cancelled_by_activity_identity_and_protection_changes() {
+        for change in 0..8 {
+            let (cfg, mut snap) = fixture();
+            let mut state = PolicyState::default();
+            assert_eq!(decide(&mut state, &snap, &cfg, 100_000).pending.len(), 1);
+            let tab = &mut snap.browsers[0].tabs[0];
+            match change {
+                0 => tab.active = true,
+                1 => tab.pinned = true,
+                2 => tab.last_active = None,
+                3 => tab.last_active = Some(100_100),
+                4 => tab.url = "https://notreddit.com".into(),
+                5 => tab.url = "https://old.reddit.com/new-page".into(),
+                6 => tab.profile = "Profile 2".into(),
+                _ => tab.window_id += 1,
+            }
+            let decision = decide(&mut state, &snap, &cfg, 100_600);
+            assert!(decision.eligible.is_empty(), "case {change}");
+            assert_eq!(decision.cancelled.len(), 1, "case {change}");
+            if change >= 5 {
+                assert_eq!(decision.pending[0].due_at, 101_200);
+            }
+        }
+    }
+
+    #[test]
+    fn domain_preview_to_live_always_starts_a_new_warning() {
+        let (mut cfg, snap) = fixture();
+        cfg.auto.dry_run = true;
+        let mut state = PolicyState::default();
+        assert_eq!(decide(&mut state, &snap, &cfg, 100_000).pending.len(), 1);
+        cfg.auto.dry_run = false;
+        let live = decide(&mut state, &snap, &cfg, 100_599);
+        assert!(live.eligible.is_empty());
+        assert_eq!(live.pending[0].due_at, 101_199);
+    }
+
+    #[test]
+    fn domain_rule_changes_and_persisted_warnings_require_fresh_grace() {
+        let (mut cfg, snap) = fixture();
+        let mut state = PolicyState::default();
+        decide(&mut state, &snap, &cfg, 100_000);
+        state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        cfg.auto.tab_inactive_secs = 3600;
+        let changed = decide(&mut state, &snap, &cfg, 100_600);
+        assert!(changed.eligible.is_empty());
+        assert_eq!(changed.cancelled.len(), 1);
+        assert_eq!(changed.pending[0].due_at, 101_200);
+        cfg.auto.tab_domains.clear();
+        assert!(decide(&mut state, &snap, &cfg, 101_200).eligible.is_empty());
+        assert!(state.pending.is_empty());
+        let (cfg, snap) = fixture();
+        assert_eq!(
+            decide(&mut state, &snap, &cfg, 101_201).pending[0].due_at,
+            101_801
+        );
     }
 }

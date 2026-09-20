@@ -11,12 +11,12 @@ sessions.push({ pid: 110, start_time: 12, kind: 'codex', host: 'Codex app', proj
     {id:'older', name:'Investigate background memory growth', cwd:'/fixture/research', last_activity:epoch-24000, transcript:'/fixture/older.jsonl'},
     {id:'helper', name:'Review task attribution', cwd:'/fixture/autoTrim', last_activity:null, helper:true, transcript:'/fixture/helper.jsonl'},
   ] });
-const tab = { id: 7, window_id: 1, profile: 'Default', index: 0, url: 'https://example.com/fixture', site: 'example.com', title: 'Fixture notes', pinned: false, active: false, last_active: epoch-90000, idle_secs: 90000, kind: 'chat' };
+const tab = { id: 7, window_id: 1, profile: 'Default', index: 0, url: 'https://www.example.com/fixture', site: 'example.com', title: 'Fixture notes', pinned: false, active: false, last_active: epoch-90000, idle_secs: 90000, kind: 'chat' };
 const snapshot = { taken_at: epoch, scanner_pid: 999, system: { os: 'Fixture', total_mem: 16000*MB, used_mem: 10000*MB, available_mem: 6000*MB, total_swap: 2000*MB, used_swap: 500*MB, compressed: 1000*MB, wired: 1000*MB, free_pct: 38, uptime_secs: 90000, cpu_pct: 4, load_one:0.5, load_five:0.4, load_fifteen:0.3 },
   groups: [ {name:'Codex sessions', kind:'agent', rss:1536*MB, cpu:6, procs:3, pids:[110], app:'Codex'}, { name: 'Claude Code sessions', kind: 'agent', rss: 500*MB, cpu: 10, procs: 2, pids: [100,101] }, { name: 'Chrome', kind: 'browser', rss: 400*MB, cpu: 1, procs: 4, pids: [200] }, { name: 'Notes', kind: 'app', rss: 100*MB, cpu: 0, procs: 1, pids: [300] } ],
   sessions, browsers: [{ name: 'Chrome', rss: 400*MB, renderers: 2, renderer_rss: 300*MB, extension_renderers: 0, tab_sized_renderers: 2, small_renderers: 0, windows: 1, tabs: [tab], open_profiles: [{dir:'Default',label:'Personal'}], sites: [{site: 'example.com', tabs: 1, stale_tabs: 1, oldest_idle_secs: 90000, est_rss:300*MB, kind:'chat'}], per_tab_estimate: 300*MB, can_close_tabs: true, stale_tabs:1, chat_tabs:1, stale_chat_tabs:1 }],
-  ports: [{ pid: 400, start_time: 10, port: 3000, protocol: 'TCP', addr: '127.0.0.1', process: 'node', owner: 'node', owner_managed: false, owner_rss: 80*MB, owner_cpu:0, open_for_secs: 90000, label:'Fixture server', label_source:'process' }], trends: [], advice: [], auto: null };
-let settings = { auto_close_sessions: false, auto_stop_servers: false, auto_dry_run: false, auto_grace_minutes: 10, auto_hosts:['terminal'], tab_stale_after_secs:86400, open_window_at_launch:true };
+  ports: [{ pid: 400, start_time: 10, port: 3000, protocol: 'TCP', addr: '127.0.0.1', process: 'node', owner: 'node', owner_managed: false, owner_rss: 80*MB, owner_cpu:0, open_for_secs: 90000, label:'Fixture server', label_source:'process' }], trends: [], advice: [], auto: {close_sessions:false,stop_servers:false,close_tabs:false,dry_run:true,tab_rules_revision:'fixture-0',pending:[]} };
+let settings = { auto_close_sessions: false, auto_stop_servers: false, auto_close_tabs:false, auto_dry_run: true, auto_grace_minutes: 10, auto_tab_inactive_hours:24, auto_tab_domains:[], tab_rules_revision:'fixture-0', auto_hosts:['terminal'], tab_stale_after_secs:86400, open_window_at_launch:true };
 const logs = [];
 window.__TAURI__ = { core: { async invoke(command, args = {}) {
   if (command === 'snapshot') return structuredClone(snapshot);
@@ -25,7 +25,10 @@ window.__TAURI__ = { core: { async invoke(command, args = {}) {
   if (command === 'settings') return structuredClone(settings);
   if (command === 'service_info') return {installed:false, running:false, supported:true};
   if (command === 'update_status') return {enabled:false,current_version:'fixture'};
-  if (command === 'set_auto') { settings = {...settings, auto_close_sessions:args.close_sessions, auto_stop_servers:args.stop_servers, auto_dry_run:args.dry_run}; return settings; }
+  if (command === 'set_auto') { settings = {...settings, ...(args.close_sessions == null ? {} : {auto_close_sessions:args.close_sessions}), ...(args.stop_servers == null ? {} : {auto_stop_servers:args.stop_servers}), ...(args.close_tabs == null ? {} : {auto_close_tabs:args.close_tabs}), ...(args.dry_run == null ? {} : {auto_dry_run:args.dry_run})}; return structuredClone(settings); }
+  if (command === 'set_tab_rules') {
+          if(args.expected_revision !== settings.tab_rules_revision) throw new Error('settings changed; review the current rules and try again'); settings = {...settings, auto_tab_domains:args.domains.map(rule=>({...rule,domain:rule.domain.trim().toLowerCase().replace(/\.$/, '')})), auto_tab_inactive_hours:args.inactive_hours, tab_rules_revision:'fixture-'+Date.now()}; return structuredClone(settings); }
+  if (command === 'preview_tab_rules') return settings.auto_tab_domains.length ? [{browser:'Chrome',profile:'Personal',window_id:1,id:7,title:'Fixture notes',domain:'www.example.com',idle_secs:90000,status:'eligible',reason:'Inactive longer than the shared timer'}] : [];
   if (command === 'close_session' || command === 'stop_server') {
     const rec = {ts:epoch, id:'fixture-action', status:'partial', mode:'manual', action:command, pid:args.pid, target:'Fixture target', rss:300*MB, result:'partial failure: fixture child survived', resume:'echo fixture-resume'};
     logs.push(rec); return rec;

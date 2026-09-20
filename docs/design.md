@@ -26,7 +26,7 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
 
 - **Auto mode**, off by default. Switch it on from the window (the Auto
   mode card in Settings: Off, Preview only, or On, with target switches
-  for stale sessions and old servers), from the menu bar menu, with `autotrim config set
+  for stale sessions, old servers, and listed Chrome domains), from the menu bar menu, with `autotrim config set
   auto_close_sessions=true`, or by editing `config.toml`; the daemon
   re-reads the file when it changes, so nothing needs a restart. When on,
   the daemon warns first ("closing N idle targets in 10 minutes", one
@@ -47,7 +47,7 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   "closing X in 7 m" rather than leaving the notification as the only
   trace. Switching auto mode off empties that list, so switching it on
   again starts every grace period afresh.
-- **Empty Chrome tabs in auto mode.** Either auto-mode target switch also
+- **Empty Chrome tabs in auto mode.** Any auto-mode target switch also
   enables closing empty Chrome New Tab pages after the same warning and
   grace period (`auto_grace_minutes`, ten minutes by default). Only the
   built-in `chrome://newtab/`, `chrome://new-tab-page/`, and
@@ -64,6 +64,51 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   expose it. Dry runs are logged once per unchanged candidate, and switching
   auto mode off clears tab warnings too. The window and `status` show pending
   tabs alongside sessions and servers, and Actions saves their recovery URL.
+- **Auto-close domains.** `auto_close_tabs` is a separate opt-in target, false
+  by default, with `auto_tab_domains = []` and `auto_tab_inactive_hours = 24`.
+  The inactivity menu includes 10/20/30/45 minutes, 1/2/6/12/24/48 hours, and 1 week.
+  Fractional hours are supported in config (10 minutes is `0.16666666666666666`),
+  with a minimum of 10 minutes; the separate warning period follows inactivity.
+  Settings provides add/edit/remove, exact or include-subdomains matching,
+  and a read-only preview of matching tabs; Chrome's site inspector opens the
+  same editor using actual URL hosts. A site group containing multiple hosts
+  offers a choice rather than expanding the rule silently. The rule list applies
+  to all open Chrome profiles and HTTP/HTTPS ports. Editing rules never enables
+  the target or changes Preview/On. Enabling domain cleanup from Off selects
+  Preview first. Turning global auto mode off disables all three targets and
+  retains domain rules and the inactivity timer.
+  Rules accept bare DNS hostnames, canonicalized to lowercase ASCII/IDNA, with
+  an optional single trailing dot removed. Schemes, paths, ports, credentials,
+  wildcard strings, IP literals, localhost and invalid/single DNS labels are
+  rejected. Matching uses parsed URL hostnames and a dot boundary for subdomains;
+  the display-only site helper is not an authorization source. Duplicate
+  canonical rules are rejected. Overlapping rules share the same timer, and the
+  most specific matching domain appears in the action reason.
+  A normal page needs a known, nonzero, non-future last-selected timestamp and
+  the full configured inactivity interval before warning. Selected tabs in every
+  window and pinned tabs stay open. The domain rules, threshold, grace,
+  Preview/On mode and config-file identity form part of each warning identity.
+  Any config save conservatively starts fresh domain warning periods, even if
+  values are changed and restored between scans or while the daemon is stopped.
+  Preview time never authorizes a live close. Each action checks
+  the warned profile/window/tab/URL/activity identity against a fresh snapshot,
+  then re-reads current configuration immediately before browser automation.
+  Invalid configuration prevents execution. New snapshot fields default safely
+  when loading older history. Configuration saves replace multiline rule values
+  using root-value parser spans, preserve unrelated tables/comments, and validate
+  before atomic writes. Domain saves reject stale revisions so an out-of-date
+  editor cannot restore rules removed elsewhere; use an inline array,
+  not `[[auto_tab_domains]]` tables.
+  Preview labels eligible, waiting, pinned, selected, unknown-activity and
+  unavailable tabs without writing config or calling browser automation. A scan
+  with unreadable Chrome session data reports an error instead of zero matches. It
+  does not establish whether a background page is playing audio, uploading,
+  running work, or holding an unsaved draft. Session-file observations can lag,
+  so a last-moment pin or brief visit may not yet be recorded; the installed
+  Chrome scripting dictionary exposes no pinned property. The existing live
+  ID/URL/selected checks remain in place. Recovery reopens a URL and cannot
+  guarantee draft restoration. Automatic site-tab closing remains Chrome on
+  macOS only.
 - **Trends.** The daemon keeps a rolling series per app and per session
   (two hours by default, warmed from the history files on restart, so a
   restart forgets nothing) and fits a line through each. Three rules read

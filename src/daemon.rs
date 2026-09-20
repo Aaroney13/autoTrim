@@ -45,6 +45,10 @@ pub struct DaemonConfig {
 pub struct AutoConfig {
     pub close_sessions: bool,
     pub stop_servers: bool,
+    pub close_tabs: bool,
+    pub tab_inactive_secs: u64,
+    pub tab_domains: Vec<crate::tab_rules::DomainRule>,
+    pub config_file_revision: String,
     pub grace: Duration,
     pub dry_run: bool,
     pub hosts: Vec<String>,
@@ -93,6 +97,10 @@ impl DaemonConfig {
             auto: AutoConfig {
                 close_sessions: cfg.auto_close_sessions,
                 stop_servers: cfg.auto_stop_servers,
+                close_tabs: cfg.auto_close_tabs,
+                tab_inactive_secs: crate::tab_rules::inactivity_secs(cfg.auto_tab_inactive_hours),
+                tab_domains: cfg.auto_tab_domains.clone(),
+                config_file_revision: cfg.file_revision.clone(),
                 grace: Duration::from_secs(cfg.auto_grace_minutes * 60),
                 dry_run: cfg.auto_dry_run,
                 hosts: cfg.auto_hosts.clone(),
@@ -102,11 +110,56 @@ impl DaemonConfig {
 }
 
 impl AutoConfig {
+    pub fn on(&self) -> bool {
+        self.close_sessions || self.stop_servers || self.close_tabs
+    }
+
+    /// Authorization identity: even a save restoring old values starts a new
+    /// warning, including edits made between samples or daemon runs.
+    pub fn tab_rules_revision(&self) -> String {
+        let mut rules = self.tab_domains.clone();
+        rules.sort_by(|a, b| {
+            a.domain
+                .cmp(&b.domain)
+                .then(a.include_subdomains.cmp(&b.include_subdomains))
+        });
+        serde_json::to_string(&(
+            self.close_tabs,
+            self.tab_inactive_secs,
+            self.grace.as_secs(),
+            self.dry_run,
+            &self.config_file_revision,
+            rules,
+        ))
+        .expect("domain rules are serializable")
+    }
+
+    pub fn tab_reason(
+        &self,
+        browser: &crate::browser::BrowserInfo,
+        tab: &crate::browser::TabInfo,
+        now: u64,
+    ) -> Option<crate::tab_rules::AutoTabReason> {
+        use crate::tab_rules::{AutoTabReason, TabAssessment, assess_tab};
+        if !self.on() {
+            return None;
+        }
+        match assess_tab(browser, tab, &self.tab_domains, self.tab_inactive_secs, now) {
+            TabAssessment::Eligible(AutoTabReason::EmptyNewTab) => Some(AutoTabReason::EmptyNewTab),
+            TabAssessment::Eligible(reason @ AutoTabReason::Domain { .. }) if self.close_tabs => {
+                Some(reason)
+            }
+            _ => None,
+        }
+    }
+
     /// The same settings in the shape the snapshot carries.
     pub fn status(&self, pending: Vec<PendingTarget>) -> AutoStatus {
         AutoStatus {
             close_sessions: self.close_sessions,
             stop_servers: self.stop_servers,
+            close_tabs: self.close_tabs,
+            tab_rules_revision: self.tab_rules_revision(),
             dry_run: self.dry_run,
             grace_secs: self.grace.as_secs(),
             hosts: self.hosts.clone(),
@@ -124,6 +177,10 @@ impl AutoConfig {
 pub struct AutoStatus {
     pub close_sessions: bool,
     pub stop_servers: bool,
+    #[serde(default)]
+    pub close_tabs: bool,
+    #[serde(default)]
+    pub tab_rules_revision: String,
     pub dry_run: bool,
     pub grace_secs: u64,
     pub hosts: Vec<String>,
@@ -134,7 +191,7 @@ pub struct AutoStatus {
 impl AutoStatus {
     /// One line: what it does and how, or "off".
     pub fn describe(&self) -> String {
-        if !self.close_sessions && !self.stop_servers {
+        if !self.close_sessions && !self.stop_servers && !self.close_tabs {
             return "off".to_string();
         }
         let mut what = Vec::new();
@@ -143,6 +200,9 @@ impl AutoStatus {
         }
         if self.stop_servers {
             what.push("stops old servers");
+        }
+        if self.close_tabs {
+            what.push("closes inactive tabs from listed domains");
         }
         what.push("closes empty Chrome New Tab pages");
         let mut s = format!(
@@ -748,11 +808,11 @@ mod notification_tests {
     }
 }
 
-/// The config file's modification time and size, or None when there is no
-/// file. Cheap enough to check every tick.
-fn config_stamp() -> Option<(SystemTime, u64)> {
+/// The config file's identity and modification metadata, or None when missing.
+/// Cheap enough to check every tick.
+fn config_stamp() -> Option<String> {
     let m = fs::metadata(Config::path()?).ok()?;
-    Some((m.modified().ok()?, m.len()))
+    crate::config::file_revision(&m).ok()
 }
 
 struct PidGuard(PathBuf);
@@ -777,7 +837,9 @@ pub fn run(file: &Config, overrides: Overrides) -> Result<()> {
     let state_path = dir.join("state.json");
     let latest_path = dir.join("latest.json");
     let mut cfg = DaemonConfig::from_config(file, &overrides);
-    let mut stamp = config_stamp();
+    // Track the file actually loaded into cfg. A newer path stamp here could
+    // hide an edit made after the caller loaded settings but before run began.
+    let mut stamp = (!file.file_revision.is_empty()).then(|| file.file_revision.clone());
 
     let mut tracker = Tracker::load(&state_path);
     if tracker.history.series.is_empty() {
