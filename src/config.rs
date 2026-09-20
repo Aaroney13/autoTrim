@@ -855,11 +855,8 @@ ignore_apps = ["name#tag"] # quoted hash
 
     #[test]
     fn scratch_write_is_atomic_on_invalid_tab_settings_and_normalizes_valid_rules() {
-        let dir = std::env::temp_dir().join(format!(
-            "autotrim-config-test-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("unnamed")
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("autotrim-config-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
