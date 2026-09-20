@@ -31,7 +31,7 @@ function load(invoke = async () => {}, source = script) {
     },
   };
   const context = vm.createContext({
-    document, window: { __TAURI__: { core: { invoke } } },
+    document, window: { __TAURI__: { core: { invoke } } }, URL,
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0,
   });
   vm.runInContext(source, context);
@@ -40,7 +40,8 @@ function load(invoke = async () => {}, source = script) {
   vm.runInContext('const actualRefresh = refresh; const actualRenderHeader = renderHeader; renderAll = () => {}; renderHeader = () => {}; renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
   const api = vm.runInContext(`({ state, filteredSessions, filteredTabs,
     canCloseSession, canCloseTab, isStale, autoMode, autoModeValues,
-    refreshNow: actualRefresh, actionSucceeded, twoStep, viewActions, sessionTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts, updateCard, runUpdate,
+    refreshNow: actualRefresh, actionSucceeded, twoStep, viewActions, sessionTable, sitesTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts, updateCard, runUpdate,
+    saveTabRules, removeDomainRule, requestTabPreview, hostnameOfTab, siteHostChoices,
     setReview(value) { state.actionReview = value; } })`, context);
   return { ...api, elements, context };
 }
@@ -102,11 +103,18 @@ test('tab batches respect profile, query, configured threshold, and pinned/activ
 
 test('auto modes preserve server-only selection and atomically switch preview/live behavior', () => {
   const ui = load();
-  const c = { auto_close_sessions: false, auto_stop_servers: true, auto_dry_run: false };
+  const c = { auto_close_sessions: false, auto_stop_servers: true, auto_close_tabs: false, auto_dry_run: false };
   assert.equal(ui.autoMode(c), 'on');
-  assert.equal(JSON.stringify(ui.autoModeValues(c, 'preview')), JSON.stringify({ close_sessions: false, stop_servers: true, dry_run: true }));
-  assert.equal(JSON.stringify(ui.autoModeValues(c, 'off')), JSON.stringify({ close_sessions: false, stop_servers: false }));
-  assert.equal(JSON.stringify(ui.autoModeValues({ ...c, auto_stop_servers: false }, 'on')), JSON.stringify({ close_sessions: true, stop_servers: false, dry_run: false }));
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'preview')), JSON.stringify({ close_sessions: false, stop_servers: true, close_tabs: false, dry_run: true }));
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'off')), JSON.stringify({ close_sessions: false, stop_servers: false, close_tabs: false }));
+  assert.equal(JSON.stringify(ui.autoModeValues({ ...c, auto_stop_servers: false }, 'on')), JSON.stringify({ close_sessions: true, stop_servers: false, close_tabs: false, dry_run: false }));
+});
+
+test('domain-only cleanup is an active auto mode target', () => {
+  const ui = load();
+  const c = { auto_close_sessions: false, auto_stop_servers: false, auto_close_tabs: true, auto_dry_run: true };
+  assert.equal(ui.autoMode(c), 'preview');
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'on')), JSON.stringify({ close_sessions: false, stop_servers: false, close_tabs: true, dry_run: false }));
 });
 
 test('settings writes cannot overlap', async () => {
@@ -119,6 +127,105 @@ test('settings writes cannot overlap', async () => {
   await writing;
   assert.equal(ui.autoMode(ui.state.settings), 'preview');
   assert.equal(ui.state.settingsBusy, false);
+});
+
+test('domain rules save atomically without changing auto mode', async () => {
+  const calls = [];
+  const saved = { auto_tab_domains: [{ domain: 'example.com', include_subdomains: false }], auto_tab_inactive_hours: 24 };
+  const ui = load(async (command, args) => { calls.push([command, args]); return saved; });
+  ui.state.settings = { auto_close_sessions: false, auto_stop_servers: false, auto_close_tabs: false, auto_tab_domains: [], tab_rules_revision: 'reviewed-rules' };
+  const ok = await ui.saveTabRules(saved.auto_tab_domains, 24);
+  assert.equal(ok, true);
+  assert.equal(JSON.stringify(calls), JSON.stringify([['set_tab_rules', { domains: saved.auto_tab_domains, inactive_hours: 24, expected_revision: 'reviewed-rules' }]]));
+  assert.equal(ui.state.settings, saved);
+  assert.equal(ui.state.settingsBusy, false);
+});
+
+test('failed domain save retains the editor draft and exposes its error', async () => {
+  const ui = load(async command => { assert.equal(command, 'set_tab_rules'); throw new Error('invalid domain'); });
+  ui.state.settings = { auto_tab_domains: [], auto_tab_inactive_hours: 24 };
+  ui.state.domainEditor = { index: null, domain: 'bad/domain', includeSubdomains: false, error: '' };
+  const ok = await ui.saveTabRules([{ domain: 'bad/domain', include_subdomains: false }], 24);
+  assert.equal(ok, false);
+  assert.equal(ui.state.domainEditor.domain, 'bad/domain');
+  assert.match(ui.state.domainEditor.error, /invalid domain/);
+  assert.equal(ui.state.settingsBusy, false);
+});
+
+test('ten-minute domain timer is displayed in minutes and saved without rounding to hours', async () => {
+  let payload;
+  const ui = load(async (command, args) => {
+    assert.equal(command, 'set_tab_rules');
+    payload = args;
+    return { auto_tab_domains: args.domains, auto_tab_inactive_hours: args.inactive_hours };
+  });
+  ui.state.settings = { auto_tab_domains: [], auto_tab_inactive_hours: 1 / 6 };
+  const markup = vm.runInContext("domainSettings(state.settings, 'off', false)", ui.context);
+  assert.match(markup, /<option value="0\.16666666666666666" selected>10 minutes<\/option>/);
+  assert.equal(await ui.saveTabRules([], 1 / 6), true);
+  assert.equal(payload.inactive_hours * 3600, 600);
+});
+
+test('removing a rule persists the remaining list immediately', async () => {
+  let payload;
+  const ui = load(async (command, args) => { assert.equal(command, 'set_tab_rules'); payload = args; return { auto_tab_domains: args.domains, auto_tab_inactive_hours: args.inactive_hours }; });
+  ui.state.settings = { auto_tab_domains: [
+    { domain: 'example.com', include_subdomains: false },
+    { domain: 'openai.com', include_subdomains: true },
+  ], auto_tab_inactive_hours: 48 };
+  assert.equal(await ui.removeDomainRule(0), true);
+  assert.equal(JSON.stringify(payload), JSON.stringify({ domains: [{ domain: 'openai.com', include_subdomains: true }], inactive_hours: 48, expected_revision: '' }));
+});
+
+test('stale domain preview responses are ignored and preview never closes tabs', async () => {
+  const pending = [];
+  const calls = [];
+  const ui = load((command, args) => {
+    calls.push([command, args]);
+    return new Promise(resolve => pending.push(resolve));
+  });
+  const first = ui.requestTabPreview([{ domain: 'old.example', include_subdomains: false }], 24);
+  const second = ui.requestTabPreview([{ domain: 'new.example', include_subdomains: true }], 6);
+  pending[1]([{ id: 2, domain: 'new.example', status: 'eligible' }]);
+  await second;
+  pending[0]([{ id: 1, domain: 'old.example', status: 'eligible' }]);
+  await first;
+  assert.deepEqual(Array.from(ui.state.tabPreview.rows, row => row.id), [2]);
+  assert.deepEqual(calls.map(call => call[0]), ['preview_tab_rules', 'preview_tab_rules']);
+  assert.equal(calls.some(call => /close/.test(call[0])), false);
+});
+
+test('failed domain preview is distinct from an empty successful scan', async () => {
+  const ui = load(async command => { assert.equal(command, 'preview_tab_rules'); throw new Error('Could not review all Chrome tabs: session files unavailable'); });
+  ui.state.tabPreview.rows = [{ id: 9, status: 'eligible' }];
+  assert.equal(await ui.requestTabPreview([], 24), false);
+  assert.equal(ui.state.tabPreview.rows.length, 0);
+  assert.match(ui.state.tabPreview.error, /Could not review all Chrome tabs/);
+  assert.equal(ui.state.tabPreview.busy, false);
+});
+
+test('site host choices use parsed HTTP URLs instead of display labels', () => {
+  const ui = load();
+  const tabs = [
+    { site: 'example.com', url: 'https://www.example.com/a' },
+    { site: 'example.com', url: 'http://shop.example.com:8080/b' },
+    { site: 'example.com', url: 'chrome://newtab' },
+    { site: 'example.com', url: 'https://www.example.com/c' },
+  ];
+  assert.equal(ui.hostnameOfTab(tabs[0]), 'www.example.com');
+  assert.deepEqual(Array.from(ui.siteHostChoices({ tabs }, 'example.com'), value => ({ ...value })), [
+    { domain: 'www.example.com', count: 2 },
+    { domain: 'shop.example.com', count: 1 },
+  ]);
+  assert.equal(ui.hostnameOfTab({ url: 'https://example%2Ecom/path' }), null);
+});
+
+test('config errors disable domain writes from the Chrome Sites inspector', () => {
+  const ui = load();
+  ui.state.settings = { config_error: 'invalid config', tab_stale_after_secs: 86400 };
+  const tab = { id: 1, site: 'example.com', url: 'https://example.com', title: 'Example', profile: 'Default', active: false, pinned: false, idle_secs: 90000 };
+  const markup = ui.sitesTable({ name: 'Chrome', tabs: [tab], can_close_tabs: true, per_tab_estimate: 1 }, [tab]);
+  assert.match(markup, /data-auto-domain-site="example\.com"[^>]*disabled/);
 });
 
 test('confirmation sends only selected frozen identities and accounts for partial failure', async () => {

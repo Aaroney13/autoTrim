@@ -1,6 +1,6 @@
 // Explicit application state and pure selectors.
 import { plural } from "./format.js";
-const state = { actionReview: null, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), settingsBusy: false, update: null, updateBusy: false,
+const state = { actionReview: null, domainEditor: null, tabPreview: { requestId: 0, busy: false, rows: [], error: "" }, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), settingsBusy: false, update: null, updateBusy: false,
   // Things closed from here that the daemon's snapshot has not caught up with yet.
   gone: { tabs: new Set(), pids: new Set() } };
 
@@ -36,7 +36,7 @@ const POLL_MS = 5000; // how often this window reads the daemon's snapshot
 
 const sync = { lastPoll: 0, scans: 0, requestId: 0, acceptedRequest: 0, acceptedFresh: false };
 
-const autoMode = c => !c || !(c.auto_close_sessions || c.auto_stop_servers) ? "off" : c.auto_dry_run ? "preview" : "on";
+const autoMode = c => !c || !(c.auto_close_sessions || c.auto_stop_servers || c.auto_close_tabs) ? "off" : c.auto_dry_run ? "preview" : "on";
 
 const autoModeWord = () => autoMode(state.settings) === "off" ? "" : autoMode(state.settings) === "preview" ? "preview only" : "on";
 
@@ -84,6 +84,26 @@ function sitesOf(b, tabs) {
   return [...by.values()].sort((a, c) => c.stale_tabs - a.stale_tabs || c.tabs - a.tabs || (c.oldest_idle_secs ?? -1) - (a.oldest_idle_secs ?? -1) || a.site.localeCompare(c.site));
 }
 
+function hostnameOfTab(tab) {
+  try {
+    const source = String(tab.url || "");
+    const authority = source.match(/^https?:\/\/([^/?#]*)/i)?.[1];
+    if (!authority || authority.includes("%")) return null;
+    const url = new URL(source);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.hostname.toLowerCase().replace(/\.$/, "") : null;
+  } catch (_) { return null; }
+}
+
+function siteHostChoices(browser, site, tabs = browser.tabs) {
+  const counts = new Map();
+  for (const tab of tabs) {
+    if (tab.site !== site) continue;
+    const domain = hostnameOfTab(tab);
+    if (domain) counts.set(domain, (counts.get(domain) || 0) + 1);
+  }
+  return [...counts].map(([domain, count]) => ({ domain, count })).sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain));
+}
+
 // Remember what was closed from here until a snapshot no longer lists it.
 
 const canCloseSession = x => !goneSession(x) && !x.is_self && !x.engine && x.state !== "active";
@@ -105,8 +125,9 @@ function filteredTabs(b, filter = state.tabState) {
 }
 
 function autoModeValues(c, mode) {
-  if (mode === "off") return { close_sessions: false, stop_servers: false };
-  return { close_sessions: c.auto_close_sessions || !c.auto_stop_servers, stop_servers: c.auto_stop_servers, dry_run: mode === "preview" };
+  if (mode === "off") return { close_sessions: false, stop_servers: false, close_tabs: false };
+  const anyTarget = c.auto_close_sessions || c.auto_stop_servers || c.auto_close_tabs;
+  return { close_sessions: c.auto_close_sessions || !anyTarget, stop_servers: c.auto_stop_servers, close_tabs: c.auto_close_tabs, dry_run: mode === "preview" };
 }
 
 function actionSucceeded(record) {
@@ -115,4 +136,9 @@ function actionSucceeded(record) {
   return /^(terminated|killed|stopped|closed|already gone|not open any more)/.test(record.result) && !/partial|failed|still running/i.test(record.result);
 }
 
-export { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };
+function domainInactivityLabel(hours) {
+  return hours === 168 ? "1 week" : hours < 1
+    ? plural(Math.round(hours * 60), "minute") : plural(hours, "hour");
+}
+
+export { domainInactivityLabel, state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };

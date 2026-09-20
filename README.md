@@ -65,6 +65,13 @@ The app provides search, filters, and target review before closing sessions,
 tabs, or servers. Settings offers **Off**, **Preview only**, and **On** for
 automatic cleanup. Auto mode warns first and rechecks activity before acting.
 
+**Chrome tab cleanup** in Settings adds an optional domain allowlist, with exact
+or subdomain matching and a read-only preview. Listed tabs wait 24 hours since
+their last selection by default; presets range from 10 minutes to 1 week, followed
+by the shared warning period. The list starts empty and adding a domain does not
+enable closing. Selected, pinned, and unknown-activity tabs stay open. Background
+page work and unsaved drafts cannot be detected.
+
 Actions save recovery details before execution, but cannot guarantee restoration
 of unsaved drafts or in-memory work. Memory figures describe current usage,
 not guaranteed savings; per-tab memory is an estimate.
