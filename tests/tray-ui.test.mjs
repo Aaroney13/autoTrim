@@ -37,7 +37,7 @@ function load(invoke = async () => {}, source = script) {
   vm.runInContext(source, context);
   // Rendering is tested in the browser. These tests check decisions and
   // bridge calls independently from the DOM implementation.
-  vm.runInContext('const actualRefresh = refresh; renderAll = () => {}; renderHeader = () => {}; renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
+  vm.runInContext('const actualRefresh = refresh; const actualRenderHeader = renderHeader; renderAll = () => {}; renderHeader = () => {}; renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
   const api = vm.runInContext(`({ state, filteredSessions, filteredTabs,
     canCloseSession, canCloseTab, isStale, autoMode, autoModeValues,
     refreshNow: actualRefresh, actionSucceeded, twoStep, viewActions, sessionTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts, updateCard, runUpdate,
@@ -336,4 +336,74 @@ test('shared Codex backend exposes older tasks and helpers without task-level cl
   assert.match(filtered, /Older &lt;project&gt;/);
   assert.doesNotMatch(filtered, /Review helper/);
   assert.doesNotThrow(() => ui.sessionTable([{ ...backend, threads: undefined }]));
+});
+
+
+test('memory header uses physical RAM and does not label the OS availability counter as free', () => {
+  const ui = load();
+  vm.runInContext(`state.snap = { taken_at: 1, system: {
+    total_mem: 16 * GB, used_mem: 14 * GB, compressed: 6 * GB, wired: 3 * GB,
+    free_pct: 35, used_swap: GB, total_swap: 2 * GB, cpu_pct: 5,
+    load_one: 1, load_five: 1, load_fifteen: 1, uptime_secs: 100
+  }}; state.src = { daemon_running: true, interval_secs: 30, snapshot_taken_at: 1 };
+  actualRenderHeader();`, ui.context);
+  const markup = ui.elements.get('head').innerHTML;
+  assert.match(markup, /RAM used/);
+  assert.match(markup, /14.0 \/ 16.0 GiB/);
+  assert.match(markup, /2.0 GiB<\/b> outside used \(includes cache\)/);
+  assert.doesNotMatch(markup, /35%|free|unused/);
+  assert.match(markup, /do not add up to physical RAM used/);
+});
+
+test('memory units and observed changes keep increases, decreases, and zero distinct', () => {
+  const ui = load();
+  assert.equal(vm.runInContext('bytes(0)', ui.context), '0 B');
+  assert.equal(vm.runInContext('bytes(1024)', ui.context), '1 KiB');
+  const record = { ts: 1, pid: 1, mode: 'manual', action: 'close_tab', status: 'success',
+    target: 'Fixture tab', result: 'closed', rss: 1024 ** 3,
+    memory_observation: { before: { taken_at_ms: 1000, used_mem: 2 * 1024 ** 3, used_swap: 0 },
+      after: { taken_at_ms: 2500, used_mem: 1024 ** 3, used_swap: 1024 ** 2 },
+      tab_batch: true, attempted_actions: 5 } };
+  ui.state.log = [record];
+  const markup = ui.viewActions();
+  assert.match(markup, /batch of 5 tab attempts/);
+  assert.match(markup, /RAM used: 2.0 GiB → 1.0 GiB \(−1.0 GiB\)/);
+  assert.match(markup, /Swap used: 0 B → 1 MiB \(\+1 MiB\)/);
+  assert.match(markup, /Over 1.5 seconds/);
+  assert.match(markup, /not savings attributable to an individual tab/);
+  record.memory_observation.after.used_mem = record.memory_observation.before.used_mem;
+  assert.match(ui.viewActions(), /RAM used: 2.0 GiB → 2.0 GiB \(0 B\)/);
+  delete record.memory_observation;
+  assert.doesNotMatch(ui.viewActions(), /Observed whole-machine change/);
+  assert.match(ui.viewActions(), /held before the action \(estimated\)/);
+});
+
+test('activity groups honor the configured threshold, unknown activity, and collapsed selections', () => {
+  const ui = load();
+  ui.state.settings = { tab_stale_after_secs: 7200 };
+  ui.context.fixtureBrowser = { name: 'Chrome', can_close_tabs: true, per_tab_estimate: 0, open_profiles: [], tabs: [
+    { id: 1, title: 'Old', url: 'https://example.com/old', profile: 'Work', idle_secs: 7201 },
+    { id: 2, title: 'Recent', url: 'https://example.com/recent', profile: 'Work', idle_secs: 7000 },
+    { id: 3, title: 'Unknown', url: 'https://example.com/unknown', profile: 'Work', idle_secs: null },
+    { id: 4, title: 'Active', url: 'https://example.com/active', profile: 'Work', idle_secs: null, active: true },
+  ] };
+  const render = () => vm.runInContext('tabTable(fixtureBrowser, fixtureBrowser.tabs)', ui.context);
+  const first = render();
+  assert.match(first, /data-group="stale"/);
+  assert.match(first, /data-group="recent"/);
+  assert.match(first, /data-group="unknown"/);
+  assert.doesNotMatch(first, /≈ 0 B/);
+  const model = vm.runInContext('[...listModels.values()][0]', ui.context);
+  assert.deepEqual(Array.from(model.rows, row => [row.title, row.group, !!row.eligible]), [
+    ['Old', 'stale', true], ['Recent', 'recent', true], ['Active', 'recent', false], ['Unknown', 'unknown', true],
+  ]);
+  model.saved.selected.add(model.rows[0].id);
+  model.saved.collapsed.add('stale');
+  render();
+  const collapsed = vm.runInContext('[...listModels.values()][0]', ui.context);
+  assert.equal(collapsed.saved.selected.size, 0);
+  assert.equal(collapsed.rows.some(row => row.title === 'Old'), false);
+  ui.state.tabFilter = 'old';
+  render();
+  assert.equal(vm.runInContext('[...listModels.values()][0].rows.some(row => row.title === "Old")', ui.context), true);
 });

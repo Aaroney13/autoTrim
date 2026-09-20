@@ -17,7 +17,8 @@ pub struct SystemInfo {
     pub compressed: Option<u64>,
     /// Bytes wired by the kernel and drivers (macOS). None where unknown.
     pub wired: Option<u64>,
-    /// System-wide free percentage as the OS reports it (macOS). None where unknown.
+    /// Legacy macOS availability counter, not `100 - used / total` and not
+    /// unused RAM. Retained for snapshot/history compatibility, not display.
     pub free_pct: Option<u8>,
     pub uptime_secs: u64,
     /// Whole-machine CPU percent over the sample window (100 = every core busy).
@@ -29,6 +30,30 @@ pub struct SystemInfo {
     pub load_five: f64,
     #[serde(default)]
     pub load_fifteen: f64,
+}
+
+/// Whole-machine counters sampled around an action. These are observations,
+/// not savings attributable to one process; other apps keep running.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MemorySample {
+    pub taken_at_ms: u64,
+    pub used_mem: u64,
+    pub used_swap: u64,
+}
+
+impl MemorySample {
+    pub fn collect() -> Option<Self> {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        (sys.total_memory() > 0).then(|| Self {
+            taken_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            used_mem: sys.used_memory(),
+            used_swap: sys.used_swap(),
+        })
+    }
 }
 
 impl SystemInfo {

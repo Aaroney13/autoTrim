@@ -11,6 +11,7 @@ use crate::groups::{self, AppGroup, GroupKind};
 use crate::paths;
 use crate::ports::PortInfo;
 use crate::rules::Thresholds;
+use crate::system::MemorySample;
 use crate::take_snapshot;
 use crate::termination::{self, ProcessIdentity, TerminationOutcome};
 use crate::transcripts;
@@ -50,7 +51,58 @@ pub struct ActionRecord {
     /// Memory the target held when acted on: footprint on macOS, resident
     /// size elsewhere.
     pub rss: u64,
+    /// Whole-machine change, separate from the target's footprint/estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_observation: Option<MemoryObservation>,
     pub result: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MemoryObservation {
+    pub before: MemorySample,
+    pub after: MemorySample,
+    /// A tab batch has one observation, attached to its last attempted action.
+    pub tab_batch: bool,
+    pub attempted_actions: usize,
+}
+
+/// Record a batch once, including failed/partial attempts. A skipped target or
+/// preview has no measured effect. Persisted completion always precedes this
+/// optional observation so a crash while sampling never hides an action result.
+fn observe_actions(
+    records: &mut [ActionRecord],
+    before: Option<MemorySample>,
+    tab_batch: bool,
+    sample_after: impl FnOnce() -> Option<MemorySample>,
+    mut persist: impl FnMut(&ActionRecord) -> Result<()>,
+) -> Result<()> {
+    let Some(before) = before else { return Ok(()) };
+    let attempted: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.mode != "dry-run" && matches!(r.status.as_str(), "success" | "partial" | "failure")
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let Some(&last) = attempted.last() else {
+        return Ok(());
+    };
+    let Some(after) = sample_after() else {
+        return Ok(());
+    };
+    records[last].memory_observation = Some(MemoryObservation {
+        before,
+        after,
+        tab_batch,
+        attempted_actions: attempted.len(),
+    });
+    persist(&records[last]).context("action completed, but memory observation could not be saved")
+}
+
+fn settled_memory() -> Option<MemorySample> {
+    std::thread::sleep(Duration::from_secs(1));
+    MemorySample::collect()
 }
 
 fn legacy_status() -> String {
@@ -142,6 +194,7 @@ fn close_session(s: &AgentSession, mode: &str, dry_run: bool) -> ActionRecord {
         identities: Vec::new(),
         target_identity: None,
         termination: None,
+        memory_observation: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -180,6 +233,7 @@ fn stop_server(p: &PortInfo, mode: &str, dry_run: bool) -> ActionRecord {
         identities: Vec::new(),
         target_identity: None,
         termination: None,
+        memory_observation: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -229,6 +283,7 @@ fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionR
         identities: Vec::new(),
         target_identity: None,
         termination: None,
+        memory_observation: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -331,6 +386,7 @@ fn close_tabs_checked(
     if !b.can_close_tabs {
         anyhow::bail!("{browser} tabs cannot be closed from here");
     }
+    let before = (!dry_run).then(MemorySample::collect).flatten();
     let mut out = Vec::new();
     let mut found = 0;
     for id in ids {
@@ -341,6 +397,7 @@ fn close_tabs_checked(
                 identities: Vec::new(),
                 target_identity: None,
                 termination: None,
+                memory_observation: None,
                 ts: now_epoch(),
                 mode: mode.to_string(),
                 action: "close_tab".to_string(),
@@ -381,7 +438,7 @@ fn close_tabs_checked(
         plan.target_identity = Some(
             serde_json::json!({"browser": b.name, "profile": tab.profile, "id": tab.id, "url": tab.url}),
         );
-        out.push(journal(plan, mode, dry_run, || {
+        out.push(journal_with(plan, mode, dry_run, log, || {
             close_tab(b, tab, mode, false)
         })?);
     }
@@ -394,6 +451,7 @@ fn close_tabs_checked(
                 .join(", ")
         );
     }
+    observe_actions(&mut out, before, true, settled_memory, log)?;
     Ok(out)
 }
 
@@ -438,6 +496,7 @@ fn quit_app(g: &AppGroup, root: u32, mode: &str, dry_run: bool) -> ActionRecord 
         identities: Vec::new(),
         target_identity: None,
         termination: None,
+        memory_observation: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -516,6 +575,7 @@ fn restart_app(
         identities: Vec::new(),
         target_identity: None,
         termination: None,
+        memory_observation: None,
         ts: now_epoch(),
         mode: if dry_run {
             "dry-run".to_string()
@@ -724,7 +784,16 @@ fn journal(
     dry_run: bool,
     execute: impl FnOnce() -> ActionRecord,
 ) -> Result<ActionRecord> {
-    journal_with(plan, mode, dry_run, log, execute)
+    let before = (!dry_run).then(MemorySample::collect).flatten();
+    let mut record = journal_with(plan, mode, dry_run, log, execute)?;
+    observe_actions(
+        std::slice::from_mut(&mut record),
+        before,
+        false,
+        settled_memory,
+        log,
+    )?;
+    Ok(record)
 }
 fn journal_with(
     mut plan: ActionRecord,
@@ -843,6 +912,15 @@ pub fn describe(rec: &ActionRecord) -> String {
         rec.target,
         rec.result
     );
+    if let Some(m) = &rec.memory_observation {
+        s.push_str(&format!(
+            "\n    Observed whole-machine change{}: RAM {}, swap {} over {:.1}s; includes other activity, not attributed savings",
+            if m.tab_batch { format!(" across {} tab attempts", m.attempted_actions) } else { String::new() },
+            fmt::memory_change(m.before.used_mem, m.after.used_mem),
+            fmt::memory_change(m.before.used_swap, m.after.used_swap),
+            m.after.taken_at_ms.saturating_sub(m.before.taken_at_ms) as f64 / 1000.0,
+        ));
+    }
     if let Some(r) = &rec.resume {
         s.push_str("\n    resume: ");
         s.push_str(r);
@@ -1327,6 +1405,116 @@ mod lifecycle_tests {
     use super::*;
     use crate::test_support::*;
     use std::cell::Cell;
+
+    fn sample(time: u64, ram: u64, swap: u64) -> MemorySample {
+        MemorySample {
+            taken_at_ms: time,
+            used_mem: ram,
+            used_swap: swap,
+        }
+    }
+
+    #[test]
+    fn memory_observation_records_batch_once_and_keeps_increases() {
+        let mut records: Vec<_> = ["success", "failure", "skipped"]
+            .iter()
+            .enumerate()
+            .map(|(i, status)| {
+                let mut rec = close_session(&session(), "manual", true);
+                rec.id = Some(format!("action-{i}"));
+                rec.mode = "manual".into();
+                rec.status = (*status).into();
+                rec
+            })
+            .collect();
+        let mut log_text = records
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        observe_actions(
+            &mut records,
+            Some(sample(1000, 4096, 4096)),
+            true,
+            || Some(sample(2500, 3072, 6144)),
+            |r| {
+                log_text.push('\n');
+                log_text += &serde_json::to_string(r)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(records[0].memory_observation.is_none());
+        assert!(records[2].memory_observation.is_none());
+        let observation = records[1].memory_observation.as_ref().unwrap();
+        assert_eq!(observation.attempted_actions, 2);
+        assert!(observation.tab_batch);
+        let merged = parse_log(&log_text, 10);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[1].status, "failure");
+        assert_eq!(merged[1].memory_observation.as_ref(), Some(observation));
+        let text = describe(&merged[1]);
+        assert!(text.contains("RAM −1 KiB, swap +2 KiB over 1.5s"), "{text}");
+        assert!(text.contains("not attributed savings"));
+    }
+
+    #[test]
+    fn previews_skips_and_missing_samples_do_not_claim_changes() {
+        for status in ["dry_run", "skipped", "intent", "legacy"] {
+            let mut rec = close_session(&session(), "manual", true);
+            rec.status = status.into();
+            if status != "dry_run" {
+                rec.mode = "manual".into();
+            }
+            observe_actions(
+                std::slice::from_mut(&mut rec),
+                Some(sample(0, 100, 10)),
+                false,
+                || panic!("must not sample unexecuted targets"),
+                |_| panic!("must not persist"),
+            )
+            .unwrap();
+            assert!(rec.memory_observation.is_none());
+        }
+        let mut rec = close_session(&session(), "manual", true);
+        rec.mode = "manual".into();
+        rec.status = "success".into();
+        observe_actions(
+            std::slice::from_mut(&mut rec),
+            None,
+            false,
+            || panic!("no baseline"),
+            |_| panic!("must not persist"),
+        )
+        .unwrap();
+        observe_actions(
+            std::slice::from_mut(&mut rec),
+            Some(sample(0, 100, 10)),
+            false,
+            || None,
+            |_| panic!("no followup sample"),
+        )
+        .unwrap();
+        assert!(rec.memory_observation.is_none());
+    }
+
+    #[test]
+    fn observation_write_failure_keeps_completed_outcome() {
+        let mut rec = close_session(&session(), "manual", true);
+        rec.mode = "manual".into();
+        rec.status = "partial".into();
+        let error = observe_actions(
+            std::slice::from_mut(&mut rec),
+            Some(sample(0, 100, 10)),
+            false,
+            || Some(sample(1000, 100, 10)),
+            |_| anyhow::bail!("disk full"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("action completed"));
+        assert_eq!(rec.status, "partial");
+        assert_eq!(rec.memory_observation.unwrap().attempted_actions, 1);
+    }
     #[test]
     fn journal_fails_closed_and_keeps_incomplete_intent() {
         let plan = close_session(&session(), "manual", true);

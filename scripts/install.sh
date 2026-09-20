@@ -120,8 +120,11 @@ cp target/release/autotrim "$BIN_DIR/.autotrim.new"
 mv -f "$BIN_DIR/.autotrim.new" "$BIN"
 echo "installed $BIN"
 
-# 2. The daemon as a login service, starting now and at every login. On a
-# machine that already has one, this points it at the new binary.
+# 2. Fresh app installs choose background monitoring in the setup wizard.
+# Preserve an existing service on upgrades; CLI-only installs keep the old default.
+if [ "$WITH_APP" = 1 ] && command -v npx >/dev/null 2>&1 && [ ! -f "$HOME/Library/LaunchAgents/$LABEL.plist" ]; then
+  WITH_SERVICE=0
+fi
 if [ "$WITH_SERVICE" = 1 ]; then
   "$BIN" service install
 fi
@@ -154,5 +157,5 @@ else
   echo "'autotrim daemon' runs the daemon in this terminal."
 fi
 if [ "$WITH_APP" = 1 ]; then
-  echo "'autotrim open' opens the menu bar app."
+  echo "'autotrim open' opens the menu bar app and its first-run setup wizard."
 fi

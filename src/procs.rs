@@ -14,8 +14,9 @@ pub struct Proc {
     pub exe: Option<PathBuf>,
     pub cmd: Vec<String>,
     pub cwd: Option<PathBuf>,
-    /// Memory in bytes: `phys_footprint` on macOS, which is what the process
-    /// gives back when it exits; resident size elsewhere. See footprint.rs.
+    /// Memory in bytes: `phys_footprint` on macOS (including compressed and
+    /// swapped allocations at logical size), resident size elsewhere. This
+    /// is not the physical RAM released on exit. See footprint.rs.
     pub rss: u64,
     /// CPU percent over the sample window (100 = one full core).
     pub cpu: f32,

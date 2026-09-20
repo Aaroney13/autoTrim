@@ -37,8 +37,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: UI fixtures
-        run: node --test tests/tray-ui.test.mjs
+      - name: UI and release tests
+        run: node --test tests/*.test.mjs
       - name: Test
         run: cargo test --workspace
       - name: Build CLI

@@ -29,9 +29,6 @@ pub fn render(s: &Snapshot) -> String {
     if let Some(w) = sys.wired {
         head.push(format!("wired {}", bytes(w)));
     }
-    if let Some(f) = sys.free_pct {
-        head.push(format!("free {f}%"));
-    }
     head.push(format!("up {}", dur(sys.uptime_secs)));
     let _ = writeln!(o, "  {}", head.join(" · "));
     let _ = writeln!(
@@ -41,6 +38,10 @@ pub fn render(s: &Snapshot) -> String {
     );
 
     let _ = writeln!(o, "\nTop holders");
+    let _ = writeln!(
+        o,
+        "  Totals include helper processes. Process footprints are not physical RAM savings."
+    );
     for g in s.groups.iter().take(12) {
         let (count, unit) = match g.kind {
             crate::groups::GroupKind::Agent => {

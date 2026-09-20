@@ -86,6 +86,10 @@ pub struct Config {
     /// The menu bar app opens its window when it starts. Off leaves only
     /// the menu bar item, for running in the background.
     pub open_window_at_launch: bool,
+    /// The first-run wizard has been saved successfully.
+    pub onboarding_completed: bool,
+    /// Categories to prioritize in the menu bar window.
+    pub focus_areas: Vec<String>,
 
     /// Ports never to report.
     pub ignore_ports: Vec<u16>,
@@ -135,6 +139,8 @@ impl Default for Config {
                 "terminal".to_string(),
             ],
             open_window_at_launch: true,
+            onboarding_completed: false,
+            focus_areas: vec!["browser".into(), "agent".into()],
             ignore_ports: Vec::new(),
             ignore_apps: Vec::new(),
             ignore_projects: Vec::new(),
@@ -251,6 +257,10 @@ auto_hosts = ["Claude app", "VS Code", "Cursor", "terminal"]   # sessions under 
 
 # Menu bar app
 open_window_at_launch = {open_window_at_launch}   # false: start with only the menu bar item
+
+# First-run setup and sidebar priorities
+onboarding_completed = false
+focus_areas = ["browser", "agent"]
 
 # Never report these
 ignore_ports = []               # e.g. [5432, 6379]

@@ -4,13 +4,22 @@ pub fn bytes(b: u64) -> String {
     const KB: f64 = 1024.0;
     let f = b as f64;
     if f >= KB * KB * KB {
-        format!("{:.1} GB", f / (KB * KB * KB))
+        format!("{:.1} GiB", f / (KB * KB * KB))
     } else if f >= KB * KB {
-        format!("{:.0} MB", f / (KB * KB))
+        format!("{:.0} MiB", f / (KB * KB))
     } else if f >= KB {
-        format!("{:.0} KB", f / KB)
+        format!("{:.0} KiB", f / KB)
     } else {
         format!("{b} B")
+    }
+}
+
+/// Signed observation: negative means usage decreased, positive increased.
+pub fn memory_change(before: u64, after: u64) -> String {
+    match after.cmp(&before) {
+        std::cmp::Ordering::Less => format!("−{}", bytes(before - after)),
+        std::cmp::Ordering::Greater => format!("+{}", bytes(after - before)),
+        std::cmp::Ordering::Equal => "0 B".into(),
     }
 }
 
@@ -99,4 +108,25 @@ pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let doy = (153 * mp + 2) / 5 + d as i64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn binary_units_and_signed_changes() {
+        for (value, expected) in [
+            (0, "0 B"),
+            (1023, "1023 B"),
+            (1024, "1 KiB"),
+            (1 << 20, "1 MiB"),
+            (1 << 30, "1.0 GiB"),
+        ] {
+            assert_eq!(bytes(value), expected);
+        }
+        assert_eq!(memory_change(1024, 0), "−1 KiB");
+        assert_eq!(memory_change(0, 1024), "+1 KiB");
+        assert_eq!(memory_change(1024, 1024), "0 B");
+    }
 }

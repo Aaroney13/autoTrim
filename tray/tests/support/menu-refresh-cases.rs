@@ -30,11 +30,12 @@ pub fn run() {
         .unwrap()
         .as_check_menuitem_unchecked()
         .clone();
-    assert!(head.text().unwrap().contains("free 10%"));
+    assert!(head.text().unwrap().contains("RAM 90% used"));
     assert!(!close.is_enabled().unwrap());
     assert!(!auto.is_checked().unwrap());
 
-    snap.system.free_pct = Some(80);
+    snap.system.used_mem = 20;
+    snap.system.free_pct = Some(35); // Unrelated OS counter must not affect the label.
     refresh_menu(app.handle(), &snap).unwrap();
     // Replacing/dropping this native menu cancels macOS menu tracking.
     assert_eq!(
@@ -43,7 +44,7 @@ pub fn run() {
         "refresh must retain the open native menu"
     );
     assert!(
-        head.text().unwrap().contains("free 80%"),
+        head.text().unwrap().contains("RAM 20% used"),
         "the displayed entry must receive new data"
     );
     assert_eq!(

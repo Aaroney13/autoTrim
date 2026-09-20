@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod onboarding;
 mod updates;
 
 #[cfg(test)]
@@ -79,6 +80,9 @@ struct Settings {
     tab_stale_after_secs: u64,
     port_stale_after_secs: u64,
     open_window_at_launch: bool,
+    onboarding_completed: bool,
+    focus_areas: Vec<String>,
+    notify: bool,
     config_path: Option<String>,
     /// Set when the file exists but could not be read; the values shown
     /// are then the defaults.
@@ -100,6 +104,9 @@ fn settings_now() -> Settings {
         tab_stale_after_secs: cfg.thresholds().tab_stale_after_secs,
         port_stale_after_secs: cfg.thresholds().port_stale_after_secs,
         open_window_at_launch: cfg.open_window_at_launch,
+        onboarding_completed: cfg.onboarding_completed,
+        focus_areas: cfg.focus_areas.clone(),
+        notify: cfg.notify,
         config_path: path.or_else(Config::path).map(|p| p.display().to_string()),
         config_error: err,
     }
@@ -185,9 +192,10 @@ fn refresh_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Resul
     let mut items = Vec::new();
     let sys = &snap.system;
     let mut head = vec![format!("swap {}", fmt::pct(sys.used_swap, sys.total_swap))];
-    if let Some(f) = sys.free_pct {
-        head.push(format!("free {f}%"));
-    }
+    head.push(format!(
+        "RAM {} used",
+        fmt::pct(sys.used_mem, sys.total_mem)
+    ));
     head.push(format!("cpu {:.0}%", sys.cpu_pct));
     head.push(format!("{} sessions", snap.sessions.len()));
     items.push(MenuItemKind::MenuItem(MenuItem::with_id(
@@ -396,11 +404,10 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
             *app.state::<AppState>().latest.lock().unwrap() = Some(snap);
             return;
         };
-        let title = snap
-            .system
-            .free_pct
-            .map(|f| format!("{f}%"))
-            .unwrap_or_else(|| fmt::pct(snap.system.used_swap, snap.system.total_swap));
+        let title = format!(
+            "{} used",
+            fmt::pct(snap.system.used_mem, snap.system.total_mem)
+        );
         let _ = tray.set_title(Some(title));
         let auto = snap
             .auto
@@ -674,7 +681,7 @@ fn action_log() -> Result<Vec<actions::ActionRecord>, String> {
 
 fn main() {
     let cfg = Config::load().map(|(c, _)| c).unwrap_or_default();
-    let open_window = cfg.open_window_at_launch;
+    let open_window = !cfg.onboarding_completed || cfg.open_window_at_launch;
     tauri::Builder::default()
         // First, so a second launch only focuses the window of the first.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -691,6 +698,7 @@ fn main() {
             snapshot,
             source_info,
             settings,
+            onboarding::complete_onboarding,
             set_auto,
             set_open_window_at_launch,
             service_info,

@@ -135,7 +135,7 @@ function reviewSessions(list) {
 }
 
 function reviewTabs(b, list) {
-  const targets = list.filter(t => canCloseTab(b, t)).map(t => ({ id: t.id, name: t.title.trim() || t.url, detail: `${t.site} · ${b.open_profiles.find(p => p.dir === t.profile)?.label || t.profile}`, rss: b.per_tab_estimate || 0, url: t.url, profile: t.profile }));
+  const targets = list.filter(t => canCloseTab(b, t)).map(t => ({ id: t.id, name: t.title.trim() || t.url, detail: `${t.url} · ${b.open_profiles.find(p => p.dir === t.profile)?.label || t.profile}`, rss: b.per_tab_estimate || 0, url: t.url, profile: t.profile }));
   openReview("tabs", targets, b.name);
 }
 
@@ -155,7 +155,7 @@ function openReview(kind, targets, browser = null) {
   if (state.actionReview || !targets.length) return;
   state.actionReview = { kind, targets, browser, selected: new Set(targets.map(t => t.id)), busy: false, returnView: state.view };
   const dialog = document.getElementById("action-review"), noun = reviewNoun(kind), verb = reviewVerb(kind);
-  dialog.innerHTML = `<div class="review-content"><h2 id="review-title">${verb} these ${noun}s?</h2><p id="review-description">Review the exact targets below. Uncheck anything you want to keep.</p><div class="review-targets">${targets.map(t => `<label class="review-target"><input type="checkbox" data-review-target="${t.id}" checked><span><span class="l1">${esc(t.name)}</span><span class="l2" style="display:block">${esc(t.detail)}</span></span><span class="num">${t.rss ? `${kind === "tabs" ? "≈ " : ""}${bytes(t.rss)}` : ""}</span></label>`).join("")}</div><div class="review-total"><span id="review-count"></span><span id="review-memory"></span></div><div class="recovery-note">${icon("resume")}<span>${kind === "ports" ? "Stopping a server ends its process and closes all ports it owns. Restart it from the terminal or app that launched it." : kind === "tabs" ? "Use ⌘⇧T in the same browser profile to reopen a recently closed tab. Its URL is saved in Actions. Unsaved drafts and temporary chats may not be restored." : "Closing stops the session’s processes. Its transcript stays on disk. Available resume commands are saved in Actions."}</span></div><p>${kind === "ports" ? "Each process is checked again before stopping. Services managed by an app or the system are skipped." : kind === "tabs" ? "Pinned, active, or navigated tabs are skipped when checked before closing. Memory figures are estimates." : "Active sessions, app engines, and sessions whose process has changed are skipped when checked before closing."}</p><p id="review-status" role="status"></p><div class="review-actions"><button id="review-cancel" autofocus>Cancel</button><button class="primary" id="review-submit">${verb} ${plural(targets.length, noun)}</button></div></div>`;
+  dialog.innerHTML = `<div class="review-content"><h2 id="review-title">${verb} these ${noun}s?</h2><p id="review-description">Review the exact targets below. Uncheck anything you want to keep.</p><div class="review-targets">${targets.map(t => `<label class="review-target"><input type="checkbox" data-review-target="${t.id}" checked><span><span class="l1">${esc(t.name)}</span><span class="l2" style="display:block">${esc(t.detail)}</span></span><span class="num">${t.rss ? `${kind === "tabs" ? "≈ " : ""}${bytes(t.rss)}` : ""}</span></label>`).join("")}</div><div class="review-total"><span id="review-count"></span><span id="review-memory"></span></div><div class="recovery-note">${icon("resume")}<span>${kind === "ports" ? "Stopping a server ends its process and closes all ports it owns. Restart it from the terminal or app that launched it." : kind === "tabs" ? "Use ⌘⇧T in the same browser profile to reopen a recently closed tab. Its URL is saved in Actions. Unsaved drafts and temporary chats may not be restored." : "Closing stops the session’s processes. Its transcript stays on disk. Available resume commands are saved in Actions."}</span></div><p>${kind === "ports" ? "Each process is checked again before stopping. Services managed by an app or the system are skipped." : kind === "tabs" ? "Pinned, active, or navigated tabs are skipped when checked before closing. Memory figures are estimates, not expected RAM savings." : "Active sessions, app engines, and sessions whose process has changed are skipped when checked before closing."}</p><p id="review-status" role="status"></p><div class="review-actions"><button id="review-cancel" autofocus>Cancel</button><button class="primary" id="review-submit">${verb} ${plural(targets.length, noun)}</button></div></div>`;
   dialog.oncancel = event => { if (state.actionReview?.busy) event.preventDefault(); };
   dialog.onclose = () => { state.actionReview = null; };
   dialog.querySelectorAll("[data-review-target]").forEach(cb => cb.onchange = () => { cb.checked ? state.actionReview.selected.add(+cb.dataset.reviewTarget) : state.actionReview.selected.delete(+cb.dataset.reviewTarget); updateReviewTotal(); });
@@ -168,7 +168,7 @@ function updateReviewTotal() {
   const r = state.actionReview, chosen = r.targets.filter(t => r.selected.has(t.id));
   document.getElementById("review-count").textContent = `${plural(chosen.length, reviewNoun(r.kind))} selected`;
   const rss = chosen.reduce((n, t) => n + t.rss, 0);
-  document.getElementById("review-memory").innerHTML = rss ? `<b>${r.kind === "tabs" ? "≈ " : ""}${bytes(rss)}</b> ${r.kind === "tabs" ? "estimated" : "held now"}` : "";
+  document.getElementById("review-memory").innerHTML = rss ? `<b>${r.kind === "tabs" ? "≈ " : ""}${bytes(rss)}</b> ${r.kind === "tabs" ? "estimated footprint, not RAM savings" : "held now, not RAM savings"}` : "";
   const button = document.getElementById("review-submit");
   button.textContent = `${reviewVerb(r.kind)} ${plural(chosen.length, reviewNoun(r.kind))}`;
   button.disabled = !chosen.length || r.busy;
@@ -270,6 +270,7 @@ function wire(root) {
   root.querySelectorAll("[data-auto-mode]").forEach(r => r.onchange = () => saveAuto(autoModeValues(state.settings, r.dataset.autoMode)));
   root.querySelectorAll("[data-auto-off]").forEach(b => b.onclick = () => saveAuto(autoModeValues(state.settings, "off")));
   root.querySelectorAll("[data-launch-window]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_open_window_at_launch", { value: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });
+  root.querySelectorAll("[data-setup]").forEach(b => b.onclick = () => window.dispatchEvent(new Event("autotrim-setup")));
   root.querySelectorAll("[data-hide]").forEach(b => b.onclick = () => invoke("hide_window").catch(e => toast(String(e))));
   root.querySelectorAll("[data-update]").forEach(b => b.onclick = () => runUpdate(b.dataset.update));
   root.querySelectorAll("[data-service]").forEach(b => {
@@ -279,9 +280,12 @@ function wire(root) {
     else b.onclick = () => { b.disabled = true; b.textContent = "…"; run().catch(e => toast(String(e))).finally(() => refresh()); };
   });
 
+  root.querySelectorAll(".list-options").forEach(options => options.onkeydown = event => {
+    if (event.key === "Escape") { options.open = false; options.querySelector("summary").focus(); }
+  });
   root.querySelectorAll("[data-tab-profile]").forEach(el => el.onchange = () => { state.tabProfile = el.value; renderMain(true); });
-  root.querySelectorAll("[data-tab-sort]").forEach(el => el.onchange = () => { state.tabSort = el.value; renderMain(true); });
-  root.querySelectorAll("[data-sess-sort]").forEach(el => el.onchange = () => { state.sessSort = el.value; renderMain(true); });
+  root.querySelectorAll("[data-tab-sort]").forEach(el => el.onchange = () => { state.tabSort = el.value; state.tabReverse = false; renderMain(true); });
+  root.querySelectorAll("[data-sess-sort]").forEach(el => el.onchange = () => { state.sessSort = el.value; state.sessReverse = false; renderMain(true); });
   for (const [attribute, key] of [["data-tab-filter", "tabFilter"], ["data-session-filter", "sessFilter"]]) {
     root.querySelectorAll(`[${attribute}]`).forEach(input => input.oninput = () => {
       state[key] = input.value; const pos = input.selectionStart; renderMain(true);
@@ -302,11 +306,61 @@ function wire(root) {
     const button = row.querySelector("[data-list-inspect]");
     button.click();
   });
-  root.querySelectorAll("[data-list-select]").forEach(cb => cb.onchange = () => {
-    cb.focus({ preventScroll: true });
-    const model = listModels.get(cb.dataset.list), row = model.rows.find(r => r.id === cb.dataset.row);
-    if (cb.checked && row?.eligible) model.saved.selected.add(row.id); else model.saved.selected.delete(cb.dataset.row);
+  function selectResource(model, row, checked, range) {
+    if (!row?.eligible) return;
+    const anchor = model.rows.findIndex(r => r.id === model.saved.anchor), end = model.rows.indexOf(row);
+    const targets = range && anchor >= 0 ? model.rows.slice(Math.min(anchor, end), Math.max(anchor, end) + 1) : [row];
+    for (const target of targets.filter(r => r.eligible)) checked ? model.saved.selected.add(target.id) : model.saved.selected.delete(target.id);
+    model.saved.anchor = row.id;
     renderMain(false, true);
+  }
+  root.querySelectorAll("[data-list-select]").forEach(cb => {
+    cb.onclick = event => { cb._range = event.shiftKey; };
+    cb.onchange = () => {
+      cb.focus({ preventScroll: true });
+      const model = listModels.get(cb.dataset.list), row = model.rows.find(r => r.id === cb.dataset.row);
+      selectResource(model, row, cb.checked, cb._range);
+    };
+  });
+  root.querySelectorAll("[data-resource-select]").forEach(button => button.onclick = event => {
+    button.focus({ preventScroll: true });
+    const model = listModels.get(button.dataset.list), row = model.rows.find(r => r.id === button.dataset.row);
+    selectResource(model, row, !model.saved.selected.has(row.id), event.shiftKey);
+  });
+  root.querySelectorAll(".resource-table tr[data-selectable]").forEach(row => row.onclick = event => {
+    if (event.target.closest("button, input, a, label")) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && row.contains(selection.anchorNode)) return;
+    const button = row.querySelector("[data-resource-select]");
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: event.shiftKey }));
+  });
+  root.querySelectorAll("[data-resource-close]").forEach(button => button.onclick = () => {
+    const model = listModels.get(button.dataset.list), row = model.rows.find(r => r.id === button.dataset.row);
+    if (row?.eligible) model.options.review([row]);
+  });
+  root.querySelectorAll("[data-resource-sort]").forEach(button => button.onclick = () => {
+    const key = button.dataset.sortKind, value = button.dataset.resourceSort;
+    state[key + "Reverse"] = state[key + "Sort"] === value ? !state[key + "Reverse"] : false;
+    state[key + "Sort"] = value;
+    button.focus({ preventScroll: true });
+    renderMain(false, true);
+    root.querySelectorAll("[data-list-scroll]").forEach(el => el.scrollTop = 0);
+  });
+  root.querySelectorAll("[data-list-group]").forEach(button => button.onclick = () => {
+    button.focus({ preventScroll: true });
+    const model = listModels.get(button.dataset.list), group = button.dataset.listGroup;
+    model.saved.collapsed.has(group) ? model.saved.collapsed.delete(group) : model.saved.collapsed.add(group);
+    renderMain(false, true);
+  });
+  root.querySelectorAll("[data-list-group-all]").forEach(cb => {
+    const model = listModels.get(cb.dataset.list), group = model.rows.filter(r => r.group === cb.dataset.listGroupAll && r.eligible);
+    const chosen = group.filter(r => model.saved.selected.has(r.id)).length;
+    cb.indeterminate = chosen > 0 && chosen < group.length;
+    cb.onchange = () => {
+      cb.focus({ preventScroll: true });
+      group.forEach(r => cb.checked ? model.saved.selected.add(r.id) : model.saved.selected.delete(r.id));
+      renderMain(false, true);
+    };
   });
   root.querySelectorAll("[data-list-all]").forEach(cb => {
     const model = listModels.get(cb.dataset.listAll), count = model.saved.selected.size, total = model.rows.filter(r => r.eligible).length;

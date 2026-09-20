@@ -1,6 +1,6 @@
 // Explicit application state and pure selectors.
 import { plural } from "./format.js";
-const state = { actionReview: null, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabFilter: "", tabProfile: "", sessSort: "rss", sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), settingsBusy: false, update: null, updateBusy: false,
+const state = { actionReview: null, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), settingsBusy: false, update: null, updateBusy: false,
   // Things closed from here that the daemon's snapshot has not caught up with yet.
   gone: { tabs: new Set(), pids: new Set() } };
 
@@ -92,14 +92,16 @@ const canCloseTab = (b, t) => b.can_close_tabs && !goneTab(t) && !t.pinned && !t
 
 function filteredSessions(list) {
   const q = state.sessFilter.trim().toLowerCase();
-  return list.filter(x => !goneSession(x) && (state.sessState === "all" || x.state === state.sessState) && (!q || [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q) || (x.threads || []).some(t => taskSearch(t).includes(q))))
+  const result = list.filter(x => !goneSession(x) && (state.sessState === "all" || x.state === state.sessState) && (!q || [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q) || (x.threads || []).some(t => taskSearch(t).includes(q))))
     .sort((a, b) => state.sessSort === "idle" ? (b.idle_secs ?? b.quiet_for_secs ?? -1) - (a.idle_secs ?? a.quiet_for_secs ?? -1) : state.sessSort === "age" ? b.age_secs - a.age_secs : state.sessSort === "name" ? String(a.session_name ?? a.project).localeCompare(String(b.session_name ?? b.project)) : b.rss - a.rss);
+  return state.sessReverse ? result.reverse() : result;
 }
 
-function filteredTabs(b) {
+function filteredTabs(b, filter = state.tabState) {
   const q = state.tabFilter.trim().toLowerCase(), idle = t => t.active ? -1 : t.idle_secs ?? -.5;
-  return b.tabs.filter(t => !goneTab(t) && (!state.tabProfile || t.profile === state.tabProfile) && (state.tabState === "all" || state.tabState === "stale" && isStale(b, t) && !t.pinned || state.tabState === "chat" && t.kind === "chat") && (!q || [t.title, t.url, t.site].join(" ").toLowerCase().includes(q)))
+  const result = b.tabs.filter(t => !goneTab(t) && (!state.tabProfile || t.profile === state.tabProfile) && (filter === "all" || filter === "stale" && isStale(b, t) && !t.pinned || filter === "chat" && t.kind === "chat") && (!q || [t.title, t.url, t.site].join(" ").toLowerCase().includes(q)))
     .sort((a, c) => state.tabSort === "site" ? a.site.localeCompare(c.site) || idle(c) - idle(a) : state.tabSort === "title" ? a.title.localeCompare(c.title) : state.tabSort === "window" ? a.window_id - c.window_id || a.index - c.index : idle(c) - idle(a));
+  return state.tabReverse ? result.reverse() : result;
 }
 
 function autoModeValues(c, mode) {

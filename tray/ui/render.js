@@ -7,18 +7,27 @@ function renderHeader() {
   const sys = state.snap.system, total = sys.total_mem;
   const used = total > 0 ? Math.max(0, Math.min(100, sys.used_mem * 100 / total)) : 0;
   const comp = total > 0 && sys.compressed != null ? Math.max(0, Math.min(used, sys.compressed * 100 / total)) : 0;
-  const detail = [sys.wired != null ? `${bytes(sys.wired)} wired` : "", sys.free_pct != null ? `${sys.free_pct}% free` : "", `up ${dur(sys.uptime_secs)}`].filter(Boolean).join(" · ");
+  const detail = [sys.wired != null ? `${bytes(sys.wired)} wired` : "", `up ${dur(sys.uptime_secs)}`].filter(Boolean).join(" · ");
+  const memoryOpen = document.getElementById("memory-details")?.open;
+  const memoryFocused = document.activeElement?.id === "memory-summary";
   document.getElementById("head").innerHTML = `
-    <div class="mem" title="${esc(detail)}"><div class="lbl"><span><b>${bytes(sys.used_mem)}</b> <span class="muted">of ${bytes(total)}</span></span><span class="muted">In use</span></div>
-      <div class="meter" role="img" aria-label="${esc(`${bytes(sys.used_mem)} of ${bytes(total)} RAM in use`)}"><i class="used" style="width:${(used - comp).toFixed(1)}%"></i><i class="comp" style="width:${comp.toFixed(1)}%"></i></div>
-      <div class="memory-detail"><span>${sys.compressed != null ? `Includes ${bytes(sys.compressed)} compressed` : "Physical memory"}</span><span>${bytes(Math.max(0, total - sys.used_mem))} unused</span></div></div>
-    <div class="stat" title="${esc(`${bytes(sys.used_swap)} of ${bytes(sys.total_swap)} swap in use`)}"><b>${bytes(sys.used_swap)}</b><span>Swap on disk</span></div>
-    <div class="stat" title="load ${sys.load_one.toFixed(1)} · ${sys.load_five.toFixed(1)} · ${sys.load_fifteen.toFixed(1)}"><b>${Math.round(sys.cpu_pct)}%</b><span>CPU</span></div>
+    <details class="mem" id="memory-details" ${memoryOpen ? "open" : ""}>
+      <summary id="memory-summary" title="Show memory breakdown"><span class="muted">RAM used</span><b>${total >= GB && sys.used_mem >= GB ? `${(sys.used_mem / GB).toFixed(1)} / ${bytes(total)}` : `${bytes(sys.used_mem)} / ${bytes(total)}`}</b>
+        <span class="meter" role="img" aria-label="${esc(`${bytes(sys.used_mem)} of ${bytes(total)} RAM in use`)}"><i class="used" style="width:${(used - comp).toFixed(1)}%"></i><i class="comp" style="width:${comp.toFixed(1)}%"></i></span><span class="memory-chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="memory-detail"><span>${sys.compressed != null ? `Includes <b>${bytes(sys.compressed)}</b> compressed` : "Physical memory"}</span><span><b>${bytes(Math.max(0, total - sys.used_mem))}</b> outside used (includes cache)</span><span class="memory-system">${esc(detail)}</span><span class="memory-system">App totals include helper processes. On macOS, footprints include compressed and swapped allocations at their original size; they do not add up to physical RAM used. Units use powers of 1024.</span></div>
+    </details>
+    <div class="stat" title="${esc(`${bytes(sys.used_swap)} of ${bytes(sys.total_swap)} swap in use`)}"><span>Swap</span><b>${bytes(sys.used_swap)}</b></div>
+    <div class="stat" title="load ${sys.load_one.toFixed(1)} · ${sys.load_five.toFixed(1)} · ${sys.load_fifteen.toFixed(1)}"><span>CPU</span><b>${Math.round(sys.cpu_pct)}%</b></div>
     ${syncMarkup()}`;
+  if (memoryFocused) document.getElementById("memory-summary").focus();
+  document.getElementById("memory-details").onkeydown = event => {
+    if (event.key === "Escape") { event.currentTarget.open = false; document.getElementById("memory-summary").focus(); }
+  };
   document.getElementById("sync-btn").onclick = () => refresh({ fresh: true });
 }
 
-// ---- the refresh bar: how old the numbers are and when the next ones land ----
+// ---- the refresh bar: age stays visible beside the manual scan control ----
 
 function syncInfo() {
   const src = state.src, running = !!src.daemon_running;
@@ -30,33 +39,27 @@ function syncInfo() {
 
 
 function syncText(i) {
-  if (i.busy) return "scanning…";
-  const ago = `updated ${dur(i.shown)} ago`;
-  return i.running ? ago : `${ago} · no daemon, scanning every ${dur(i.period)}`;
+  return `${dur(i.shown)} ago`;
 }
 
-// The daemon's cycle is a small ring next to the age: it fills as the next
-// snapshot approaches, pulses when one is due, and spins while scanning.
-
-const RING = 2 * Math.PI * 5.5;
-
-const ringOffset = i => (RING * (1 - Math.min(1, i.age / i.period))).toFixed(2);
+function syncTip(i) {
+  const cadence = i.running ? `Background monitor samples every ${dur(i.period)}` : `Background monitor stopped; this window scans every ${dur(i.period)}`;
+  return `${i.busy ? "Scanning… " : ""}Updated ${dur(i.shown)} ago. ${cadence}.`;
+}
 
 function syncMarkup() {
   const i = syncInfo();
-  const tip = i.running ? `the daemon samples every ${dur(i.period)}${i.due ? " and its next snapshot is due" : `; the next lands in ${dur(i.left)}`}, and this window picks it up within ${dur(POLL_MS / 1000)}` : "no daemon snapshot to read, so this window scans on its own";
-  return `<div class="sync" title="${esc(tip)}"><svg id="sync-ring" class="${i.busy ? "busy" : i.due ? "due" : ""}" viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5.5"/><circle class="arc" cx="7" cy="7" r="5.5" stroke-dasharray="${RING.toFixed(2)}" stroke-dashoffset="${ringOffset(i)}"/></svg><span class="txt" id="sync-txt">${esc(syncText(i))}</span><button id="sync-btn" ${i.busy ? "disabled" : ""} title="scan now instead of waiting for the daemon's next tick">${icon("resume")}Refresh</button></div>`;
+  return `<div class="sync" id="sync-status" title="${esc(syncTip(i))}"><span class="txt" id="sync-txt">${esc(syncText(i))}</span><button id="sync-btn" class="${i.busy ? "busy" : ""}" ${i.busy ? "disabled" : ""} aria-label="${i.busy ? "Scanning" : "Refresh now"}" title="${i.busy ? "Scanning…" : "Refresh now"}">${icon("resume")}</button></div>`;
 }
-// Once a second: move the text and the ring along, and poll on the usual
-// cadence, or every second once the daemon's next snapshot is due so the ring
-// resets the moment it lands.
+// Update the age once a second. Keep polling every second once the daemon's
+// next snapshot is due so the age resets as soon as it lands.
 
 function tickSync() {
   if (!state.snap || !state.src) return;
   const i = syncInfo();
-  const txt = document.getElementById("sync-txt"), ring = document.getElementById("sync-ring");
+  const txt = document.getElementById("sync-txt"), status = document.getElementById("sync-status");
   if (txt) txt.textContent = syncText(i);
-  if (ring) { ring.classList.toggle("due", i.due && !i.busy); ring.lastElementChild.style.strokeDashoffset = ringOffset(i); }
+  if (status) status.title = syncTip(i);
   const since = Date.now() - sync.lastPoll;
   if (!i.busy && (since >= POLL_MS || (i.running && i.due && since >= 1000))) refresh();
 }
@@ -65,7 +68,8 @@ function tickSync() {
 
 function renderSide() {
   const s = state.snap;
-  const hs = holders(s);
+  const focus = state.settings?.focus_areas || [];
+  const hs = holders(s).sort((a, b) => Number(focus.includes(b.kind)) - Number(focus.includes(a.kind)) || b.rss - a.rss);
   const sel = k => state.view === k ? " sel" : "";
   const unmanaged = s.ports.filter(p => !p.owner_managed).length;
   let html = `<div class="nav-primary">
@@ -73,11 +77,12 @@ function renderSide() {
     <a class="item plain${sel("ports")}" data-view="ports">${icon("ports")}<span class="name">Listening ports</span><span class="mem">${s.ports.length ? `<span class="badge" title="${unmanaged} unmanaged of ${s.ports.length} ports" aria-label="${unmanaged ? `${unmanaged} unmanaged ports` : `${s.ports.length} managed ports`}">${unmanaged || s.ports.length}</span>` : ""}</span></a>
     <a class="item plain${sel("actions")}" data-view="actions">${icon("history")}<span class="name">Actions</span><span class="mem"></span></a>
     <a class="item plain${sel("settings")}" data-view="settings">${icon("settings")}<span class="name">Settings</span><span class="mem">${state.update?.version ? "Update available" : autoModeWord()}</span></a>
-    </div><div class="nav-holders"><h3>Largest holders <span style="font-weight:400;white-space:nowrap">Memory ↓</span></h3>`;
+    </div><div class="nav-holders"><h3>${focus.length ? "Your focus first" : "Apps by memory"} <span style="font-weight:400;white-space:nowrap">Memory ↓</span></h3>`;
   const LIMIT = 20;
   const shown = state.showAll ? hs : hs.slice(0, LIMIT);
-  html += shown.map(h => `<a class="item${sel(h.key)}" data-view="${esc(h.key)}" title="${esc(h.name)} · ${plural(h.procs, "process")} · ${pct(h.rss, s.system.total_mem)} of RAM · ${h.cpu.toFixed(1)}% cpu">
-      <span class="dot ${h.kind}"></span><span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="cnt">${esc(h.count)}</span></a>`).join("");
+  const largest = Math.max(1, ...hs.map(h => h.rss));
+  html += shown.map(h => `<a class="item${sel(h.key)}" data-view="${esc(h.key)}" title="${esc(h.name)} · ${esc(h.count)} · ${plural(h.procs, "process")} · ${h.cpu.toFixed(1)}% CPU">
+      <span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="holder-meter" aria-hidden="true"><i style="width:${Math.max(0, h.rss / largest * 100).toFixed(2)}%"></i></span></a>`).join("");
   if (hs.length > shown.length) html += `<span class="more" data-more="1">${hs.length - shown.length} more…</span>`;
   else if (state.showAll && hs.length > LIMIT) html += `<span class="more" data-more="0">show fewer</span>`;
   html += `</div><div class="nav-status"><span class="${state.src.daemon_running ? "running" : ""}">${state.src.daemon_running ? '<i class="status-dot" aria-hidden="true"></i>Running in background' : "Background monitor stopped"}</span><a href="#settings" data-view="settings">Auto mode ${esc(autoMode(state.settings).replace("preview", "in preview"))}</a></div>`;
@@ -215,14 +220,15 @@ function kindBar() {
   const total = Object.values(sum).reduce((n, v) => n + v, 0);
   if (!total) return "";
   const kinds = [["agent", "Agent sessions"], ["browser", "Browsers"], ["app", "Apps"], ["other", "Other processes"]].filter(([k]) => sum[k]);
-  return `<h2>Memory by kind <small class="muted">${plural(state.snap.groups.length, "holder")}</small></h2>
+  return `<h2>Process memory by kind <small class="muted">${plural(state.snap.groups.length, "holder")}</small></h2>
+    <p class="help">Grouped process totals, including helpers. On macOS, these include compressed and swapped allocations at their original size and do not add up to physical RAM used.</p>
     <div class="kbar">${kinds.map(([k]) => `<i class="${k}" style="width:${(sum[k] * 100 / total).toFixed(1)}%"></i>`).join("")}</div>
     <div class="legend">${kinds.map(([k, l]) => `<span><i class="${k}"></i>${l} <b>${bytes(sum[k])}</b></span>`).join("")}</div>`;
 }
 
 
 function viewSettings() {
-  return `<h1>Settings</h1><div class="sub"><span>Choose how autoTrim runs and when it can act.</span></div>${controlCards()}${updateCard()}`;
+  return `<h1>Settings</h1><div class="sub"><span>Choose how autoTrim runs and when it can act.</span></div>${controlCards()}<div class="card settings-card"><div class="h">Your setup</div><p>Change your interests, idle thresholds, notifications, and startup preferences.</p><button data-setup>Review setup</button></div>${updateCard()}`;
 }
 
 
@@ -263,21 +269,66 @@ function compactList(key, rows, options) {
   return `<section class="compact-section" aria-label="${esc(options.label)}"><div class="compact-layout"><div class="compact-list"><table class="compact-table"><thead><tr>${options.review ? `<th class="check"><input type="checkbox" data-list-all="${esc(key)}" data-list-control="${esc(key)}:all" aria-label="Select all eligible ${esc(options.plural)}" ${chosen.length && chosen.length === eligible.length ? "checked" : ""} ${eligible.length ? "" : "disabled"}></th>` : ""}<th>${esc(options.title)}</th><th class="num metric">${esc(options.metric)}</th></tr></thead><tbody>${rows.map(r => `<tr class="${r.id === saved.inspected ? 'inspected' : ''} ${saved.selected.has(r.id) ? 'selected' : ''}">${options.review ? `<td class="check">${r.eligible ? `<input type="checkbox" data-list-select ${controls(r)} data-list-control="${esc(key + ':select:' + r.id)}" aria-label="Select ${esc(r.title)}" ${saved.selected.has(r.id) ? "checked" : ""}>` : `<span class="row-lock" title="${esc(r.protection)}" aria-label="${esc(r.protection)}">${icon("lock")}</span>`}</td>` : ""}<td><button class="row-title" data-list-inspect ${controls(r)} data-list-control="${esc(key + ':inspect:' + r.id)}" aria-pressed="${r.id === saved.inspected}" title="${esc(r.title)}">${esc(r.title)}</button><span class="row-sub">${r.status ? `<i class="state-symbol ${esc(r.status)}" role="img" aria-label="${esc(r.statusLabel)}" title="${esc(r.statusLabel)}"></i>` : ""}${r.status === "stale" && compactDuration(r.idle) ? `<span class="stale-time" title="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}" aria-label="${esc(r.idleLabel)} ${esc(dur(r.idle))}${r.idleIsDuration ? "" : " ago"}">${esc(compactDuration(r.idle))}</span>` : ""}<span class="row-context">${esc(r.context)}</span></span></td><td class="num metric">${esc(r.metric)}</td></tr>`).join("")}</tbody></table>${options.review ? `<div class="list-footer"><span>${chosen.length ? `${plural(chosen.length, options.noun)} selected${selectedMemory ? ` · ${options.estimated ? '≈ ' : ''}${bytes(selectedMemory)}${options.estimated ? ' estimated' : ''}` : ''}` : 'Click a row for details.'}</span><div class="list-actions">${chosen.length ? `<button data-list-clear="${esc(key)}">Clear</button><button class="primary" data-list-review="${esc(key)}">Review ${plural(chosen.length, options.noun)}</button>` : `${stale.length ? `<button data-list-stale="${esc(key)}">Review ${plural(stale.length, 'stale ' + options.noun)}</button>` : ''}<button data-list-eligible="${esc(key)}" ${eligible.length ? '' : 'disabled'}>Select eligible rows</button>`}</div></div>` : ""}</div>${compactInspector(inspected, options.noun)}</div></section>`;
 }
 
+// Tabs and sessions are comparison tables; selecting never opens another pane.
+function resourceList(key, rows, options) {
+  key = state.view + ":" + key;
+  const saved = reconcileList(key, rows);
+  saved.collapsed ??= new Set();
+  const allRows = rows;
+  const groupOrder = state.tabReverse ? ["unknown", "recent", "stale"] : ["stale", "recent", "unknown"];
+  const groups = options.grouped ? groupOrder.map(id => ({ id, label: {stale: "Stale", recent: "Recent", unknown: "Not viewed"}[id], rows: allRows.filter(r => r.group === id) })).filter(g => g.rows.length) : [];
+  if (options.grouped) rows = groups.filter(g => !saved.collapsed.has(g.id)).flatMap(g => g.rows);
+  const visibleEligible = new Set(rows.filter(r => r.eligible).map(r => r.id));
+  saved.selected = new Set([...saved.selected].filter(id => visibleEligible.has(id)));
+  listModels.set(key, { rows, allRows, options, saved });
+  if (!allRows.length) return `<div class="compact-empty">${esc(options.empty)}</div>`;
+  const eligible = rows.filter(r => r.eligible), chosen = eligible.filter(r => saved.selected.has(r.id));
+  const memory = chosen.reduce((sum, r) => sum + (r.rss || 0), 0);
+  const kind = options.noun === "tab" ? "tab" : "sess", sort = state[kind + "Sort"], reverse = state[kind + "Reverse"];
+  const sortHead = (label, value, cls = "") => {
+    const ascending = ["title", "name", "site", "window"].includes(value) !== reverse;
+    return `<th class="${cls}" scope="col" aria-sort="${sort === value ? ascending ? 'ascending' : 'descending' : 'none'}"><button class="column-sort" data-resource-sort="${value}" data-sort-kind="${kind}" data-list-control="${esc(key + ':sort:' + value)}">${label}<span aria-hidden="true">${sort === value ? ascending ? '↑' : '↓' : ''}</span></button></th>`;
+  };
+  const controls = r => `data-list="${esc(key)}" data-row="${esc(r.id)}"`;
+  const rowMarkup = r => `<tr class="resource-row ${saved.selected.has(r.id) ? 'selected' : ''}" ${r.eligible ? 'data-selectable' : ''}>
+      <td class="check">${r.eligible ? `<label><input type="checkbox" data-list-select ${controls(r)} data-list-control="${esc(key + ':select:' + r.id)}" aria-label="Select ${esc(r.title)}" ${saved.selected.has(r.id) ? 'checked' : ''}></label>` : `<span class="row-lock" role="img" title="${esc(r.protection)}" aria-label="${esc(r.protection)}">${icon("lock")}</span>`}</td>
+      <td>${r.eligible ? `<button class="row-title" data-resource-select ${controls(r)} data-list-control="${esc(key + ':row:' + r.id)}" aria-pressed="${saved.selected.has(r.id)}" title="${esc(r.title)}">${esc(r.title)}</button>` : `<span class="row-title" title="${esc(r.title)}">${esc(r.title)}</span>`}<span class="row-sub row-context" title="${esc([r.context, r.location].filter(Boolean).join(" · "))}">${esc(r.context)}</span></td>
+      <td class="num metric" title="${esc(r.metricLabel)}">${esc(options.estimated ? r.detailMetric : r.metric)}</td>
+      <td class="activity" data-state="${esc(r.protection && r.status !== "active" ? "protected" : r.status)}" title="${esc(r.idleLabel)}${r.idle != null ? ': ' + dur(r.idle) : ''}">${r.status === 'active' ? 'Now' : r.idle != null ? esc(compactDuration(r.idle)) + (r.idleIsDuration ? ' quiet' : options.estimated ? '' : ' ago') : 'Unknown'}${!options.estimated ? `<small>${esc(r.statusLabel)}</small>` : ""}</td>
+      <td class="row-action">${r.eligible ? `<button class="close-row" data-resource-close ${controls(r)} data-list-control="${esc(key + ':close:' + r.id)}" aria-label="Close ${esc(r.title)}" title="Review close">×</button>` : `<span class="muted" title="${esc(r.protection)}">—</span>`}</td></tr>`;
+  const body = options.grouped ? groups.map(group => {
+    const open = !saved.collapsed.has(group.id), available = group.rows.filter(r => r.eligible);
+    const selectedCount = available.filter(r => saved.selected.has(r.id)).length;
+    const total = group.rows.reduce((sum, r) => sum + (r.rss || 0), 0);
+    return `<tr class="resource-group" data-group="${group.id}"><td class="check"><label><input type="checkbox" data-list-group-all="${group.id}" data-list="${esc(key)}" data-list-control="${esc(key + ':group-all:' + group.id)}" aria-label="Select eligible ${group.label.toLowerCase()} tabs" ${available.length && selectedCount === available.length ? 'checked' : ''} ${!open || !available.length ? 'disabled' : ''}></label></td><td><button class="group-toggle" data-list-group="${group.id}" data-list="${esc(key)}" data-list-control="${esc(key + ':group:' + group.id)}" aria-expanded="${open}"><span class="group-chevron" aria-hidden="true">${open ? '⌄' : '›'}</span>${group.label}<span class="group-count">${group.rows.length}</span></button></td><td class="num metric" title="Estimated footprint of all tabs in this group">${total ? '≈ ' + bytes(total) : 'Unknown'}</td><td colspan="2" class="group-summary">${selectedCount ? `${selectedCount} selected` : ''}</td></tr>${open ? group.rows.map(rowMarkup).join('') : ''}`;
+  }).join('') : rows.map(rowMarkup).join('');
+  return `<section class="resource-list" aria-label="${esc(options.label)}">
+    ${chosen.length ? `<div class="selection-bar has-selection"><span role="status"><b>${plural(chosen.length, options.noun)} selected</b>${memory ? ` · ${options.estimated ? '≈ ' : ''}${bytes(memory)}` : ''}</span><div class="list-actions"><button data-list-clear="${esc(key)}" data-list-control="${esc(key)}:clear">Clear</button><button class="primary" data-list-review="${esc(key)}" data-list-control="${esc(key)}:review">Review ${plural(chosen.length, options.noun)}</button></div></div>` : ''}
+    <div class="table-scroll" data-list-scroll="${esc(key)}"><table class="resource-table"><thead><tr>
+      <th class="check" scope="col"><label><input type="checkbox" data-list-all="${esc(key)}" data-list-control="${esc(key)}:all" aria-label="Select all eligible ${options.grouped ? "expanded " : ""}${options.plural}" ${chosen.length && chosen.length === eligible.length ? 'checked' : ''} ${eligible.length ? '' : 'disabled'}></label></th>
+      ${sortHead(options.noun === "tab" ? "Tab" : "Session", options.noun === "tab" ? "title" : "name")}
+      ${options.estimated ? `<th class="num metric" scope="col" title="Renderer memory divided evenly across tabs; individual tab usage is unavailable.">Est. memory</th>` : sortHead("Memory", "rss", "num metric")}
+      ${sortHead(options.noun === "tab" ? "Last viewed" : "Last activity", "idle", "activity")}
+      <th class="row-action" scope="col" aria-label="Close"></th></tr></thead><tbody>${body}</tbody></table></div>
+    <p class="list-hint">${options.estimated ? 'Tab memory is estimated, not guaranteed savings.' : 'Shift-click to select a range.'}</p>
+  </section>`;
+}
+
 function sessionTable(list) {
-  const rows = list.filter(x => !goneSession(x)).map(x => {
+  const rows = filteredSessions(list).map(x => {
     const idle = x.idle_secs ?? x.quiet_for_secs, protection = sessionProtection(x);
     const engineNote = `${x.host}'s agent engine serves the app's threads. Close those threads in the app.`;
-    return { id: sessionKey(x), data: x, title: x.engine ? `${AGENT_LABEL[x.kind] || "Agent"} backend` : sessionName(x), context: x.engine ? `${sessionCount([x])} · ${x.host}` : x.project || x.host, type: x.engine ? "Shared backend" : "Agent", status: x.state, statusLabel: protection || (x.state === "stale" ? "Stale" : "Idle"), idle, idleLabel: x.idle_secs != null ? "Last activity" : "CPU quiet for", idleIsDuration: x.idle_secs == null,
+    return { id: sessionKey(x), data: x, title: x.engine ? `${AGENT_LABEL[x.kind] || "Agent"} backend` : sessionName(x), context: x.engine ? `${sessionCount([x])} · ${x.host}` : [x.project, x.host, x.first_prompt && x.first_prompt !== sessionName(x) ? x.first_prompt : ""].filter(Boolean).join(" · "), type: x.engine ? "Shared backend" : "Agent", status: x.state, statusLabel: protection || (x.state === "stale" ? "Stale" : "Idle"), idle, idleLabel: x.idle_secs != null ? "Last activity" : "CPU quiet for", idleIsDuration: x.idle_secs == null,
       metric: bytes(x.rss), metricLabel: x.engine ? "Shared memory across loaded tasks" : "In memory now", rss: x.rss, eligible: canCloseSession(x), protection,
       facts: [["Host", x.host], ["Open", dur(x.age_secs)], ["CPU", (x.cpu_window_mean ?? x.cpu ?? 0).toFixed(1) + "%"], ["PID", x.pid], ["Ports", (x.ports || []).join(", ") || "None"], [x.idle_secs != null ? "Last activity" : "CPU quiet for", x.state === "active" ? "Working now" : idle != null ? dur(idle) + (x.idle_secs != null ? " ago" : "") : "Unknown"]],
       note: x.engine ? engineNote : `${x.first_prompt && x.first_prompt !== sessionName(x) ? x.first_prompt + '\n\n' : ''}${x.idle_secs != null ? 'The transcript stays on disk. Available resume commands are saved in Actions before closing.' : 'Idle time comes from CPU observations; transcript activity is unavailable. Available resume commands are saved in Actions.'}`,
       action: protection ? `<button disabled>${esc(protection)} · kept open</button>` : `<button class="primary" data-close-session="${x.pid}">Review close</button>` };
   });
-  const resourceList = compactList("sessions", rows, { label: "Agent sessions", title: "Session / project", metric: "Memory", noun: "session", plural: "sessions", review: chosen => reviewSessions(chosen.map(r => r.data)), empty: "No sessions match. Try another search or choose All sessions." });
+  const resourcesTable = resourceList("sessions", rows, { label: "Agent sessions", title: "Session / project", metric: "Memory", noun: "session", plural: "sessions", review: chosen => reviewSessions(chosen.map(r => r.data)), empty: "No sessions match. Try another search or choose All sessions." });
   const live = list.filter(x => !goneSession(x));
   const resources = live.length && live.every(x => x.engine && x.threads?.length)
-    ? `<details class="task-details" data-keep-open="backend-resources"><summary>Shared backend resources · ${esc(bytes(live.reduce((sum, x) => sum + x.rss, 0)))}</summary>${resourceList}</details>`
-    : resourceList;
+    ? `<details class="task-details" data-keep-open="backend-resources"><summary>Shared backend resources · ${esc(bytes(live.reduce((sum, x) => sum + x.rss, 0)))}</summary>${resourcesTable}</details>`
+    : resourcesTable;
   return resources + live.map(taskTable).join("");
 }
 
@@ -305,12 +356,12 @@ function viewAgents(h) {
   const appRss = h.app ? Math.max(0, h.rss - h.sessions.reduce((n, x) => n + x.rss, 0)) : 0;
   const ports = s.ports.filter(p => h.pids.includes(p.pid) && !h.sessions.some(x => (x.pids || []).includes(p.pid)));
   const trend = (s.trends || []).find(t => t.key === h.key && t.span_secs >= 600);
-  return `<h1>${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> total</span><span>${sessionCount(live)}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
-    <div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-session-filter aria-label="Search sessions" placeholder="Search tasks, sessions or projects" value="${esc(state.sessFilter)}"></label><select data-sess-sort aria-label="Sort sessions">${["rss", "idle", "age", "name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${{rss:"Most memory",idle:"Longest idle",age:"Oldest",name:"Name"}[k]}</option>`).join("")}</select></div>
+  return `<h1>${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> across ${plural(h.procs, "process")}</span><span>${sessionCount(live)}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
+    <div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-session-filter aria-label="Search sessions" placeholder="Search tasks, sessions or projects" value="${esc(state.sessFilter)}"></label><select data-sess-sort aria-label="Sort sessions">${["rss", "idle", "age", "name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${(state.sessReverse && state.sessSort === k ? {rss:"Least memory",idle:"Shortest idle",age:"Newest",name:"Name Z–A"} : {rss:"Most memory",idle:"Longest idle",age:"Oldest",name:"Name A–Z"})[k]}</option>`).join("")}</select></div>
     <div class="filter-row">${filterChips("session", state.sessState, [["all", "All sessions"], ["stale", "Stale"], ["active", "Active"]])}<span class="muted">${visible.length} shown</span></div>
-    ${sessionTable(visible)}<p class="help">Select a session name for its age, CPU, host, and ports. Active sessions and app engines stay open.</p>
+    ${sessionTable(visible)}<p class="help">Select rows to close several sessions together. Active sessions and app engines stay open.</p>
     ${h.app ? `<details class="help" data-keep-open="app-memory"><summary>What is included in ${bytes(h.rss)}?</summary><p>The ${esc(h.app)} app holds ${bytes(appRss)}. The remaining memory belongs to its sessions, including those running in terminals.</p></details>` : ""}
-    ${trend ? trendsTable([trend]) : ""}${ports.length ? `<h2>Listening ports</h2>${portsTable(ports)}` : ""}${quitBlock(h)}`;
+    ${holderMemoryHelp(h)}${trend ? trendsTable([trend]) : ""}${ports.length ? `<h2>Listening ports</h2>${portsTable(ports)}` : ""}${quitBlock(h)}`;
 }
 
 
@@ -319,32 +370,39 @@ function tabTable(b, tabs) {
     const profile = b.open_profiles.find(p => p.dir === t.profile)?.label || t.profile;
     const protection = t.pinned ? "Pinned" : t.active ? "In use" : !b.can_close_tabs ? "Closing unavailable" : "";
     const status = t.active ? "active" : isStale(b, t) ? "stale" : "idle";
-    return { id: tabKey(b, t), data: t, title: t.title.trim() || t.url, context: t.site, type: "Browser tab", status, statusLabel: protection || (status === "stale" ? "Stale" : "Idle"), idle: t.idle_secs, idleLabel: "Last viewed", metric: t.active ? "Now" : t.idle_secs != null ? compactDuration(t.idle_secs) + " ago" : "Not viewed", detailMetric: b.per_tab_estimate ? "≈ " + bytes(b.per_tab_estimate) : "Unknown", metricLabel: "Renderer memory ÷ all tabs (estimate)", rss: b.per_tab_estimate, eligible: canCloseTab(b, t), protection,
+    return { id: tabKey(b, t), data: t, group: status === "stale" ? "stale" : t.active || t.idle_secs != null ? "recent" : "unknown", title: t.title.trim() || t.url, context: t.url.replace(/^https?:\/\//, ""), location: `${profile} · Window ${t.window_id}${t.index != null ? ` · Tab ${t.index}` : ""}`, type: "Browser tab", status, statusLabel: protection || (status === "stale" ? "Stale" : "Idle"), idle: t.idle_secs, idleLabel: "Last viewed", metric: t.active ? "Now" : t.idle_secs != null ? compactDuration(t.idle_secs) + " ago" : "Not viewed", detailMetric: b.per_tab_estimate ? "≈ " + bytes(b.per_tab_estimate) : "Unknown", metricLabel: "Renderer memory ÷ all tabs (estimate)", rss: b.per_tab_estimate, eligible: canCloseTab(b, t), protection,
       facts: [["Profile", profile], ["Last viewed", t.active ? "Now" : t.idle_secs != null ? dur(t.idle_secs) + " ago" : "Not viewed"], ["Protection", protection || "None"], ["URL", t.url]], note: "Reopen with ⌘⇧T in the same profile. The URL is saved in Actions; unsaved text may not return.",
       action: protection ? `<button disabled>${esc(protection)}${b.can_close_tabs ? ' · kept open' : ''}</button>` : `<button class="primary" data-close-tab="${t.id}" data-browser="${esc(b.name)}">Review close</button>` };
   });
-  return compactList("tabs", rows, { label: "Browser tabs", title: "Tab / site", metric: "Last viewed", noun: "tab", plural: "tabs", estimated: true, review: chosen => reviewTabs(b, chosen.map(r => r.data)), empty: "No tabs match. Try another search, state, or profile." });
+  return resourceList("tabs", rows, { label: "Browser tabs", title: "Tab / site", metric: "Last viewed", noun: "tab", plural: "tabs", estimated: true, grouped: state.tabSort === "idle" && state.tabState === "all" && !state.tabFilter.trim(), review: chosen => reviewTabs(b, chosen.map(r => r.data)), empty: "No tabs match. Try another search, state, or profile." });
 }
 
 
 function viewBrowser(h) {
   const s = state.snap, b = h.browser, est = b.per_tab_estimate;
   const live = b.tabs.filter(t => !goneTab(t)), visible = filteredTabs(b);
-  let html = `<h1>${esc(h.name)} <span class="pill">Browser</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> total</span><span>${plural(live.length, "tab")}</span><span>${plural(b.open_profiles.length, "profile")}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>`;
-  if (!live.length) return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + quitBlock(h);
-  html += `<div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-tab-filter aria-label="Search tabs" placeholder="Search tabs, sites, or titles" value="${esc(state.tabFilter)}"></label><select data-tab-profile aria-label="Filter by profile"><option value="">All profiles</option>${b.open_profiles.map(p => `<option value="${esc(p.dir)}" ${state.tabProfile === p.dir ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select><select data-tab-sort aria-label="Sort tabs">${["idle", "site", "title", "window"].map(k => `<option value="${k}" ${state.tabSort === k ? "selected" : ""}>${{idle:"Longest untouched",site:"Site",title:"Title",window:"Window order"}[k]}</option>`).join("")}</select></div>
-    <div class="filter-row">${filterChips("tab", state.tabState, [["all", "All tabs"], ["stale", "Stale, unpinned"], ["chat", "Conversations"]])}<span class="muted">${visible.length} shown</span></div>
-    <p class="scope">Actions below apply to these results ${state.tabProfile ? `in ${esc(b.open_profiles.find(p => p.dir === state.tabProfile)?.label || state.tabProfile)}` : "across all profiles"}. Pinned and active tabs stay open.</p>
+  const matching = filteredTabs(b, "all"), stale = visible.filter(t => isStale(b, t) && canCloseTab(b, t));
+  const counts = { all: matching.length, stale: matching.filter(t => isStale(b, t) && !t.pinned).length, chat: matching.filter(t => t.kind === "chat").length };
+  const threshold = state.settings?.tab_stale_after_secs ?? 86400;
+  const profile = b.open_profiles.find(p => p.dir === state.tabProfile)?.label || state.tabProfile;
+  let html = `<div class="browser-heading"><h1>${esc(h.name)}</h1><span>${bytes(h.rss)} · ${plural(live.length, "tab")}</span></div>`;
+  if (!live.length) return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + holderMemoryHelp(h) + quitBlock(h);
+  if (stale.length) html += `<section class="cleanup-summary" aria-label="Stale tab cleanup"><div><strong>${plural(stale.length, 'tab')} untouched for ${compactDuration(threshold)} or more</strong><p>${est ? `<b>≈ ${bytes(stale.length * est)}</b> estimated footprint` : 'Ready to review'}${state.tabFilter || state.tabProfile || state.tabState !== 'all' ? ' in these results' : ''}</p></div><button class="primary" data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button></section>`;
+  html += `<div class="list-toolbar browser-toolbar"><label class="search">${icon("search")}<input type="search" data-tab-filter aria-label="Search tabs" placeholder="Search titles or URLs" value="${esc(state.tabFilter)}"></label>
+    ${filterChips("tab", state.tabState, [["all", `All ${counts.all}`], ["stale", `Stale ${counts.stale}`], ["chat", `Chats ${counts.chat}`]])}
+    <details class="list-options" data-keep-open="tab-options"><summary aria-label="View options" title="Profile and sort options">${icon("settings")}${profile ? `<span>${esc(profile)}</span>` : ''}</summary><div class="list-options-panel">
+    <label>Profile<select data-tab-profile aria-label="Filter by profile"><option value="">All profiles</option>${b.open_profiles.map(p => `<option value="${esc(p.dir)}" ${state.tabProfile === p.dir ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select></label>
+    <label>Sort by<select data-tab-sort aria-label="Sort tabs">${["idle", "site", "title", "window"].map(k => `<option value="${k}" ${state.tabSort === k ? "selected" : ""}>${(state.tabReverse && state.tabSort === k ? {idle:"Recently viewed",site:"Site Z–A",title:"Title Z–A",window:"Reverse window order"} : {idle:"Longest untouched",site:"Site A–Z",title:"Title A–Z",window:"Window order"})[k]}</option>`).join("")}</select></label></div></details></div>
     ${tabTable(b, visible)}
-    <p class="help">Stale means not viewed for ${dur(state.settings?.tab_stale_after_secs ?? 86400)}. Tab memory splits renderer memory evenly across tabs; individual tabs may use much more or less.</p>`;
-  html += `<h2>Sites in these results</h2>` + sitesTable(b, visible);
+    <details class="browser-details" data-keep-open="browser-details"><summary>Browser details &amp; actions</summary>
+    <p class="help">${plural(h.procs, 'process')} · ${h.cpu.toFixed(1)}% CPU · ${plural(b.open_profiles.length, 'profile')}</p>
+    ${holderMemoryHelp(h)}
+    <p class="help">Stale means not viewed for ${dur(threshold)}. Pinned and active tabs stay open. Sort by last viewed to group tabs by activity.</p>
+    <h2>Sites in these results</h2>${sitesTable(b, visible)}`;
   const growing = (s.trends || []).filter(t => t.kind === "renderer" && t.growth > 0 && t.span_secs >= 600 && (b.renderer_procs || []).some(r => `r:${r.pid}:${r.start_time}` === t.key)).sort((x, y) => y.growth - x.growth).slice(0, 5);
-  if (growing.length) {
-    html += trendsTable(growing, "Pages growing", "growing") + `<p class="help">Each row is a renderer process; the browser does not identify its tab.</p>`;
-  }
-
-  html += `<details class="help" data-keep-open="browser-memory"><summary>How browser memory and recovery work</summary><p>Per-tab estimates divide total renderer memory by all open tabs; site estimates multiply that average by the selected tab count. Inactive tabs may already be deactivated. ${bytes(b.renderer_rss)} is held by ${plural(b.renderers, "page renderer")}, plus ${plural(b.extension_renderers, "extension renderer")}. ${b.can_close_tabs ? "Close asks the browser to close the selected tab. Use ⌘⇧T in the same profile to reopen a recently closed tab; its URL is saved in Actions. Unsaved drafts and temporary chats may not be restored." : "Closing tabs is unavailable on this platform."}</p></details>`;
-  return html + quitBlock(h);
+  if (growing.length) html += trendsTable(growing, "Pages growing", "growing") + `<p class="help">Each row is a renderer process; the browser does not identify its tab.</p>`;
+  html += `<h2>Memory and recovery</h2><p class="help">Per-tab estimates divide total renderer memory evenly across all open tabs; individual tabs may use more or less. Site estimates multiply that average by the selected tab count. ${bytes(b.renderer_rss)} is held by ${plural(b.renderers, "page renderer")}, plus ${plural(b.extension_renderers, "extension renderer")}. ${b.can_close_tabs ? "Use ⌘⇧T in the same profile to reopen a recently closed tab; its URL is saved in Actions. Unsaved drafts and temporary chats may not be restored." : "Closing tabs is unavailable on this platform."}</p>`;
+  return html + quitBlock(h) + `</details>`;
 }
 
 function quitBlock(h) {
@@ -370,7 +428,7 @@ function viewApp(h) {
   const trend = (s.trends || []).find(t => t.key === "g:" + h.name && t.span_secs >= 600);
   const ports = s.ports.filter(p => h.pids.includes(p.pid));
   let html = `<h1>${esc(h.name)} <span class="pill">${h.kind === "app" ? "app" : "process"}</span></h1>
-    <div class="sub"><span><b>${bytes(h.rss)}</b> in memory · <b>${pct(h.rss, s.system.total_mem)}</b> of RAM</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>`;
+    <div class="sub"><span><b>${bytes(h.rss)}</b> process total</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>`;
   if (hosted.length) {
     html += `<h2>Agent sessions it hosts</h2>${sessionTable(hosted)}`;
   }
@@ -383,7 +441,7 @@ function viewApp(h) {
   if (!hosted.length && !ports.length && h.kind === "app") {
     html += `<p class="note">${plural(h.procs, "process")} under this app bundle, ${bytes(h.rss)} in memory between them.</p>`;
   }
-  return html + quitBlock(h);
+  return html + holderMemoryHelp(h) + quitBlock(h);
 }
 
 
@@ -437,14 +495,27 @@ function recoveryControl(r) {
 }
 
 
+function holderMemoryHelp(h) {
+  const mac = /macos/i.test(state.snap.system.os || "");
+  return `<p class="help">Total for ${plural(h.procs, "process")}, including helpers${h.kind === "agent" ? " and sessions" : ""}. ${mac ? "Compare the same processes in Activity Monitor’s Memory column. Compressed and swapped allocations count at their original size, so this is not physical RAM that closing will release." : "Process totals are not a measurement of physical RAM that closing will release."}</p>`;
+}
+
+function observedMemory(r) {
+  const m = r.memory_observation;
+  if (!m) return "";
+  const change = (before, after) => after === before ? "0 B" : signedBytes(after - before);
+  const elapsed = Math.max(0, m.after.taken_at_ms - m.before.taken_at_ms) / 1000;
+  return `<div class="memory-observation"><p><b>Observed whole-machine change${m.tab_batch ? ` · batch of ${plural(m.attempted_actions, "tab attempt")}` : ""}</b></p><p>RAM used: ${bytes(m.before.used_mem)} → ${bytes(m.after.used_mem)} (${change(m.before.used_mem, m.after.used_mem)})<br>Swap used: ${bytes(m.before.used_swap)} → ${bytes(m.after.used_swap)} (${change(m.before.used_swap, m.after.used_swap)})</p><p class="help">Over ${elapsed.toFixed(1)} seconds, including a 1-second settling delay. Includes other activity; this is not savings attributable to ${m.tab_batch ? "an individual tab" : "this action"}.</p></div>`;
+}
+
 function viewActions() {
   const labels = {close_session: "Close session", stop_server: "Stop server", close_tab: "Close tab", quit_app: "Quit app", restart_app: "Restart app"};
   return `<h1>Actions</h1><div class="sub">What happened, why it happened, and how to get back to it.</div>` + (state.log.length ? state.log.slice().reverse().map(r => {
     const preview = r.mode === "dry-run", failed = /fail|error|refus|still running|could not/i.test(r.result);
     const mode = preview ? "Preview only" : r.mode === "auto" ? "Automatic" : "Manual";
     const key = `${r.ts}:${r.action}:${r.pid}:${r.target}`;
-    return `<article class="history-entry"><div class="event-head"><span class="event-icon ${preview ? "neutral" : failed ? "warning" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "" : "neutral"}">${icon(preview || failed ? "info" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "check" : "history")}</span><b>${esc(labels[r.action] || r.action.replace(/_/g, " "))}</b><span class="tag ${preview ? "" : "on"}">${mode}</span><time>${esc(new Date(r.ts * 1000).toLocaleString())}</time></div><p class="result">${esc(r.target)}</p><p class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</p>${r.rss ? `<p>${r.action === "close_tab" ? "≈ " : ""}${bytes(r.rss)} ${preview ? "held when evaluated" : "held before the action"}${r.action === "close_tab" ? " (estimated)" : ""}</p>` : ""}${r.resume && !preview ? `<details data-keep-open="${esc(key)}"><summary>${r.action === "close_session" ? "How to resume" : "How to reopen"}</summary>${recoveryControl(r)}</details>` : ""}</article>`;
-  }).join("") + `<p class="help">Memory shown is what a target held before the action, not a measurement of memory recovered.</p>` : `<div class="note">No actions yet. When you close something, its result and available recovery instructions will appear here.</div>`);
+    return `<article class="history-entry"><div class="event-head"><span class="event-icon ${preview ? "neutral" : failed ? "warning" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "" : "neutral"}">${icon(preview || failed ? "info" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "check" : "history")}</span><b>${esc(labels[r.action] || r.action.replace(/_/g, " "))}</b><span class="tag ${preview ? "" : "on"}">${mode}</span><time>${esc(new Date(r.ts * 1000).toLocaleString())}</time></div><p class="result">${esc(r.target)}</p><p class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</p>${r.rss ? `<p>${r.action === "close_tab" ? "≈ " : ""}${bytes(r.rss)} ${preview ? "held when evaluated" : "held before the action"}${r.action === "close_tab" ? " (estimated)" : ""}</p>` : ""}${!preview ? observedMemory(r) : ""}${r.resume && !preview ? `<details data-keep-open="${esc(key)}"><summary>${r.action === "close_session" ? "How to resume" : "How to reopen"}</summary>${recoveryControl(r)}</details>` : ""}</article>`;
+  }).join("") + `<p class="help">Memory shown is what a target held before the action, not a measurement of memory recovered. Observed RAM and swap changes cover the whole machine, include other activity, and must not be added up as savings.</p>` : `<div class="note">No actions yet. When you close something, its result and available recovery instructions will appear here.</div>`);
 }
 
 
@@ -457,6 +528,7 @@ function renderMain(viewChanged, force = false) {
   // Keep copy feedback visible through background refreshes.
   if (!viewChanged && state.view === "actions" && main.querySelector(".copy-command.copying, .copy-command.copy-feedback")) return;
   const focusKey = active?.dataset?.listControl;
+  const listScroll = new Map([...main.querySelectorAll("[data-list-scroll]")].map(el => [el.dataset.listScroll, [el.scrollTop, el.scrollLeft]]));
   const scroll = viewChanged ? 0 : main.scrollTop;
   listModels.clear();
   let html;
@@ -476,6 +548,7 @@ function renderMain(viewChanged, force = false) {
   main.innerHTML = html;
   if (!viewChanged) main.querySelectorAll("details[data-keep-open]").forEach(d => { d.open = expanded.has(d.dataset.keepOpen); });
   main.scrollTop = scroll;
+  if (!viewChanged) main.querySelectorAll("[data-list-scroll]").forEach(el => { const position = listScroll.get(el.dataset.listScroll); if (position) [el.scrollTop, el.scrollLeft] = position; });
   wire(main);
   if (!viewChanged && focusKey) [...main.querySelectorAll("[data-list-control]")].find(el => el.dataset.listControl === focusKey)?.focus({ preventScroll: true });
 }
@@ -514,4 +587,4 @@ function filterChips(kind, selected, choices) {
   return `<div class="filters" role="group" aria-label="Filter ${kind}s">${choices.map(([value, text]) => `<button data-${kind}-state="${value}" aria-pressed="${selected === value}">${text}</button>`).join("")}</div>`;
 }
 
-export { renderHeader, syncInfo, syncText, RING, ringOffset, syncMarkup, tickSync, renderSide, adviceTarget, adviceCards, observationCards, trendsTable, controlCards, pendingList, autoCard, backgroundCard, isObservation, viewOverview, kindBar, viewSettings, updateCard, rowStatus, compactInspector, compactList, sessionTable, viewAgents, tabTable, viewBrowser, quitBlock, viewApp, sitesTable, portsTable, viewPorts, recoveryDetails, recoveryControl, viewActions, renderMain, renderAll, filterChips, refresh };
+export { renderHeader, syncInfo, syncText, syncMarkup, tickSync, renderSide, adviceTarget, adviceCards, observationCards, trendsTable, controlCards, pendingList, autoCard, backgroundCard, isObservation, viewOverview, kindBar, viewSettings, updateCard, rowStatus, compactInspector, compactList, sessionTable, viewAgents, tabTable, viewBrowser, quitBlock, viewApp, sitesTable, portsTable, viewPorts, recoveryDetails, recoveryControl, viewActions, renderMain, renderAll, filterChips, refresh };

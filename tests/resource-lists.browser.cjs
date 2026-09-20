@@ -1,0 +1,173 @@
+// Synthetic data only: no native tab or process actions.
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ executablePath: process.env.AUTOTRIM_TEST_CHROMIUM });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 740 } });
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.route('**/*', route => {
+      const file = new URL(route.request().url()).pathname.slice(1) || 'index.html';
+      if (file === 'main.js') return route.fulfill({ contentType: 'text/javascript', body: `
+        import { state } from './state.js';
+        import { renderAll, refresh } from './render.js';
+        Object.assign(window, { state, renderAll, refresh });
+      ` });
+      if (!['index.html', 'styles.css', 'format.js', 'state.js', 'render.js', 'actions.js'].includes(file)) return route.abort();
+      return route.fulfill({ body: fs.readFileSync(path.join(__dirname, '../tray/ui', file)), contentType: file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' });
+    });
+    await page.goto('http://autotrim.test/');
+    await page.evaluate(() => {
+      const GB = 1024 ** 3, now = Date.now() / 1000;
+      const tabs = Array.from({ length: 80 }, (_, i) => ({ id: i + 1, title: i ? `Project notes ${String(i).padStart(2, '0')}` : 'Roadmap & release planning', url: `https://example.com/projects/roadmap/${i}?view=notes`, site: 'example.com', profile: 'Work', window_id: 2, index: i + 1, idle_secs: (80 - i) * 7200, active: i === 3, pinned: i === 4, kind: 'web' }));
+      const chrome = { name: 'Chrome', tabs, open_profiles: [{ dir: 'Work', label: 'Work profile' }], per_tab_estimate: 100 * 1024 ** 2, can_close_tabs: true, renderer_rss: 8 * GB, renderers: 10, extension_renderers: 1 };
+      const group = { name: 'Chrome', kind: 'app', rss: 9 * GB, cpu: 3, procs: 20, pids: [] };
+      state.snap = { taken_at: now, system: { total_mem: 32 * GB, used_mem: 16 * GB, used_swap: 0, total_swap: GB, uptime_secs: 1000, cpu_pct: 5, load_one: 1, load_five: 1, load_fifteen: 1 }, groups: [group], browsers: [chrome], sessions: [], ports: [], trends: [], advice: [] };
+      state.src = { daemon_running: true, interval_secs: 30, snapshot_taken_at: now };
+      state.view = 'g:Chrome';
+      window.calls = [];
+      window.__TAURI__ = { core: { invoke: async (command, args) => {
+        calls.push({ command, args });
+        return { snapshot: state.snap, source_info: state.src, action_log: [], settings: null, service_info: null }[command];
+      } } };
+      renderAll(true);
+    });
+    const table = page.locator('.resource-table');
+    const rows = table.locator('tbody tr.resource-row');
+    const list = page.locator('.resource-list');
+    assert.equal(await list.locator('.list-inspector').count(), 0);
+    assert.equal(await list.locator('.selection-bar').count(), 0, 'batch actions only appear after selection');
+    assert.equal(await page.locator('.browser-details').evaluate(el => el.open), false);
+    assert.equal(await page.locator('[data-tab-profile]').isVisible(), false);
+    await page.locator('.list-options > summary').click();
+    assert.equal(await page.locator('[data-tab-profile]').isVisible(), true);
+    await page.locator('[data-tab-profile]').selectOption('Work');
+    assert.match(await page.locator('.list-options > summary').textContent(), /Work profile/);
+    await page.locator('.list-options > summary').click();
+    await page.locator('[data-tab-profile]').selectOption('');
+    await page.locator('.list-options > summary').click();
+    await page.locator('[data-tab-sort]').press('Escape');
+    assert.equal(await page.locator('.list-options').evaluate(el => el.open), false);
+
+    assert.match(await rows.first().locator('.row-context').textContent(), /example.com\/projects\/roadmap\/0\?view=notes/);
+    assert.match(await rows.first().locator('.row-context').getAttribute('title'), /Work profile · Window 2 · Tab 1/);
+    assert.equal(await table.locator('.resource-group').count(), 2);
+    assert.match(await table.locator('[data-group="stale"] .metric').textContent(), /≈ 6.6 GiB/);
+    assert.match(await page.locator('.cleanup-summary').textContent(), /67 stale tabs/);
+    assert.match(await page.locator('.cleanup-summary').textContent(), /estimated footprint/);
+    await page.locator('.cleanup-summary button').click();
+    assert.equal(await page.locator('.review-target').count(), 67);
+    assert.equal(await page.locator('[data-review-target="4"], [data-review-target="5"]').count(), 0);
+    await page.locator('#review-cancel').click();
+    await table.locator('[data-list-group-all="stale"]').check();
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 67);
+    await table.locator('[data-list-group="stale"]').click();
+    assert.equal(await rows.count(), 12);
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 0);
+    assert.equal(await table.locator('[data-list-group-all="stale"]').isDisabled(), true);
+    await table.locator('[data-list-all]').check();
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 11);
+    await list.locator('[data-list-review]').click();
+    assert.equal(await page.locator('.review-target').count(), 11);
+    await page.locator('#review-cancel').click();
+    await list.locator('[data-list-clear]').click();
+    await page.evaluate(() => refresh());
+    assert.equal(await table.locator('[data-list-group="stale"]').getAttribute('aria-expanded'), 'false');
+    await table.locator('[data-list-group="recent"]').click();
+    assert.equal(await rows.count(), 0);
+    assert.equal(await table.locator('[data-list-all]').isDisabled(), true);
+    await page.locator('[data-tab-filter]').fill('roadmap/0?');
+    assert.equal(await rows.count(), 1, 'search reveals matching rows even in collapsed groups');
+    assert.equal(await table.locator('.resource-group').count(), 0);
+    assert.match(await page.locator('.cleanup-summary').textContent(), /Review 1 stale tab/);
+    await page.locator('.cleanup-summary button').click();
+    assert.equal(await page.locator('.review-target').count(), 1);
+    await page.locator('#review-cancel').click();
+    await page.locator('[data-tab-filter]').fill('');
+    await table.locator('[data-list-group="stale"]').click();
+    await table.locator('[data-list-group="recent"]').click();
+    await rows.first().locator('.row-title').click();
+    assert.equal(await rows.first().locator('input').isChecked(), true);
+    await rows.nth(5).locator('.row-title').click({ modifiers: ['Shift'] });
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 5, 'range selection skips the pinned tab');
+    await list.locator('[data-list-clear]').click();
+    await rows.first().locator('input').check();
+    await rows.nth(2).locator('input').click({ modifiers: ['Shift'] });
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 3);
+    await table.locator('[data-resource-sort="title"]').click();
+    assert.equal(await table.locator('th[aria-sort="ascending"]').count(), 1);
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 3);
+    await table.locator('[data-resource-sort="title"]').click();
+    assert.equal(await table.locator('th[aria-sort="descending"]').count(), 1);
+    await list.locator('[data-list-clear]').click();
+    await rows.first().locator('.row-title').focus();
+    await page.keyboard.press('Space');
+    assert.equal(await rows.first().locator('input').isChecked(), true);
+    // Clicking close reviews only that row, even with another row selected.
+    const closingName = await rows.nth(1).locator('.row-title').textContent();
+    await rows.nth(1).locator('[data-resource-close]').click();
+    assert.equal(await page.locator('.review-target').count(), 1);
+    assert.match(await page.locator('.review-target').textContent(), new RegExp(closingName));
+    assert.equal(await page.evaluate(() => calls.filter(c => c.command === 'close_tabs').length), 0);
+    await page.locator('#review-cancel').click();
+    await list.locator('[data-list-clear]').click();
+    await table.locator('[data-list-all]').check();
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 78);
+    await list.locator('[data-list-review]').click();
+    assert.equal(await page.locator('.review-target').count(), 78);
+    await page.locator('#review-cancel').click();
+    // Selection and background refresh keep the scrolled row in place.
+    await list.locator('[data-list-clear]').click();
+    await list.locator('.table-scroll').evaluate(el => el.scrollTop = 1600);
+    const before = await list.locator('.table-scroll').evaluate(el => el.scrollTop);
+    await page.evaluate(() => refresh());
+    assert.equal(await list.locator('.table-scroll').evaluate(el => el.scrollTop), before);
+    const visibleRow = rows.nth(25);
+    await visibleRow.locator('.row-title').click();
+    const afterClick = await list.locator('.table-scroll').evaluate(el => el.scrollTop);
+    assert.ok(afterClick > 1000, 'selection must not jump to the start');
+    const bar = await list.locator('.selection-bar').boundingBox();
+    assert.ok(bar.y >= 0 && bar.y + bar.height < 740, 'batch actions stay visible while scrolling rows');
+    await page.locator('[data-tab-filter]').fill('roadmap/25?');
+    assert.equal(await rows.count(), 1);
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 0, 'hidden selections are discarded');
+    await page.locator('[data-tab-filter]').fill('');
+    await page.locator('.list-options > summary').click();
+    await page.locator('[data-tab-sort]').selectOption('idle');
+    for (const colorScheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme });
+      for (const width of [1000, 760, 390]) {
+        await page.setViewportSize({ width, height: 740 });
+        await page.evaluate(() => { document.querySelector('#main').scrollTop = 0; });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await page.screenshot({ path: `/private/tmp/autotrim-resource-${colorScheme}-${width}.png` });
+      }
+    }
+    await page.setViewportSize({ width: 1000, height: 740 });
+    await page.evaluate(() => {
+      const session = (pid, name, rss, activity) => ({ pid, session_name: name, project: '/projects/atlas', host: 'Terminal', kind: 'codex', start_time: pid, rss, idle_secs: pid * 7200, age_secs: 86400, state: activity, threads: [] });
+      state.snap.sessions = [session(1, 'Billing', 3000, 'stale'), session(2, 'Search', 1000, 'stale'), session(3, 'Active work', 2000, 'active')];
+      state.snap.groups.push({ name: 'Codex', kind: 'agent', rss: 6000, cpu: 1, procs: 3, pids: [1, 2, 3] });
+      state.view = 'g:Codex';
+      renderAll(true);
+    });
+    assert.equal(await rows.first().locator('.row-title').textContent(), 'Billing');
+    await table.locator('[data-resource-sort="rss"]').click();
+    assert.equal(await rows.first().locator('.row-title').textContent(), 'Search');
+    await rows.first().locator('.row-title').click();
+    await table.locator('[data-resource-sort="rss"]').click();
+    assert.equal(await rows.first().locator('.row-title').textContent(), 'Billing');
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 1);
+    await table.locator('[data-list-all]').check();
+    assert.equal(await table.locator('tbody tr.resource-row input:checked').count(), 2);
+    await list.locator('[data-list-review]').click();
+    assert.equal(await page.locator('.review-target').count(), 2);
+    assert.doesNotMatch(await page.locator('.review-targets').textContent(), /Active work/);
+    await page.locator('#review-cancel').click();
+    assert.deepEqual(errors, []);
+    console.log('PASS resource lists: row and range selection, sorting, exact close review, protected tabs, scroll preservation, filtering, light/dark and responsive layout');
+  } finally { await browser.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

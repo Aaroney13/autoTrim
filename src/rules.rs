@@ -659,7 +659,7 @@ mod classification_tests {
         assert!(tab_memory_estimate(None, 2).is_none());
         assert!(tab_memory_estimate(Some(0), 2).is_none());
         let text = tab_memory_estimate(Some(1024 * 1024), 3).unwrap();
-        assert!(text.contains("3 MB"));
+        assert!(text.contains("3 MiB"));
         assert!(text.contains("÷ all open tabs × selected tabs"));
         assert!(!text.contains("at least"));
         assert!(text.contains("not measured"));

@@ -148,11 +148,14 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   nothing to open again. macOS only, like the other Apple Event verbs. The
   same checks as `quit`, and the same log entry, with the `open` command.
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
-  menu bar item showing free memory, with a menu that carries the summary
+  menu bar item showing the percentage of RAM used, with a menu that carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".
-  The header is one physical-memory bar (used, with compressed as a second
-  shade), a separate swap-on-disk figure, the CPU figure, and the age of the
-  numbers with a ring that fills toward the daemon's next snapshot. The
+  The header is a compact single line with physical memory used/total, a
+  small bar (compressed memory in a second shade), swap on disk, and CPU.
+  Clicking RAM used opens the compressed/remaining breakdown (remaining includes cache); its open state
+  survives refreshes. The snapshot age updates every second beside an
+  icon-only refresh button, which spins during a scan. Sampling cadence
+  stays in the age tooltip. The header wraps on narrow windows. The
   sidebar lists everything holding memory, largest first, with a count of
   what each contains (sessions, tabs, processes). Click one for the
   detail: an agent's searchable sessions with state filters and expandable
@@ -186,11 +189,28 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   Other recovery hints stay intact. Tab memory is always labeled as estimated; memory
   held before an action is never described as measured savings. Other
   app and service actions retain their two-click confirmation. Server stopping
-  uses the same target review dialog, with one entry per process. Sessions,
-  tabs, sites, ports, and trends use compact lists with a details pane; stale
+  uses the same target review dialog, with one entry per process. Sessions and
+  tabs use full-width tables with memory, activity, and inline close controls.
+  Clicking a row toggles its checkbox; Shift-click selects a range while skipping
+  protected rows. Batch actions stay above the scrollable table, and column
+  headers sort in either direction. Tabs show the URL path plus profile and
+  window context; their memory is an equal per-tab estimate, so it is not a
+  sortable measurement. When sorted by last viewed, the unfiltered list groups
+  tabs into Stale, Recent, and Not viewed, with estimated group totals and
+  group checkboxes. Collapsing a group clears its selection; select-all and
+  range selection apply only to expanded rows. Search, state filters, and
+  other sort modes show flat results. Collapse state and table scroll survive
+  background refresh. The stale cleanup summary follows search/profile/state
+  filters and reviews only eligible tabs; it describes estimated footprint,
+  not guaranteed RAM savings. The browser view has one search/filter toolbar;
+  profile and ordering controls live in View options. Bulk controls appear only
+  after selection. Each tab uses two lines (title and URL), with profile/window
+  context in the URL tooltip. Additional site, memory, and app actions are
+  under Browser details & actions. Sidebar bars compare each app's footprint with
+  the largest holder, rather than physical RAM.
+  Sites, ports, tasks, and trends keep compact lists with a details pane; stale
   rows show a small idle duration next to the status dot. Clicking anywhere
-  on a row opens its details, including the subtitle, metric, and padding;
-  checkboxes select independently. The title remains a keyboard-operable
+  on those rows opens details; checkboxes select independently. The title remains a keyboard-operable
   button. The selected fill covers every cell and takes precedence over
   hover and focus styling. A background refresh waits for an active pointer
   press to finish so it cannot remove the control before its click fires.
@@ -272,6 +292,15 @@ Strongest evidence first:
 5. **A one-shot scan of an agent with no transcript** falls back to age plus
    a quiet sample, which is the weakest signal here and is labelled as such
    in the JSON (no `idle_secs`, no `quiet_for_secs`).
+
+## Notifications on macOS
+
+macOS notifications explicitly initialize the sender as `com.autotrim.tray`
+when the app is installed (or `com.apple.Terminal` for CLI-only installs).
+Initialization is cached, including failures, before any delivery. This avoids
+the notification library's AppleScript lookup of the placeholder `use_default`,
+which otherwise opens a “Choose Application” dialog. A failed sender setup is
+reported as a notification error rather than falling through to that lookup.
 
 ## What is measured
 
@@ -451,6 +480,10 @@ signed sidecar, so the app and monitor ship together. After an app version
 change, an existing login service is rebound to that daemon; a disabled
 service stays disabled. The source installer links its PATH command to the
 bundled CLI. Development and CLI-only builds retain manual upgrades.
+Pushes to main assign a new patch version in CI, build a universal app, verify
+the uploaded update feed and archive signatures for both Mac architectures,
+and publish the complete release automatically. Builds superseded by a newer
+main commit remain drafts so they cannot replace the current update feed.
 See [releases.md](releases.md) for bootstrap, signing, and publishing.
 
 
@@ -537,3 +570,87 @@ the session gone.
 fixture, run `python3 tests/preview-tray.py` and open localhost:8766; that server
 injects fake IPC into the production modules and refuses unsupported commands.
 It cannot close real sessions, tabs, or apps.
+
+## Experimental Codex desktop bridge
+
+`experiments/codex-bridge` contains an opt-in macOS transport prototype, separate
+from the shipped daemon and tray. A per-launch `CODEX_CLI_PATH` override starts
+the installed Codex backend on a private Unix socket, while forwarding desktop
+stdio messages over a WebSocket connection. A second local client can inspect
+that same backend. CLI arguments, environment and non-app-server invocations
+are preserved; no model calls or automatic cleanup are introduced.
+
+Thirteen protocol, launcher and isolated backend tests cover argument forwarding, individual
+task archive/restore, notifications to the desktop connection, read-only status,
+message bounds/fragmentation, and EOF/signal/backend-failure shutdown. The trial
+launcher verifies desktop initialization and a second connection, and restores
+normal app startup if verification fails. Desktop workflow compatibility still
+needs testing; this is not a native automatic archive rule. See the
+[prototype instructions](../experiments/codex-bridge/README.md) and
+[research](codex-desktop-control-research.md).
+
+
+## First-run setup
+
+The tray opens its window while `onboarding_completed` is false, even if
+`open_window_at_launch` is false. A four-step modal loads settings independently
+of the first snapshot: welcome with Continue free (Enter, no account required)
+and an optional Sign up / log in button for future paid features,
+interests, idle thresholds and notifications, then startup. Drafts stay in memory
+while moving Back/Continue or while snapshots refresh. Cancel/Set up later leaves
+setup incomplete; the next app launch offers it again. Settings → Review setup
+reopens the preferences with saved values. The account button currently explains
+that sign-up/login is coming soon; it does not authenticate, grant paid access,
+or block free setup.
+
+`focus_areas` contains browser, agent, and/or app categories. Matching holders
+appear first in the sidebar, ordered by memory within each priority group;
+all holders remain visible. This is presentation priority, not a collection
+filter. Session/tab thresholds and notifications use their existing config keys.
+Setup preserves existing auto mode settings and never enables cleanup itself.
+
+Always on installs the existing daemon login service now and at every login;
+manual removes that service. The menu bar app itself is still opened from
+Applications. The dashboard-at-launch checkbox is independent. Unsupported
+platforms offer manual only. Fresh source installs with an app defer service
+installation to setup; CLI-only installs keep their existing service behavior,
+and app upgrades rebind only a service that already exists.
+
+The native command validates categories and finite positive hour ranges before
+writing through `Config::set_values`. It refuses an unreadable config, saves
+preferences before starting the service, and records completion only after the
+service change succeeds. Service failures retain the wizard and explain that
+preferences were saved; the user can retry or select manual. Browser tests use
+synthetic IPC to cover first run, free entry by button and keyboard, the optional account placeholder,
+validation, draft preservation,
+failed saves, completion across reloads, unsupported platforms, and reopening
+from Settings without touching the real config or login service.
+
+## Memory accounting and cleanup observations
+
+The menu bar percentage and dashboard both use physical `used_mem / total_mem`.
+The legacy macOS `free_pct` field remains in snapshots/history for compatibility
+but is not shown as unused RAM: it is a different OS availability counter.
+Byte formatting uses binary units (KiB, MiB, GiB) consistently in the app and CLI.
+
+Holder totals aggregate processes, including helpers and agent session trees.
+On macOS these use `phys_footprint`, which includes compressed/swapped allocations
+at their original size; they are not physical RAM occupied or guaranteed savings.
+Compare the same set of processes in Activity Monitor, at the same sample time.
+The daemon normally samples every 30 seconds; refresh requests a fresh sample.
+Tab figures remain renderer memory divided by all tabs, not per-tab measurements.
+
+New executed actions record optional `memory_observation` counters for whole-machine
+RAM used and swap used before execution and one second after completion, with
+millisecond timestamps. Completion is journaled before waiting for the follow-up
+sample. The observation updates that same action ID, so journal readers still
+return one result. A tab batch samples once and attaches its observation only to
+the last attempted tab; `attempted_actions` includes failures and partial results,
+not skipped targets. Previews/skips and unavailable samples have no observation.
+Existing history remains readable and does not receive invented measurements.
+
+These signed changes can be positive, negative, or zero. Other apps, compression,
+swap, concurrent cleanup, and a restarted app still loading affect the result.
+The app and CLI label this as an observed whole-machine change, not attributed
+savings; overlapping observations must not be added together. Observation write
+failures report that the action completed, while retaining the earlier completion.

@@ -145,6 +145,31 @@ const uiDir = path.join(__dirname, '../tray/ui');
     await check('managed rows inspect without selectable or destructive controls',async()=>{
       await go('ports');const row=page.locator('tbody tr').nth(2);await row.locator('.row-context').click();assert.equal(await page.locator('.list-inspector h3').textContent(),'Managed service');assert.equal(await row.locator('input').count(),0);assert.equal(await page.locator('.inspector-actions button').isDisabled(),true);
     });
+    await check('memory breakdown and observed action changes fit desktop and narrow windows', async () => {
+      await page.evaluate(() => {
+        window.getSelection().removeAllRanges();
+        Object.assign(state.snap.system, { os:'macOS fixture', total_mem:16*GB, used_mem:14*GB, compressed:6*GB, wired:3*GB, free_pct:35 });
+        state.log = [{ ts:epochNow(), pid:0, mode:'manual', action:'close_tab', status:'success', target:'Fixture browser tab', result:'closed', rss:GB,
+          memory_observation: { before:{taken_at_ms:1000,used_mem:14*GB,used_swap:GB}, after:{taken_at_ms:2500,used_mem:13.8*GB,used_swap:GB+1024**2}, tab_batch:true, attempted_actions:5 } }];
+        state.view = 'actions'; renderAll(true);
+      });
+      for (const width of [1000, 390]) {
+        await page.setViewportSize({width,height:740});
+        await page.locator('#memory-summary').click();
+        assert.equal(await page.locator('#memory-details').getAttribute('open'), '');
+        assert.match(await page.locator('.memory-detail').textContent(), /outside used \(includes cache\)/);
+        assert.doesNotMatch(await page.locator('#head').textContent(), /35%|free|unused/);
+        assert.match(await page.locator('.memory-observation').textContent(), /batch of 5 tab attempts/);
+        assert.match(await page.locator('.memory-observation').textContent(), /\+1 MiB/);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+        assert.equal(overflow, false, `page overflow at ${width}px`);
+        const box = await page.locator('.memory-detail').boundingBox();
+        assert.ok(box.x >= 0 && box.x + box.width <= width, 'memory breakdown stays in viewport');
+        await page.screenshot({path:`/private/tmp/autotrim-memory-${width}.png`});
+        await page.locator('#memory-summary').press('Escape');
+        assert.equal(await page.locator('#memory-details').getAttribute('open'), null);
+      }
+    });
     console.log(`${passed} passed; ${failures.length} failed`);assert.deepEqual(failures,[]);
   } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
