@@ -27,7 +27,7 @@ export function setVersion(root, version) {
   const lockPath = new URL('Cargo.lock', root);
   let lock = readFileSync(lockPath, 'utf8');
   for (const name of ['autotrim', 'autotrim-tray']) {
-    const pattern = new RegExp(`(name = "${name}"\nversion = ")[^"]+(")`);
+    const pattern = new RegExp(`(name = "${name}"\r?\nversion = ")[^"]+(")`);
     assert.match(lock, pattern, `Missing ${name} in Cargo.lock`);
     lock = lock.replace(pattern, (_, before, after) => `${before}${version}${after}`);
   }

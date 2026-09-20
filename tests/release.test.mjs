@@ -16,26 +16,29 @@ test('every main build upgrades the source version and all previous app releases
   assert.throws(() => nextVersion('0.2.0-beta', []));
 });
 
-test('the app, daemon, and lockfile receive the same version without changing dependencies', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'autotrim-release-'));
-  try {
-    mkdirSync(join(dir, 'tray'));
-    for (const file of ['Cargo.toml', 'tray/Cargo.toml', 'Cargo.lock', 'tray/tauri.conf.json']) {
-      writeFileSync(join(dir, file), readFileSync(new URL(`../${file}`, import.meta.url)));
-    }
-    const before = readFileSync(join(dir, 'Cargo.lock'), 'utf8');
-    setVersion(pathToFileURL(`${dir}/`), '0.2.42');
-    for (const file of ['Cargo.toml', 'tray/Cargo.toml']) {
-      assert.match(readFileSync(join(dir, file), 'utf8'), /^version = "0.2.42"/m);
-    }
-    assert.equal(JSON.parse(readFileSync(join(dir, 'tray/tauri.conf.json'))).version, '0.2.42');
-    const normalize = s => s.replace(/(name = "autotrim(?:-tray)?"\nversion = ")[^"]+/g, '$1VERSION');
-    const after = readFileSync(join(dir, 'Cargo.lock'), 'utf8');
-    assert.equal(normalize(after), normalize(before));
-    assert.match(after, /name = "autotrim"\nversion = "0.2.42"/);
-    assert.match(after, /name = "autotrim-tray"\nversion = "0.2.42"/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
+for (const [label, newline] of [['LF', '\n'], ['CRLF', '\r\n']]) {
+  test(`the app, daemon, and lockfile receive the same version without changing dependencies (${label})`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'autotrim-release-'));
+    try {
+      mkdirSync(join(dir, 'tray'));
+      for (const file of ['Cargo.toml', 'tray/Cargo.toml', 'Cargo.lock', 'tray/tauri.conf.json']) {
+        const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+        writeFileSync(join(dir, file), source.replace(/\r?\n/g, newline));
+      }
+      const before = readFileSync(join(dir, 'Cargo.lock'), 'utf8');
+      setVersion(pathToFileURL(`${dir}/`), '0.2.42');
+      for (const file of ['Cargo.toml', 'tray/Cargo.toml']) {
+        assert.match(readFileSync(join(dir, file), 'utf8'), /^version = "0.2.42"/m);
+      }
+      assert.equal(JSON.parse(readFileSync(join(dir, 'tray/tauri.conf.json'))).version, '0.2.42');
+      const normalize = s => s.replace(/(name = "autotrim(?:-tray)?"\r?\nversion = ")[^"]+/g, '$1VERSION');
+      const after = readFileSync(join(dir, 'Cargo.lock'), 'utf8');
+      assert.equal(normalize(after), normalize(before));
+      assert.match(after, /name = "autotrim"\r?\nversion = "0.2.42"/);
+      assert.match(after, /name = "autotrim-tray"\r?\nversion = "0.2.42"/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
 
 function fixture() {
   const archive = { name: 'autoTrim.app.tar.gz', size: 100, url: 'https://api.github.com/repos/Aaroney13/autoTrim/releases/assets/123', browser_download_url: 'https://github.com/Aaroney13/autoTrim/releases/download/v0.2.1/autoTrim.app.tar.gz' };
