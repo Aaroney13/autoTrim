@@ -16,6 +16,10 @@ jobs:
   build:
     if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      release-id: ${{ steps.release.outputs.releaseId }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,6 +77,7 @@ jobs:
                   output.write(f'{name}<<{delimiter}\n{value}\n{delimiter}\n')
           PYENV
       - uses: tauri-apps/tauri-action@v1
+        id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -92,28 +97,80 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_ID: ${{ steps.release.outputs.releaseId }}
         run: |
           mkdir -p release-check
-          gh release download "$RELEASE_TAG" --dir release-check --pattern latest.json --pattern '*.app.tar.gz'
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > release-check/release.json
+          gh release download "$RELEASE_TAG" --dir release-check --pattern latest.json --pattern '*.app.tar.gz' --pattern '*.dmg'
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release-check/release.json
           node scripts/verify-update.mjs release-check "$RELEASE_VERSION"
           tar -xzf release-check/*.app.tar.gz -C release-check
           lipo release-check/autoTrim.app/Contents/MacOS/autotrim-tray -verify_arch arm64 x86_64
           lipo release-check/autoTrim.app/Contents/MacOS/autotrim -verify_arch arm64 x86_64
           test "$(release-check/autoTrim.app/Contents/MacOS/autotrim --version)" = "autotrim $RELEASE_VERSION"
-      - name: Publish the complete update
+          (cd release-check && shasum -a 256 latest.json *.app.tar.gz *.dmg > SHA256SUMS)
+      - name: Save verified release checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-release
+          path: release-check/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+      - name: Summarize release awaiting approval
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_SHA: ${{ github.sha }}
         run: |
-          # A newer main push will have its own run. Never promote stale code.
-          if [ "$(gh api repos/$GITHUB_REPOSITORY/commits/main --jq .sha)" != "$RELEASE_SHA" ]; then
-            echo 'A newer commit is on main; leaving this build as a draft.'
+          printf '### Ready for release approval\n\nVersion: `%s`\n\nCommit: `%s`\n\nReview the draft on the [Releases page](https://github.com/%s/releases), then approve the **production** deployment on this workflow run.\n' \
+            "$RELEASE_TAG" "$GITHUB_SHA" "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Approve and publish app update
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://github.com/${{ github.repository }}/releases
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      RELEASE_ID: ${{ needs.build.outputs.release-id }}
+      RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - name: Check whether main has advanced while awaiting approval
+        id: current
+        run: |
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" = "$RELEASE_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'A newer commit is on main; leaving this build as a draft.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Download verified release checksums
+        if: steps.current.outputs.current == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-release
+          path: release-check
+      - name: Publish the approved, unchanged update
+        if: steps.current.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          # Re-download after approval: the draft may have waited for days.
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release-check/release.json
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$RELEASE_SHA" \
+            '.draft == true and .tag_name == $tag and .target_commitish == $sha' release-check/release.json
+          gh release download "$RELEASE_TAG" --dir release-check --pattern latest.json --pattern '*.app.tar.gz' --pattern '*.dmg'
+          (cd release-check && sha256sum --check SHA256SUMS)
+          # Check again immediately before promotion, after the downloads.
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" != "$RELEASE_SHA" ]; then
+            echo 'A newer commit is on main; leaving this build as a draft.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false -f make_latest=true --silent
           curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
             "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/latest.json" \
             --output release-check/public-latest.json
           cmp release-check/latest.json release-check/public-latest.json
+          printf 'Published [%s](https://github.com/%s/releases/tag/%s) after production approval.\n' \
+            "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"

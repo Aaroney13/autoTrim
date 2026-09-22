@@ -5,8 +5,21 @@ For standalone CLI archives and installation without Rust, see
 the app's `vVERSION` tags.
 
 The macOS app workflow is `.github/workflows/release.yml`. Every push to `main`
-(or a manual workflow run on `main`) builds and publishes an update automatically.
-No version-bump commit, manual tag, or draft-publishing step is needed.
+(or a manual workflow run on `main`) builds and verifies a draft automatically.
+Publishing waits for one approval from **Aaroney13** or **aleemv1** through the
+GitHub **production** environment. After approval the workflow publishes the
+release and makes it available to the app updater automatically. No version-bump
+commit, manual tag, or manual draft-publishing step is needed.
+
+To approve, open **Actions → Release macOS app → the run → Review deployments**,
+select **production**, and choose **Approve and deploy**. Either listed reviewer
+can approve, including the person who pushed the change. Rejecting leaves the
+release unpublished. Environment protection is configured in **Settings →
+Environments → production**, with only the `main` branch allowed and administrator
+bypass disabled. Add future reviewers there (GitHub allows up to six users/teams);
+adding a repository collaborator does not automatically add an environment reviewer.
+These settings live in GitHub, not in this workflow file. If recreating the setup,
+configure the environment and required reviewers before enabling the workflow.
 
 `scripts/prepare-release.mjs` chooses the next patch version above both the
 source version and existing stable app tags/releases, including failed drafts.
@@ -20,11 +33,14 @@ consistency, then builds a universal app containing the daemon. It uploads to a
 draft first, downloads the uploaded updater feed/archive, and verifies that both
 Mac architectures have a matching version, uploaded archive, and valid signature
 against the app's existing public key. It also checks both binaries are universal
-and smoke-tests the bundled CLI version. Only then does it publish and mark the
-release latest, and check that the public update feed matches the verified one.
+and smoke-tests the bundled CLI version. The run records checksums for the
+verified feed, updater archive, and DMG before requesting approval. After approval, a separate publish job downloads the draft
+again, confirms its source commit and checksums, then publishes it as latest and
+checks that the public update feed matches the verified one.
 
-Release runs are serialized. If a newer commit arrives on `main` during a build,
-the old build stays a draft and the queued newest build supplies the update.
+Release runs are serialized. If a newer commit arrives on `main` during a build
+or while awaiting approval, the old build stays a draft and the queued newest build supplies the next candidate.
+Approve/reject or cancel an older waiting run to let the next queued run proceed.
 GitHub may coalesce intermediate pending pushes. Failed runs leave the previous
 published update available; fix the failure and push again or rerun on `main`.
 Do not manually publish incomplete drafts or mark CLI releases as latest: the
