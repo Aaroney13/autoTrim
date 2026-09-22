@@ -200,7 +200,12 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   nothing to open again. macOS only, like the other Apple Event verbs. The
   same checks as `quit`, and the same log entry, with the `open` command.
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
-  menu bar item showing the percentage of RAM used, with a menu that carries the summary
+  menu bar item showing the percentage of RAM used beside a twelve-segment
+  circular dial that fills clockwise from twelve o'clock using the same
+  used/total values. The last active segment fills proportionally; unused
+  segments stay faint. The dial refreshes with the label and adapts to light
+  and dark menu bars; before a sample is available all segments are faint.
+  Its menu carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".
   The header is a compact single line with physical memory used/total, a
   small bar (compressed memory in a second shade), swap on disk, and CPU.
