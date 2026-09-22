@@ -615,8 +615,30 @@ wins over older daemon snapshots, including equal-second timestamps. Log-read
 failures preserve the last action view, and partial process results never mark
 the session gone.
 
+The dashboard and native window use dark appearance regardless of the system
+appearance. The Grouped work design uses graphite surfaces, quiet blue selection,
+compact secondary controls, and one main content column. Overview puts a compact workload summary
+above full-width recommendations, with the footprint breakdown collapsed below.
+Settings follows a vertical sequence of sections with a readable maximum width.
+Browser tabs group by website; agent sessions and loaded tasks group by full
+project path, with short labels where unambiguous. Groups collapse independently.
+Search opens from the heading, reveals matching collapsed groups, and restores
+their previous state when cleared. Activity filtering is a single dropdown;
+profile, sorting, and batch selection live in the heading's options menu.
+Checkboxes (including Shift-click ranges) select eligible visible items. Collapsing
+or filtering away rows clears their selection. Titles and info buttons open inline
+details; close actions still go through the existing frozen-target review.
+Loaded tasks cannot be selected or closed individually and never receive a share
+of backend memory. Task transcript timestamps are not classified as session
+activity; the session filters apply only to sessions. Shared backend totals remain
+in a separate disclosure. Ports, site summaries, and trends keep inline details.
+All disclosure, focus, and selection state survives snapshot refreshes for the
+same item; missing items are discarded.
+
 App names in the sidebar and detail headings show local macOS application icons.
-The tray resolves them through Launch Services and renders 64-pixel PNGs; the
+Sidebar icons are 30 pixels, with a subtle footprint number and no per-app bar.
+Claude Code and Codex use local fallback marks when native icons are unavailable.
+The tray resolves native icons through Launch Services and renders 64-pixel PNGs; the
 window caches both icons and missing results, loading them after the snapshot
 without blocking the list. Missing apps, bare processes, and other platforms use
 the existing category symbols. No icon requests leave the machine, and icon
@@ -685,6 +707,11 @@ from Settings without touching the real config or login service.
 ## Memory accounting and cleanup observations
 
 The menu bar percentage and dashboard both use physical `used_mem / total_mem`.
+The header labels both amounts as RAM used / installed RAM and labels swap as disk
+usage excluded from RAM used. The sidebar uses a compact Apps / Footprint heading;
+its tooltip explains footprints and compressed/swapped allocations. The optional
+footprint mix bar scales to the displayed sum of all
+holders. Neither uses installed RAM as its denominator.
 The legacy macOS `free_pct` field remains in snapshots/history for compatibility
 but is not shown as unused RAM: it is a different OS availability counter.
 Byte formatting uses binary units (KiB, MiB, GiB) consistently in the app and CLI.

@@ -15,6 +15,7 @@ const uiDir = path.join(__dirname, '../tray/ui');
     const files = new Set(['index.html', 'styles.css', 'format.js', 'state.js', 'actions.js', 'render.js']);
     await page.route('**/*', route => {
       const file = new URL(route.request().url()).pathname.slice(1) || 'index.html';
+      if (file === 'logo.png') return route.fulfill({path:path.join(__dirname, '../tray/ui/logo.png'),contentType:'image/png'});
       if (file === 'main.js') return route.fulfill({contentType:'text/javascript',body:`
         import { GB, epochNow } from './format.js';
         import { state } from './state.js';
@@ -73,9 +74,62 @@ const uiDir = path.join(__dirname, '../tray/ui');
     });
     async function check(name, run) { try { await run(); passed++; console.log('PASS',name); } catch(e) {failures.push(name); console.log('FAIL',name,e.message);} }
     async function go(view) { await page.evaluate(view=>navigate(view),view); }
+    async function openFirstRow() {
+      const button = page.locator('tbody tr.compact-row').first().locator('.row-title');
+      if (await button.getAttribute('aria-expanded') !== 'true') await button.click();
+    }
     async function selectedFill(row) {
       return row.evaluate(row=>{const probe=document.createElement('span');probe.style.backgroundColor='var(--sel)';row.append(probe);const wanted=getComputedStyle(probe).backgroundColor;probe.remove();return [...row.cells].every(cell=>getComputedStyle(cell).backgroundColor===wanted);});
     }
+    await check('inline details start closed, toggle by keyboard, and survive refresh without changing selection', async () => {
+      await go('ports');
+      assert.equal(await page.locator('.list-inspector').count(), 0);
+      const row = page.locator('.compact-row').first();
+      const button = row.locator('.row-title');
+      await row.locator('input').check();
+      assert.equal(await page.locator('.list-inspector').count(), 0);
+      await button.focus(); await page.keyboard.press('Enter');
+      assert.equal(await button.getAttribute('aria-expanded'), 'true');
+      assert.equal(await row.evaluate(el => el.nextElementSibling.classList.contains('compact-detail')), true);
+      await page.evaluate(() => refresh());
+      assert.equal(await button.getAttribute('aria-expanded'), 'true');
+      assert.equal(await row.locator('input').isChecked(), true);
+      await page.locator('.inspector-actions button').click();
+      assert.equal(await page.locator('#action-review').evaluate(el => el.open), true);
+      await page.locator('#review-cancel').click();
+      await button.focus(); await page.keyboard.press('Space');
+      assert.equal(await button.getAttribute('aria-expanded'), 'false');
+      assert.equal(await page.locator('.list-inspector').count(), 0);
+      assert.equal(await row.locator('input').isChecked(), true);
+      await page.evaluate(() => refresh());
+      assert.equal(await page.locator('.list-inspector').count(), 0);
+      await row.locator('input').uncheck();
+    });
+    await check('single-column views fit wide and narrow windows in light and dark mode', async () => {
+      for (const colorScheme of ['light', 'dark']) {
+        await page.emulateMedia({colorScheme});
+        for (const width of [1200, 1000, 760, 390]) {
+          await page.setViewportSize({width, height:740});
+          for (const view of ['overview', 'ports', 'settings']) {
+            await go(view);
+            if (view === 'ports') await openFirstRow();
+            if (view === 'settings') {
+              const cards = page.locator('.settings-card');
+              const first = await cards.nth(0).boundingBox(), second = await cards.nth(1).boundingBox();
+              assert.ok(second.y >= first.y + first.height, 'settings sections stack');
+            }
+            const overflows = await page.locator('#main').evaluate(el => el.scrollWidth > el.clientWidth);
+            assert.equal(overflows, false, `${view} overflows at ${width}px`);
+            if (view === 'ports') {
+              const table = await page.locator('.compact-table').boundingBox(), detail = await page.locator('.compact-detail').boundingBox();
+              assert.ok(Math.abs(table.width - detail.width) < 1, 'details use the table width');
+            }
+            await page.evaluate(() => document.querySelector('#main').scrollTop = 0);
+            await page.screenshot({path:`/private/tmp/autotrim-layout-${view}-${colorScheme}-${width}.png`});
+          }
+        }
+      }
+    });
     for (const colorScheme of ['light','dark']) {
       await page.emulateMedia({colorScheme});
       for (const width of [1000,760]) {
@@ -83,8 +137,8 @@ const uiDir = path.join(__dirname, '../tray/ui');
         await go('overview');
         for (const area of ['.row-context','.metric','blank']) {
           await check(`${colorScheme} ${width}px Overview ${area} selects and fills whole row`,async()=>{
-            await page.locator('tbody tr').first().locator('.row-title').click();
-            const row=page.locator('tbody tr').nth(1);
+            await openFirstRow();
+            const row=page.locator('tbody tr.compact-row').nth(1);
             if(area==='blank'){const cell=row.locator('td').first();const b=await cell.boundingBox();await cell.click({position:{x:b.width-10,y:b.height-4}});}else await row.locator(area).click();
             assert.equal(await page.locator('.list-inspector h3').textContent(),'Codex sessions');
             assert.equal(await selectedFill(row),true,'selected fill must win over hover/focus on every cell');
@@ -95,13 +149,14 @@ const uiDir = path.join(__dirname, '../tray/ui');
       await page.setViewportSize({width:1000,height:740});
       await go('ports');
       await check(`${colorScheme} checkbox selection keeps full fill while focused`,async()=>{
-        const row=page.locator('tbody tr').nth(1); await row.locator('input').check();
+        await openFirstRow();
+        const row=page.locator('tbody tr.compact-row').nth(1); await row.locator('input').check();
         assert.equal(await page.locator('.list-inspector h3').textContent(),'Frontend server');
         assert.equal(await selectedFill(row),true);
         await row.locator('input').uncheck();
       });
       for (const key of ['Enter','Space']) await check(`${colorScheme} ${key} selects and fills row`,async()=>{
-        await page.locator('tbody tr').first().locator('.row-title').click();const row=page.locator('tbody tr').nth(1);
+        await openFirstRow();const row=page.locator('tbody tr.compact-row').nth(1);
         await row.locator('.row-title').focus();await page.keyboard.press(key);
         assert.equal(await page.locator('.list-inspector h3').textContent(),'API server');assert.equal(await selectedFill(row),true);
       });
@@ -115,27 +170,27 @@ const uiDir = path.join(__dirname, '../tray/ui');
     });
     for (const target of ['.row-context','.metric','input']) await check(`row ${target} click survives actual background refresh`,async()=>{
       await go('ports');
-      await page.locator('tbody tr').first().locator('.row-title').click();
-      const row=page.locator('tbody tr').nth(1), b=await row.locator(target).boundingBox();await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down();
+      await openFirstRow();
+      const row=page.locator('tbody tr.compact-row').nth(1), b=await row.locator(target).boundingBox();await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down();
       await page.evaluate(()=>refresh());await page.mouse.up();await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,30)));
       if(target==='input'){assert.equal(await row.locator('input').isChecked(),true);assert.equal(await page.locator('.list-inspector h3').textContent(),'Frontend server');}
       else assert.equal(await page.locator('.list-inspector h3').textContent(),'API server');
     });
     for (const target of ['.row-title','input']) await check(`${target} keeps keyboard focus when the web view does not focus mouse clicks`,async()=>{
-      await go('ports');await page.locator('tbody tr').nth(1).locator('input').uncheck();
-      await page.locator('tbody tr').first().locator('.row-title').click();
+      await go('ports');await page.locator('tbody tr.compact-row').nth(1).locator('input').uncheck();
+      await openFirstRow();
       await page.evaluate(()=>document.addEventListener('mousedown',event=>event.preventDefault(),{once:true}));
-      const control=page.locator('tbody tr').nth(1).locator(target);await control.click();
+      const control=page.locator('tbody tr.compact-row').nth(1).locator(target);await control.click();
       assert.equal(await control.evaluate(el=>el===document.activeElement),true);
       if(target==='input'){assert.equal(await control.isChecked(),true);await page.keyboard.press('Space');assert.equal(await control.isChecked(),false);}
     });
     for (const target of ['.row-title','.metric','.row-context','input','all']) await check(`${target} mouse focus has no outline; keyboard focus remains visible across refresh`,async()=>{
       await go('ports');
-      await page.locator('tbody tr').first().locator('.row-title').focus();
+      await page.locator('tbody tr.compact-row').first().locator('.row-title').focus();
       await page.keyboard.press('Tab');
       // macOS WebKit leaves mouse focus to our handler. Preserve that condition here.
       await page.evaluate(()=>document.addEventListener('mousedown',event=>event.preventDefault(),{once:true}));
-      const row=page.locator('tbody tr').nth(1);
+      const row=page.locator('tbody tr.compact-row').nth(1);
       await (target==='all'?page.locator('[data-list-all]'):row.locator(target)).click();
       const focused=target==='all'?page.locator('[data-list-all]'):row.locator(target==='input'?'input':'.row-title');
       const outline=()=>focused.evaluate(el=>getComputedStyle(el).outlineStyle);
@@ -151,36 +206,36 @@ const uiDir = path.join(__dirname, '../tray/ui');
       await page.locator('[data-list-all]').uncheck();
     });
     for(const event of ['pointercancel','blur']) await check(`${event} releases deferred refresh`,async()=>{
-      await go('ports'); await page.locator('tbody tr').nth(1).locator('.row-title').hover();await page.mouse.down();
-      const oldLabel = await page.locator('tbody tr').first().locator('.row-title').textContent();
+      await go('ports'); await page.locator('tbody tr.compact-row').nth(1).locator('.row-title').hover();await page.mouse.down();
+      const oldLabel = await page.locator('tbody tr.compact-row').first().locator('.row-title').textContent();
       await page.evaluate(event=>{state.snap.ports[0].label='Updated '+event;return refresh();},event);
-      assert.equal(await page.locator('tbody tr').first().locator('.row-title').textContent(),oldLabel,'refresh waits until the active press finishes');
+      assert.equal(await page.locator('tbody tr.compact-row').first().locator('.row-title').textContent(),oldLabel,'refresh waits until the active press finishes');
       await page.evaluate(event=>event==='blur'?window.dispatchEvent(new Event('blur')):document.dispatchEvent(new PointerEvent('pointercancel',{isPrimary:true})),event);
       await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,30)));await page.mouse.up();
-      assert.equal(await page.locator('tbody tr').first().locator('.row-title').textContent(),'Updated '+event);
+      assert.equal(await page.locator('tbody tr.compact-row').first().locator('.row-title').textContent(),'Updated '+event);
     });
     await check('releasing chorded mouse buttons does not freeze refresh',async()=>{
-      await go('ports'); await page.locator('tbody tr').nth(1).locator('.row-title').hover();
+      await go('ports'); await page.locator('tbody tr.compact-row').nth(1).locator('.row-title').hover();
       await page.mouse.down({button:'left'}); await page.mouse.down({button:'right'});
       await page.evaluate(()=>{state.snap.ports[0].label='Updated after chord';return refresh();});
       await page.mouse.up({button:'left'}); await page.mouse.up({button:'right'});
       await page.evaluate(()=>{state.snap.ports[0].label='Updated after release';return refresh();});
       await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,30)));
-      assert.equal(await page.locator('tbody tr').first().locator('.row-title').textContent(),'Updated after release');
+      assert.equal(await page.locator('tbody tr.compact-row').first().locator('.row-title').textContent(),'Updated after release');
     });
     await check('dragging row text preserves the selection instead of inspecting',async()=>{
-      await go('ports'); await page.locator('tbody tr').first().locator('.row-title').click();
-      const b=await page.locator('tbody tr').nth(1).locator('.row-context').boundingBox();
+      await go('ports'); await openFirstRow();
+      const b=await page.locator('tbody tr.compact-row').nth(1).locator('.row-context').boundingBox();
       await page.mouse.move(b.x+1,b.y+b.height/2);await page.mouse.down();
       await page.mouse.move(b.x+b.width-1,b.y+b.height/2,{steps:10});
       await page.evaluate(()=>refresh());await page.mouse.up();await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,30)));
       assert.match(await page.evaluate(()=>window.getSelection().toString()),/Terminal/);
       assert.equal(await page.locator('.list-inspector h3').textContent(),'Updated after release');
-      await page.locator('tbody tr').nth(1).locator('.metric').click();
+      await page.locator('tbody tr.compact-row').nth(1).locator('.metric').click();
       assert.equal(await page.locator('.list-inspector h3').textContent(),'API server');
     });
     await check('managed rows inspect without selectable or destructive controls',async()=>{
-      await go('ports');const row=page.locator('tbody tr').nth(2);await row.locator('.row-context').click();assert.equal(await page.locator('.list-inspector h3').textContent(),'Managed service');assert.equal(await row.locator('input').count(),0);assert.equal(await page.locator('.inspector-actions button').isDisabled(),true);
+      await go('ports');const row=page.locator('tbody tr.compact-row').nth(2);await row.locator('.row-context').click();assert.equal(await page.locator('.list-inspector h3').textContent(),'Managed service');assert.equal(await row.locator('input').count(),0);assert.equal(await page.locator('.inspector-actions button').isDisabled(),true);
     });
     await check('memory breakdown and observed action changes fit desktop and narrow windows', async () => {
       await page.evaluate(() => {
@@ -252,7 +307,7 @@ const uiDir = path.join(__dirname, '../tray/ui');
         await go('g:Chrome');
         if (await page.locator('.browser-details').getAttribute('open') == null) await page.locator('.browser-details > summary').click();
         const siteRow=page.getByRole('region', { name: 'Sites in these results', exact: true }).locator('tbody tr').first();
-        await siteRow.locator('.row-title').click();
+        if (await siteRow.locator('.row-title').getAttribute('aria-expanded') !== 'true') await siteRow.locator('.row-title').click();
         await page.locator('[data-auto-domain-site]').click();
         assert.equal(await page.locator('#domain-editor-title').textContent(),'Edit auto-close domain');
         const choices=page.locator('#domain-host-choice option');

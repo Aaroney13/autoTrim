@@ -263,6 +263,7 @@ test('config errors disable domain writes from the Chrome Sites inspector', () =
   const ui = load();
   ui.state.settings = { config_error: 'invalid config', tab_stale_after_secs: 86400 };
   const tab = { id: 1, site: 'example.com', url: 'https://example.com', title: 'Example', profile: 'Default', active: false, pinned: false, idle_secs: 90000 };
+  ui.reconcileList('overview:sites', [{ id: 'example.com' }]).inspected = 'example.com';
   const markup = ui.sitesTable({ name: 'Chrome', tabs: [tab], can_close_tabs: true, per_tab_estimate: 1 }, [tab]);
   assert.match(markup, /data-auto-domain-site="example\.com"[^>]*disabled/);
 });
@@ -365,12 +366,13 @@ test('compact selections drop hidden, protected, and replaced targets', () => {
   assert.equal(ui.reconcileList('another-list', ids.map(id => ({ id, eligible: true }))).selected.size, 0);
 });
 
-test('inspection follows the same item across reordering and recovers when it disappears', () => {
+test('inspection starts collapsed, follows reordering, and closes when the item disappears', () => {
   const ui = load();
   const saved = ui.reconcileList('sessions', [{ id: 'a' }, { id: 'b' }]);
+  assert.equal(saved.inspected, null);
   saved.inspected = 'b';
   assert.equal(ui.reconcileList('sessions', [{ id: 'b' }, { id: 'a' }]).inspected, 'b');
-  assert.equal(ui.reconcileList('sessions', [{ id: 'a' }]).inspected, 'a');
+  assert.equal(ui.reconcileList('sessions', [{ id: 'a' }]).inspected, null);
   assert.equal(ui.reconcileList('sessions', []).inspected, null);
 });
 
@@ -473,7 +475,7 @@ test('shared Codex backend exposes older tasks and helpers without task-level cl
   assert.match(markup, /Shared memory across loaded tasks/);
   assert.doesNotMatch(markup, /data-close-session=/);
   assert.doesNotMatch(markup, /data-list-review=/);
-  const taskLists = vm.runInContext('[...listModels.values()].filter(m => m.options.noun === "task")', ui.context);
+  const taskLists = vm.runInContext('[...listModels.values()].filter(m => m.options.label === "Agent work")', ui.context);
   assert.equal(taskLists[0].rows.length, 3);
   assert.ok(taskLists[0].rows.every(r => r.rss == null && !r.eligible && !r.action));
   ui.state.sessFilter = 'archive';
@@ -482,6 +484,12 @@ test('shared Codex backend exposes older tasks and helpers without task-level cl
   assert.match(filtered, /Older &lt;project&gt;/);
   assert.doesNotMatch(filtered, /Review helper/);
   assert.doesNotThrow(() => ui.sessionTable([{ ...backend, threads: undefined }]));
+  ui.state.sessFilter = '';
+  ui.state.listState.clear();
+  ui.sessionTable([{ ...backend, engine: false, is_self: false, state: 'stale' }]);
+  const terminalRows = vm.runInContext('[...listModels.values()].find(m => m.options.label === "Agent work").rows', ui.context);
+  assert.equal(terminalRows.filter(r => r.task).length, 3, 'terminal session task details remain visible');
+  assert.equal(terminalRows.filter(r => r.eligible).length, 1, 'only the containing terminal session can be closed');
 });
 
 
@@ -495,7 +503,7 @@ test('memory header uses physical RAM and does not label the OS availability cou
   actualRenderHeader();`, ui.context);
   const markup = ui.elements.get('head').innerHTML;
   assert.match(markup, /RAM used/);
-  assert.match(markup, /14.0 \/ 16.0 GiB/);
+  assert.match(markup, /14.0 GiB \/ 16.0 GiB/);
   assert.match(markup, /2.0 GiB<\/b> outside used \(includes cache\)/);
   assert.doesNotMatch(markup, /35%|free|unused/);
   assert.match(markup, /do not add up to physical RAM used/);
@@ -524,7 +532,7 @@ test('memory units and observed changes keep increases, decreases, and zero dist
   assert.match(ui.viewActions(), /held before the action \(estimated\)/);
 });
 
-test('activity groups honor the configured threshold, unknown activity, and collapsed selections', () => {
+test('website groups retain activity, unknown timestamps, and drop collapsed selections', () => {
   const ui = load();
   ui.state.settings = { tab_stale_after_secs: 7200 };
   ui.context.fixtureBrowser = { name: 'Chrome', can_close_tabs: true, per_tab_estimate: 0, open_profiles: [], tabs: [
@@ -535,16 +543,16 @@ test('activity groups honor the configured threshold, unknown activity, and coll
   ] };
   const render = () => vm.runInContext('tabTable(fixtureBrowser, fixtureBrowser.tabs)', ui.context);
   const first = render();
-  assert.match(first, /data-group="stale"/);
-  assert.match(first, /data-group="recent"/);
-  assert.match(first, /data-group="unknown"/);
+  assert.match(first, /data-group="example.com"/);
+  assert.match(first, /Activity unknown/);
+  assert.doesNotMatch(first, /<table/);
   assert.doesNotMatch(first, /≈ 0 B/);
   const model = vm.runInContext('[...listModels.values()][0]', ui.context);
-  assert.deepEqual(Array.from(model.rows, row => [row.title, row.group, !!row.eligible]), [
-    ['Old', 'stale', true], ['Recent', 'recent', true], ['Active', 'recent', false], ['Unknown', 'unknown', true],
+  assert.deepEqual(Array.from(model.rows, row => [row.title, row.status, !!row.eligible]), [
+    ['Old', 'stale', true], ['Recent', 'idle', true], ['Unknown', 'idle', true], ['Active', 'active', false],
   ]);
   model.saved.selected.add(model.rows[0].id);
-  model.saved.collapsed.add('stale');
+  model.saved.collapsed.add('example.com');
   render();
   const collapsed = vm.runInContext('[...listModels.values()][0]', ui.context);
   assert.equal(collapsed.saved.selected.size, 0);
