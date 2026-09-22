@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_icons;
 mod onboarding;
 mod tab_cleanup;
 mod updates;
@@ -713,6 +714,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             source_info,
+            app_icons::app_icons,
             settings,
             onboarding::complete_onboarding,
             set_auto,

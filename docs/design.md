@@ -611,6 +611,13 @@ wins over older daemon snapshots, including equal-second timestamps. Log-read
 failures preserve the last action view, and partial process results never mark
 the session gone.
 
+App names in the sidebar and detail headings show local macOS application icons.
+The tray resolves them through Launch Services and renders 64-pixel PNGs; the
+window caches both icons and missing results, loading them after the snapshot
+without blocking the list. Missing apps, bare processes, and other platforms use
+the existing category symbols. No icon requests leave the machine, and icon
+lookup adds no work or dependencies to the daemon.
+
 `node --test tests/tray-ui.test.mjs` uses synthetic IPC. For an interactive
 fixture, run `python3 tests/preview-tray.py` and open localhost:8766; that server
 injects fake IPC into the production modules and refuses unsupported commands.

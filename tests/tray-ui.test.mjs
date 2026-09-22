@@ -70,6 +70,45 @@ const sessions = [
   { pid: 3, state: 'active', session_name: 'Search', project: 'ledger', rss: 100, idle_secs: 0 },
 ];
 
+test('app icons load once per app, including missing icons and overlapping refreshes', async () => {
+  let finish;
+  const calls = [];
+  const ui = load(async (command, args) => {
+    assert.equal(command, 'app_icons');
+    calls.push(args.names);
+    return new Promise(resolve => { finish = resolve; });
+  });
+  ui.state.snap = { groups: [
+    { name: 'Google Chrome', kind: 'app', pids: [] },
+    { name: 'Codex sessions', kind: 'agent', app: 'Codex', pids: [] },
+    { name: 'Not installed', kind: 'app', pids: [] },
+    { name: 'node', kind: 'other', pids: [] },
+  ], browsers: [], sessions: [] };
+  const first = vm.runInContext('loadAppIcons()', ui.context);
+  await vm.runInContext('loadAppIcons()', ui.context);
+  assert.deepEqual(Array.from(calls[0]), ['Google Chrome', 'Codex', 'Not installed']);
+  finish({ 'Google Chrome': 'data:image/png;base64,aWNvbg==', Codex: 'data:image/png;base64,Y29kZXg=' });
+  await first;
+  await vm.runInContext('loadAppIcons()', ui.context);
+  assert.equal(calls.length, 1);
+  assert.equal(ui.state.appIcons.get('Codex'), 'data:image/png;base64,Y29kZXg=');
+  assert.equal(ui.state.appIcons.get('Not installed'), null);
+});
+
+test('icon lookup failures can retry and untrusted image URLs are not displayed', async () => {
+  let attempts = 0;
+  const ui = load(async () => {
+    if (++attempts === 1) throw new Error('Native lookup unavailable');
+    return { Chrome: 'https://example.com/tracking.png' };
+  });
+  ui.state.snap = { groups: [{ name: 'Chrome', kind: 'app', pids: [] }], browsers: [], sessions: [] };
+  await vm.runInContext('loadAppIcons()', ui.context);
+  assert.equal(ui.state.appIcons.has('Chrome'), false);
+  await vm.runInContext('loadAppIcons()', ui.context);
+  assert.equal(attempts, 2);
+  assert.equal(ui.state.appIcons.get('Chrome'), null);
+});
+
 test('session batch eligibility follows search and state, excluding protected sessions', () => {
   const ui = load();
   ui.state.sessFilter = 'ledger';

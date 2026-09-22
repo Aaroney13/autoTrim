@@ -1,6 +1,6 @@
 // Dashboard markup and DOM rendering.
 import { icon, GB, bytes, dur, esc, plural, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes } from "./format.js";
-import { domainInactivityLabel, state, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs } from "./state.js";
+import { domainInactivityLabel, state, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs } from "./state.js";
 import { createActions } from "./actions.js";
 const { refresh, navigate, reviewSessions, reviewTabs, reviewPorts, wire } = createActions({ renderAll: (...a) => renderAll(...a), renderMain: (...a) => renderMain(...a), renderSide: (...a) => renderSide(...a), renderHeader: (...a) => renderHeader(...a) });
 function renderHeader() {
@@ -66,6 +66,11 @@ function tickSync() {
 
 
 
+function holderIcon(h) {
+  const data = state.appIcons.get(appIconName(h));
+  return `<span class="app-icon" aria-hidden="true">${data ? `<img src="${esc(data)}" alt="" width="32" height="32">` : icon(h.kind)}</span>`;
+}
+
 function renderSide() {
   const s = state.snap;
   const focus = state.settings?.focus_areas || [];
@@ -82,7 +87,7 @@ function renderSide() {
   const shown = state.showAll ? hs : hs.slice(0, LIMIT);
   const largest = Math.max(1, ...hs.map(h => h.rss));
   html += shown.map(h => `<a class="item${sel(h.key)}" data-view="${esc(h.key)}" title="${esc(h.name)} · ${esc(h.count)} · ${plural(h.procs, "process")} · ${h.cpu.toFixed(1)}% CPU">
-      <span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="holder-meter" aria-hidden="true"><i style="width:${Math.max(0, h.rss / largest * 100).toFixed(2)}%"></i></span></a>`).join("");
+      ${holderIcon(h)}<span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="holder-meter" aria-hidden="true"><i style="width:${Math.max(0, h.rss / largest * 100).toFixed(2)}%"></i></span></a>`).join("");
   if (hs.length > shown.length) html += `<span class="more" data-more="1">${hs.length - shown.length} more…</span>`;
   else if (state.showAll && hs.length > LIMIT) html += `<span class="more" data-more="0">show fewer</span>`;
   html += `</div><div class="nav-status"><span class="${state.src.daemon_running ? "running" : ""}">${state.src.daemon_running ? '<i class="status-dot" aria-hidden="true"></i>Running in background' : "Background monitor stopped"}</span><a href="#settings" data-view="settings">Auto mode ${esc(autoMode(state.settings).replace("preview", "in preview"))}</a></div>`;
@@ -374,7 +379,7 @@ function viewAgents(h) {
   const appRss = h.app ? Math.max(0, h.rss - h.sessions.reduce((n, x) => n + x.rss, 0)) : 0;
   const ports = s.ports.filter(p => h.pids.includes(p.pid) && !h.sessions.some(x => (x.pids || []).includes(p.pid)));
   const trend = (s.trends || []).find(t => t.key === h.key && t.span_secs >= 600);
-  return `<h1>${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> across ${plural(h.procs, "process")}</span><span>${sessionCount(live)}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
+  return `<h1>${holderIcon(h)}${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> across ${plural(h.procs, "process")}</span><span>${sessionCount(live)}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
     <div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-session-filter aria-label="Search sessions" placeholder="Search tasks, sessions or projects" value="${esc(state.sessFilter)}"></label><select data-sess-sort aria-label="Sort sessions">${["rss", "idle", "age", "name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${(state.sessReverse && state.sessSort === k ? {rss:"Least memory",idle:"Shortest idle",age:"Newest",name:"Name Z–A"} : {rss:"Most memory",idle:"Longest idle",age:"Oldest",name:"Name A–Z"})[k]}</option>`).join("")}</select></div>
     <div class="filter-row">${filterChips("session", state.sessState, [["all", "All sessions"], ["stale", "Stale"], ["active", "Active"]])}<span class="muted">${visible.length} shown</span></div>
     ${sessionTable(visible)}<p class="help">Select rows to close several sessions together. Active sessions and app engines stay open.</p>
@@ -403,7 +408,7 @@ function viewBrowser(h) {
   const counts = { all: matching.length, stale: matching.filter(t => isStale(b, t) && !t.pinned).length, chat: matching.filter(t => t.kind === "chat").length };
   const threshold = state.settings?.tab_stale_after_secs ?? 86400;
   const profile = b.open_profiles.find(p => p.dir === state.tabProfile)?.label || state.tabProfile;
-  let html = `<div class="browser-heading"><h1>${esc(h.name)}</h1><span>${bytes(h.rss)} · ${plural(live.length, "tab")}</span></div>`;
+  let html = `<div class="browser-heading"><h1>${holderIcon(h)}${esc(h.name)}</h1><span>${bytes(h.rss)} · ${plural(live.length, "tab")}</span></div>`;
   if (!live.length) return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + holderMemoryHelp(h) + quitBlock(h);
   if (stale.length) html += `<section class="cleanup-summary" aria-label="Stale tab cleanup"><div><strong>${plural(stale.length, 'tab')} untouched for ${compactDuration(threshold)} or more</strong><p>${est ? `<b>≈ ${bytes(stale.length * est)}</b> estimated footprint` : 'Ready to review'}${state.tabFilter || state.tabProfile || state.tabState !== 'all' ? ' in these results' : ''}</p></div><button class="primary" data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button></section>`;
   html += `<div class="list-toolbar browser-toolbar"><label class="search">${icon("search")}<input type="search" data-tab-filter aria-label="Search tabs" placeholder="Search titles or URLs" value="${esc(state.tabFilter)}"></label>
@@ -445,7 +450,7 @@ function viewApp(h) {
   const hosted = s.sessions.filter(x => x.host_app === h.name);
   const trend = (s.trends || []).find(t => t.key === "g:" + h.name && t.span_secs >= 600);
   const ports = s.ports.filter(p => h.pids.includes(p.pid));
-  let html = `<h1>${esc(h.name)} <span class="pill">${h.kind === "app" ? "app" : "process"}</span></h1>
+  let html = `<h1>${holderIcon(h)}${esc(h.name)} <span class="pill">${h.kind === "app" ? "app" : "process"}</span></h1>
     <div class="sub"><span><b>${bytes(h.rss)}</b> process total</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>`;
   if (hosted.length) {
     html += `<h2>Agent sessions it hosts</h2>${sessionTable(hosted)}`;
