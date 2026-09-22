@@ -1,6 +1,6 @@
 // IPC, confirmation, polling, and event handlers. Renderer callbacks are injected.
 import { icon, bytes, dur, esc, plural } from "./format.js";
-import { domainInactivityLabel, state, armed, listModels, holders, holderByKey, sync, autoMode, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
+import { domainInactivityLabel, state, armed, listModels, holders, holderByKey, appIconName, sync, autoMode, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
 
 const invoke = (...a) => window.__TAURI__.core.invoke(...a);
 
@@ -92,6 +92,22 @@ function report(recs) {
 
 // ---- the holders list: everything the sidebar orders by memory ----
 
+async function loadAppIcons() {
+  const names = [...new Set((state.snap?.groups || []).map(appIconName))]
+    .filter(name => name && !state.appIcons.has(name) && !state.appIconsPending.has(name)).slice(0, 64);
+  if (!names.length) return;
+  names.forEach(name => state.appIconsPending.add(name));
+  try {
+    const icons = await invoke("app_icons", { names });
+    for (const name of names) {
+      const data = icons?.[name];
+      state.appIcons.set(name, typeof data === "string" && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(data) ? data : null);
+    }
+    renderAll(false);
+  } catch (_) { /* Keep the fallback and retry on the next snapshot. */ }
+  finally { names.forEach(name => state.appIconsPending.delete(name)); }
+}
+
 async function refresh(opts = {}) {
   const requestId = ++sync.requestId;
   sync.lastPoll = Date.now();
@@ -109,6 +125,7 @@ async function refresh(opts = {}) {
   state.snap = snap; state.src = src; state.log = log; if (revision === state.settingsRevision && !state.settingsBusy) state.settings = settings; state.service = service;
   pruneGone(snap);
   renderAll(first);
+  void loadAppIcons();
 }
 
 

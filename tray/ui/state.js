@@ -6,6 +6,14 @@ const state = { actionReview: null, domainEditor: null, tabPreview: { requestId:
 
 const armed = {};
 
+state.appIcons = new Map();
+state.appIconsPending = new Set();
+
+function appIconName(holder) {
+  if (holder.kind === "other") return "";
+  return holder.app || (holder.kind === "agent" ? holder.name.replace(/ sessions$/, "") : holder.name);
+}
+
 const listModels = new Map();
 
 
@@ -141,4 +149,4 @@ function domainInactivityLabel(hours) {
     ? plural(Math.round(hours * 60), "minute") : plural(hours, "hour");
 }
 
-export { domainInactivityLabel, state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };
+export { domainInactivityLabel, state, armed, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };
