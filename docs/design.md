@@ -269,9 +269,13 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   reads the daemon's snapshot every five seconds and only scans on its own
   when no daemon is running. Refreshes update the existing native menu and its
   surviving entries in place, so an open menu stays open while numbers, advice,
-  and auto-mode status change. No Dock icon. Launching it again only brings
-  the window forward. The window is created when you open it and destroyed
-  when you close it, so an idle tray is only the menu item. Built with
+  and auto-mode status change. The app uses macOS's regular activation policy,
+  so it appears in the Dock and app switcher while running. Clicking the Dock
+  icon or launching it again opens, restores, and focuses the dashboard.
+  Closing the window keeps the app running with its Dock and menu bar icons;
+  quitting the app leaves the separate daemon running. The window is created
+  when you open it and destroyed when you close it, releasing its web view.
+  The startup preference controls only whether the dashboard opens. Built with
   Tauri on the system web view: measured at about 60 MB resident idle on
   macOS, which is the runtime's price, against the daemon's 13 MB footprint
   after eight hours with notifications on. A future
