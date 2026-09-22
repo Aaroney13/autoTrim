@@ -257,15 +257,25 @@ fn stop_server(p: &PortInfo, mode: &str, dry_run: bool) -> ActionRecord {
 
 /// Close one browser tab. Matched by id and URL at the moment of closing,
 /// so a tab that moved on since the snapshot is left alone.
-fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionRecord {
+fn close_tab(
+    b: &BrowserInfo,
+    t: &TabInfo,
+    mode: &str,
+    dry_run: bool,
+    auto: Option<&crate::daemon::AutoConfig>,
+) -> ActionRecord {
     let profile = b
         .open_profiles
         .iter()
         .find(|p| p.dir == t.profile)
         .map(|p| p.label.clone())
         .unwrap_or_else(|| t.profile.clone());
-    let result = if mode == "auto" && !browser::can_auto_close_tab(b, t) {
-        "skipped: tab is no longer an unpinned, inactive Chrome New Tab page".to_string()
+    let eligible = auto.map_or_else(
+        || browser::can_auto_close_tab(b, t),
+        |cfg| cfg.tab_reason(b, t, now_epoch()).is_some(),
+    );
+    let result = if mode == "auto" && !eligible {
+        "skipped: tab is no longer eligible for automatic cleanup".to_string()
     } else if dry_run {
         "dry run, nothing done".to_string()
     } else {
@@ -292,7 +302,19 @@ fn close_tab(b: &BrowserInfo, t: &TabInfo, mode: &str, dry_run: bool) -> ActionR
         },
         action: "close_tab".to_string(),
         pid: 0,
-        target: format!("{} · {} · {}", b.name, fmt::fit_right(&title, 70), t.site),
+        target: format!(
+            "{} · {} · {}{}",
+            b.name,
+            fmt::fit_right(&title, 70),
+            t.site,
+            auto.and_then(|cfg| cfg.tab_reason(b, t, now_epoch()))
+                .and_then(|reason| match reason {
+                    crate::tab_rules::AutoTabReason::Domain { domain } =>
+                        Some(format!(" · auto-close domain {domain}")),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        ),
         project: None,
         session_id: None,
         transcript: None,
@@ -321,7 +343,18 @@ pub fn close_tabs_by_id(
     mode: &str,
     warned: Option<&[&TabInfo]>,
 ) -> Result<Vec<ActionRecord>> {
-    close_tabs_checked(browser, ids, None, t, dry_run, mode, warned)
+    close_tabs_checked(
+        browser,
+        ids,
+        None,
+        t,
+        dry_run,
+        mode,
+        TabClosePolicy {
+            warned,
+            ..Default::default()
+        },
+    )
 }
 
 /// The identity of a tab shown in a persistent confirmation dialog.
@@ -338,7 +371,15 @@ pub fn close_reviewed_tabs(
     t: &Thresholds,
 ) -> Result<Vec<ActionRecord>> {
     let ids: Vec<_> = reviewed.iter().map(|tab| tab.id).collect();
-    close_tabs_checked(browser, &ids, Some(reviewed), t, false, "manual", None)
+    close_tabs_checked(
+        browser,
+        &ids,
+        Some(reviewed),
+        t,
+        false,
+        "manual",
+        TabClosePolicy::default(),
+    )
 }
 
 fn reviewed_tab_error(tab: &TabInfo, expected: Option<&ReviewedTab>) -> Option<&'static str> {
@@ -369,6 +410,29 @@ fn warned_tab_error(tab: &TabInfo, expected: Option<&TabInfo>) -> Option<&'stati
     None
 }
 
+#[derive(Default)]
+struct TabClosePolicy<'a> {
+    warned: Option<&'a [&'a TabInfo]>,
+    auto: Option<&'a crate::daemon::AutoConfig>,
+    rule_revision: Option<&'a str>,
+}
+
+fn automatic_tab_allowed(
+    b: &BrowserInfo,
+    tab: &TabInfo,
+    auto: &crate::daemon::AutoConfig,
+    revision: Option<&str>,
+    now: u64,
+) -> bool {
+    match auto.tab_reason(b, tab, now) {
+        Some(crate::tab_rules::AutoTabReason::EmptyNewTab) => revision.is_none(),
+        Some(crate::tab_rules::AutoTabReason::Domain { .. }) => {
+            revision == Some(auto.tab_rules_revision().as_str())
+        }
+        None => false,
+    }
+}
+
 fn close_tabs_checked(
     browser: &str,
     ids: &[i32],
@@ -376,7 +440,7 @@ fn close_tabs_checked(
     t: &Thresholds,
     dry_run: bool,
     mode: &str,
-    warned: Option<&[&TabInfo]>,
+    policy: TabClosePolicy<'_>,
 ) -> Result<Vec<ActionRecord>> {
     let mut sys = System::new();
     let snap = take_snapshot(&mut sys, Some(Duration::from_millis(300)), t);
@@ -416,17 +480,22 @@ fn close_tabs_checked(
         let reason = if mode == "auto" {
             warned_tab_error(
                 tab,
-                warned.and_then(|tabs| tabs.iter().copied().find(|x| x.id == *id)),
+                policy
+                    .warned
+                    .and_then(|tabs| tabs.iter().copied().find(|x| x.id == *id)),
             )
             .or_else(|| {
-                (!browser::can_auto_close_tab(b, tab))
-                    .then_some("tab is no longer an unpinned, inactive Chrome New Tab page")
+                (!policy.auto.map_or_else(
+                    || browser::can_auto_close_tab(b, tab),
+                    |auto| automatic_tab_allowed(b, tab, auto, policy.rule_revision, snap.taken_at),
+                ))
+                .then_some("tab or current rules no longer allow automatic cleanup")
             })
         } else {
             reviewed.and_then(|tabs| reviewed_tab_error(tab, tabs.iter().find(|x| x.id == *id)))
         };
         if let Some(reason) = reason {
-            let mut rec = close_tab(b, tab, mode, true);
+            let mut rec = close_tab(b, tab, mode, true, policy.auto);
             rec.mode = if dry_run { "dry-run" } else { mode }.to_string();
             rec.status = "skipped".into();
             rec.result = format!("skipped: {reason}");
@@ -434,12 +503,42 @@ fn close_tabs_checked(
             out.push(rec);
             continue;
         }
-        let mut plan = close_tab(b, tab, mode, true);
+        let mut plan = close_tab(b, tab, mode, true, policy.auto);
         plan.target_identity = Some(
             serde_json::json!({"browser": b.name, "profile": tab.profile, "id": tab.id, "url": tab.url}),
         );
         out.push(journal_with(plan, mode, dry_run, log, || {
-            close_tab(b, tab, mode, false)
+            // A scan or a previous close may have taken time. Read current
+            // settings again at the last boundary before touching the browser.
+            if let Some(expected) = policy.auto {
+                let mut skipped = close_tab(b, tab, mode, true, Some(expected));
+                match crate::config::Config::load() {
+                    Ok((file, _)) => {
+                        let current =
+                            crate::daemon::DaemonConfig::from_config(&file, &Default::default());
+                        if current.auto.dry_run == expected.dry_run
+                            && automatic_tab_allowed(
+                                b,
+                                tab,
+                                &current.auto,
+                                policy.rule_revision,
+                                now_epoch(),
+                            )
+                        {
+                            return close_tab(b, tab, mode, false, Some(&current.auto));
+                        }
+                        skipped.result = "skipped: current settings prohibit this cleanup".into();
+                    }
+                    Err(error) => {
+                        skipped.result = format!("skipped: settings could not be read: {error}")
+                    }
+                }
+                skipped.mode = mode.into();
+                skipped.status = "skipped".into();
+                skipped
+            } else {
+                close_tab(b, tab, mode, false, None)
+            }
         })?);
     }
     if found == 0 && !ids.is_empty() {
@@ -1065,18 +1164,27 @@ pub(crate) fn execute_auto(
                 },
             )
         }
-        Target::Tab { browser, tab } => {
+        Target::Tab {
+            browser,
+            tab,
+            rule_revision,
+        } => {
             anyhow::ensure!(
                 eligible,
                 "tab changed, was used, or current settings prohibit cleanup"
             );
-            return close_tabs_by_id(
+            return close_tabs_checked(
                 browser,
                 &[tab.id],
+                None,
                 &cfg.thresholds,
                 cfg.auto.dry_run,
                 "auto",
-                Some(&[tab]),
+                TabClosePolicy {
+                    warned: Some(&[tab]),
+                    auto: Some(&cfg.auto),
+                    rule_revision: rule_revision.as_deref(),
+                },
             )?
             .into_iter()
             .next()
@@ -1120,12 +1228,18 @@ fn auto_target_eligible(
         Target::Tab {
             browser: name,
             tab: old,
+            rule_revision,
         } => {
-            (cfg.auto.close_sessions || cfg.auto.stop_servers)
+            cfg.auto.on()
                 && snap.browsers.iter().filter(|b| &b.name == name).any(|b| {
                     b.tabs.iter().any(|tab| {
-                        browser::can_auto_close_tab(b, tab)
-                            && warned_tab_error(tab, Some(old)).is_none()
+                        automatic_tab_allowed(
+                            b,
+                            tab,
+                            &cfg.auto,
+                            rule_revision.as_deref(),
+                            snap.taken_at,
+                        ) && warned_tab_error(tab, Some(old)).is_none()
                     })
                 })
         }
@@ -1191,11 +1305,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_domain_actions_recheck_the_warned_rule_and_every_protection() {
+        let file: crate::config::Config = toml::from_str(
+            r#"
+            auto_close_tabs = true
+            auto_tab_domains = [{ domain = "reddit.com", include_subdomains = true }]
+        "#,
+        )
+        .unwrap();
+        let mut cfg = crate::daemon::DaemonConfig::from_config(&file, &Default::default());
+        let mut snap = crate::test_support::chrome_snapshot();
+        snap.taken_at = 100_000;
+        snap.browsers[0].tabs[0].url = "https://old.reddit.com/r/rust".into();
+        snap.browsers[0].tabs[0].last_active = Some(1);
+        let target = crate::policy::Target::Tab {
+            browser: "Google Chrome".into(),
+            tab: snap.browsers[0].tabs[0].clone(),
+            rule_revision: Some(cfg.auto.tab_rules_revision()),
+        };
+        assert!(auto_target_eligible(&target, &snap, &cfg));
+        for change in 0..6 {
+            let b = &mut snap.browsers[0];
+            let old = b.tabs[0].clone();
+            match change {
+                0 => b.tabs[0].active = true,
+                1 => b.tabs[0].pinned = true,
+                2 => b.tabs[0].last_active = Some(2),
+                3 => b.tabs[0].url = "https://old.reddit.com/other".into(),
+                4 => b.tabs[0].profile = "Profile 2".into(),
+                _ => b.tabs[0].window_id += 1,
+            }
+            assert!(!auto_target_eligible(&target, &snap, &cfg), "case {change}");
+            snap.browsers[0].tabs[0] = old;
+        }
+        cfg.auto.tab_inactive_secs += 1;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        cfg.auto.tab_inactive_secs -= 1;
+        cfg.auto.dry_run = true;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        cfg.auto.dry_run = false;
+        cfg.auto.close_tabs = false;
+        cfg.auto.close_sessions = true;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        cfg.auto.close_tabs = true;
+        cfg.auto.tab_domains.clear();
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+    }
+
+    #[test]
     fn automatic_tab_execution_rechecks_current_settings_and_activity() {
         let mut snap = crate::test_support::chrome_snapshot();
         let target = crate::policy::Target::Tab {
             browser: snap.browsers[0].name.clone(),
             tab: snap.browsers[0].tabs[0].clone(),
+            rule_revision: None,
         };
         let mut cfg = crate::daemon::DaemonConfig::from_config(
             &crate::config::Config {
@@ -1232,7 +1395,7 @@ mod tests {
             "chrome://new-tab-page-third-party/",
         ] {
             b.tabs[0].url = url.into();
-            let rec = close_tab(b, &b.tabs[0], "auto", true);
+            let rec = close_tab(b, &b.tabs[0], "auto", true, None);
             assert_eq!(rec.result, "dry run, nothing done", "{url}");
             assert_eq!(rec.mode, "dry-run");
         }
@@ -1248,7 +1411,7 @@ mod tests {
         ] {
             b.tabs[0].url = url.into();
             assert!(
-                close_tab(b, &b.tabs[0], "auto", true)
+                close_tab(b, &b.tabs[0], "auto", true, None)
                     .result
                     .starts_with("skipped:"),
                 "{url}"
@@ -1257,20 +1420,20 @@ mod tests {
         b.tabs[0].url = "chrome://newtab/".into();
         b.tabs[0].active = true;
         assert!(
-            close_tab(b, &b.tabs[0], "auto", true)
+            close_tab(b, &b.tabs[0], "auto", true, None)
                 .result
                 .starts_with("skipped:")
         );
         b.tabs[0].active = false;
         b.tabs[0].pinned = true;
         assert!(
-            close_tab(b, &b.tabs[0], "auto", true)
+            close_tab(b, &b.tabs[0], "auto", true, None)
                 .result
                 .starts_with("skipped:")
         );
         // An explicit manual close keeps its existing behavior.
         assert_eq!(
-            close_tab(b, &b.tabs[0], "manual", true).result,
+            close_tab(b, &b.tabs[0], "manual", true, None).result,
             "dry run, nothing done"
         );
     }

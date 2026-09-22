@@ -27,12 +27,16 @@
   input, select { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
   input::placeholder { color: var(--muted); opacity: 1; }
   .icon { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; flex: none; }
+  .app-icon { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--muted); }
+  .app-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  main h1 .app-icon { width: 28px; height: 28px; }
+  main h1 .app-icon .icon { width: 24px; height: 24px; }
   .muted { color: var(--muted); } .faint { color: var(--faint); }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 
   header { position: relative; flex: none; min-height: 52px; padding: 0 20px 0 0; border-bottom: 1px solid var(--line); display: flex; gap: 24px; align-items: center; background: var(--chrome); font-size: 12px; }
-  .app-brand { align-self: stretch; width: 208px; flex: none; display: flex; align-items: center; gap: 9px; padding: 0 20px; border-right: 1px solid var(--line); font-size: 14px; font-weight: 650; letter-spacing: -.2px; }
+  .app-brand { align-self: stretch; width: 240px; flex: none; display: flex; align-items: center; gap: 9px; padding: 0 20px; border-right: 1px solid var(--line); font-size: 14px; font-weight: 650; letter-spacing: -.2px; }
   .brand-mark { width: 16px; height: 16px; border: 4px solid var(--accent); border-radius: 50%; box-shadow: inset 0 0 0 2px var(--chrome); }
   header .mem { flex: none; min-width: 0; }
   header .mem summary { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 3px; border-radius: 4px; cursor: pointer; list-style: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -44,7 +48,7 @@
   header .meter .used { background: var(--k-browser); } header .meter .comp { background: var(--k-agent); }
   header .memory-chevron { width: 6px; height: 6px; margin: -3px 3px 0; border-right: 1px solid var(--muted); border-bottom: 1px solid var(--muted); transform: rotate(45deg); }
   header .mem[open] .memory-chevron { transform: rotate(225deg); margin-top: 3px; }
-  header .memory-detail { position: absolute; top: calc(100% + 5px); left: 228px; z-index: 5; display: flex; flex-wrap: wrap; gap: 7px 18px; width: max-content; max-width: calc(100% - 248px); padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--muted); font-size: 12px; box-shadow: 0 5px 18px #0002; }
+  header .memory-detail { position: absolute; top: calc(100% + 5px); left: 260px; z-index: 5; display: flex; flex-wrap: wrap; gap: 7px 18px; width: max-content; max-width: calc(100% - 280px); padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--muted); font-size: 12px; box-shadow: 0 5px 18px #0002; }
   header .memory-detail b { color: var(--fg); }
   header .memory-system { flex-basis: 100%; font-size: 11px; }
   header .stat { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -59,12 +63,15 @@
 
   .body { flex: 1; display: flex; min-height: 0; }
 
-  nav { width: 208px; flex: none; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; }
+  nav { width: 240px; flex: none; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; }
   .nav-primary { flex: none; }
-  .nav-holders { flex: 1; min-height: 0; overflow-y: auto; margin-bottom: 14px; }
+  /* Keep overlay scrollbars clear of the rows as well as reserving native gutters. */
+  .nav-holders { flex: 1; min-height: 0; overflow-y: auto; margin-bottom: 14px; padding-right: 18px; scrollbar-gutter: stable; }
   nav h3 { font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--muted); margin: 25px 10px 8px; font-weight: 500; display: flex; justify-content: space-between; gap: 6px; }
   nav .item { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name mem" "meter meter"; column-gap: 9px; row-gap: 3px; align-items: center; padding: 9px 10px; border-radius: 7px; cursor: pointer; }
   nav .item:hover { background: var(--hover); }
+  .nav-holders .item { grid-template-columns: 20px minmax(0, 1fr) auto; grid-template-areas: "icon name mem" ". meter meter"; column-gap: 7px; row-gap: 7px; }
+  .nav-holders .app-icon { grid-area: icon; }
   nav .item.sel { background: var(--sel); color: var(--blue); }
   nav .item.sel::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--blue); }
   nav .item.sel .name { font-weight: 500; }
@@ -323,9 +330,47 @@
   .review-actions { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); padding-top: 16px; }
   .review-actions .primary { background: var(--button); color: var(--on-accent); }
   #review-status { white-space: pre-line; }
+  .domain-settings { border-top: 1px solid var(--line); margin-top: 15px; padding-top: 16px; }
+  .domain-section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 4px; }
+  .domain-section-head h3 { font-size: 13px; margin: 0 0 3px; }
+  .domain-section-head p { margin: 0; max-width: 62ch; font-size: 12px; }
+  .domain-section-head .tag { flex: none; margin: 1px 0 0; }
+  .domain-settings .setting-row small { display: block; }
+  .static-setting { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+  .static-setting small { display: block; }
+  .domain-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 13px 0; }
+  .domain-controls label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 500; }
+  .domain-controls select { min-width: 112px; }
+  .domain-controls > span { flex: 1; min-width: 230px; font-size: 12px; }
+  .domain-list { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--bg); }
+  .domain-row { min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  .domain-row:last-child { border-bottom: 0; }
+  .domain-row > div:first-child { min-width: 0; }
+  .domain-row b { display: block; overflow-wrap: anywhere; font-weight: 600; }
+  .domain-row span { display: block; color: var(--muted); font-size: 11px; }
+  .domain-row > div:last-child, .domain-actions { display: flex; gap: 6px; flex: none; }
+  .domain-row button { padding: 4px 8px; font-size: 12px; }
+  .domain-empty { padding: 15px 12px; color: var(--muted); }
+  .domain-empty b { display: block; color: var(--fg); font-weight: 600; }
+  .domain-empty span { display: block; margin-top: 2px; font-size: 12px; }
+  .domain-actions { margin-top: 9px; }
+  .domain-editor-form .field { display: grid; gap: 5px; margin: 13px 0; font-weight: 600; cursor: default; }
+  .domain-editor-form .field input, .domain-editor-form .field select { width: 100%; }
+  .domain-editor-form .check-field { display: flex; align-items: center; gap: 3px; margin: 12px 0; }
+  .readonly-setting { display: flex; justify-content: space-between; gap: 16px; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 13px; }
+  .field-error { min-height: 1.5em; color: var(--danger); margin: 8px 0; }
+  .preview-summary { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; padding: 9px 0 12px; color: var(--muted); font-size: 12px; }
+  .preview-summary b { color: var(--fg); font-size: 15px; }
+  .preview-table-wrap { max-height: min(430px, 58vh); overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
+  .preview-table { min-width: 580px; table-layout: fixed; }
+  .preview-table th { position: sticky; top: 0; background: var(--table-head); color: var(--muted); font-size: 10px; font-weight: 500; padding: 7px 8px; z-index: 1; }
+  .preview-table td { padding: 9px 8px; border-top: 1px solid var(--line); vertical-align: top; font-size: 12px; overflow-wrap: anywhere; }
+  .preview-table td:first-child { width: 36%; }
+  .preview-table .l1, .preview-table .l2 { display: block; white-space: normal; }
+  #tab-preview { width: min(760px, calc(100vw - 32px)); }
   @media (min-width: 1200px) { main { padding-left: 28px; padding-right: 28px; } }
   @media (max-width: 900px) { .overview-layout { grid-template-columns: minmax(0, 1fr); } .overview-rail { display: grid; grid-template-columns: 1fr 1fr; } .overview-rail > section + section { border-top: 0; border-left: 1px solid var(--line); } }
-  @media (max-width: 850px) { nav { width: 190px; padding: 13px 7px; } .app-brand { width: 190px; padding-inline: 15px; } main { padding: 19px 18px 32px; } header { gap: 16px; } header .memory-detail { left: 206px; max-width: calc(100% - 221px); } header .meter { width: 54px; } .mode-choices { gap: 6px; } .card .mode-choice { padding: 8px; } }
+  @media (max-width: 850px) { nav { width: 190px; padding: 13px 7px; } .app-brand { width: 190px; padding-inline: 15px; } main { padding: 19px 18px 32px; } header { gap: 16px; } header .memory-detail { left: 206px; max-width: calc(100% - 221px); } header .meter { width: 54px; } .mode-choices { gap: 6px; } .card .mode-choice { padding: 8px; } .domain-row { align-items: flex-start; } }
   @media (max-width: 620px) { header { flex-wrap: wrap; gap: 6px 16px; padding: 7px 12px; } .app-brand { display: none; } header .meter { display: none; } header .memory-detail { left: 12px; max-width: calc(100% - 24px); } .body { flex-direction: column; } nav { width: 100%; max-height: 140px; border-right: 0; border-bottom: 1px solid var(--line); display: block; } nav .item { margin: 2px 0; } nav .item.sel::before { display: none; } .nav-status { display: none; } .nav-primary { display: flex; flex-wrap: wrap; } .nav-holders { display: none; } .overview-rail { grid-template-columns: minmax(0, 1fr); } .overview-rail > section + section { border-left: 0; border-top: 1px solid var(--line); } .observation { grid-template-columns: 16px minmax(0, 1fr); } .observation a { grid-column: 2; } .advice-row { grid-template-columns: 1fr; gap: 10px; } .advice-row a { justify-self: start; } main { padding: 18px 12px; } .mode-choices { grid-template-columns: 1fr; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 

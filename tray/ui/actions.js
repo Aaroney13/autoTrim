@@ -1,6 +1,6 @@
 // IPC, confirmation, polling, and event handlers. Renderer callbacks are injected.
-import { icon, GB, bytes, dur, pct, esc, plural, kindTag, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes, MB } from "./format.js";
-import { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
+import { icon, bytes, dur, esc, plural } from "./format.js";
+import { domainInactivityLabel, state, armed, listModels, holders, holderByKey, appIconName, sync, autoMode, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
 
 const invoke = (...a) => window.__TAURI__.core.invoke(...a);
 
@@ -92,6 +92,22 @@ function report(recs) {
 
 // ---- the holders list: everything the sidebar orders by memory ----
 
+async function loadAppIcons() {
+  const names = [...new Set((state.snap?.groups || []).map(appIconName))]
+    .filter(name => name && !state.appIcons.has(name) && !state.appIconsPending.has(name)).slice(0, 64);
+  if (!names.length) return;
+  names.forEach(name => state.appIconsPending.add(name));
+  try {
+    const icons = await invoke("app_icons", { names });
+    for (const name of names) {
+      const data = icons?.[name];
+      state.appIcons.set(name, typeof data === "string" && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(data) ? data : null);
+    }
+    renderAll(false);
+  } catch (_) { /* Keep the fallback and retry on the next snapshot. */ }
+  finally { names.forEach(name => state.appIconsPending.delete(name)); }
+}
+
 async function refresh(opts = {}) {
   const requestId = ++sync.requestId;
   sync.lastPoll = Date.now();
@@ -109,6 +125,7 @@ async function refresh(opts = {}) {
   state.snap = snap; state.src = src; state.log = log; if (revision === state.settingsRevision && !state.settingsBusy) state.settings = settings; state.service = service;
   pruneGone(snap);
   renderAll(first);
+  void loadAppIcons();
 }
 
 
@@ -124,6 +141,160 @@ async function saveAuto(values) {
   try { state.settings = await invoke("set_auto", values); }
   catch (e) { toast(String(e)); }
   finally { state.settingsBusy = false; ++state.settingsRevision; renderSide(); renderMain(true); refresh(); }
+}
+
+async function saveTabRules(domains, inactiveHours) {
+  if (state.settingsBusy) return false;
+  state.settingsBusy = true; ++state.settingsRevision; renderMain(true);
+  try {
+    state.settings = await invoke("set_tab_rules", { domains, inactive_hours: inactiveHours, expected_revision: state.settings?.tab_rules_revision ?? "" });
+    return true;
+  } catch (e) {
+    const message = String(e);
+    if (state.domainEditor) {
+      state.domainEditor.error = message;
+      const error = document.getElementById("domain-error");
+      if (error) error.textContent = message;
+    } else toast(message);
+    return false;
+  } finally {
+    state.settingsBusy = false; ++state.settingsRevision; renderSide(); renderMain(true); refresh();
+  }
+}
+
+async function removeDomainRule(index) {
+  const rules = state.settings?.auto_tab_domains || [];
+  if (index < 0 || index >= rules.length) return false;
+  return saveTabRules(rules.filter((_, i) => i !== index), state.settings?.auto_tab_inactive_hours ?? 24);
+}
+
+async function requestTabPreview(domains, inactiveHours) {
+  const requestId = ++state.tabPreview.requestId;
+  state.tabPreview.busy = true;
+  state.tabPreview.error = "";
+  try {
+    const rows = await invoke("preview_tab_rules", { domains, inactive_hours: inactiveHours });
+    if (requestId !== state.tabPreview.requestId) return false;
+    state.tabPreview.rows = rows;
+    return true;
+  } catch (e) {
+    if (requestId !== state.tabPreview.requestId) return false;
+    state.tabPreview.rows = [];
+    state.tabPreview.error = String(e);
+    return false;
+  } finally {
+    if (requestId === state.tabPreview.requestId) state.tabPreview.busy = false;
+  }
+}
+
+const draftDomain = value => String(value || "").trim().toLowerCase().replace(/\.$/, "");
+
+function existingDomainIndex(domain, except = -1) {
+  const canonical = draftDomain(domain);
+  return (state.settings?.auto_tab_domains || []).findIndex((rule, index) => index !== except && draftDomain(rule.domain) === canonical);
+}
+
+function openDomainEditor({ index = null, domain = "", hostChoices = [] } = {}) {
+  if (index == null && domain) {
+    const existing = existingDomainIndex(domain);
+    if (existing >= 0) index = existing;
+  }
+  const rule = index == null ? null : state.settings?.auto_tab_domains?.[index];
+  state.domainEditor = {
+    index,
+    domain: rule?.domain ?? domain,
+    includeSubdomains: rule?.include_subdomains ?? false,
+    revision: state.settings?.tab_rules_revision ?? "",
+    hostChoices,
+    error: "",
+  };
+  renderDomainEditor();
+}
+
+function selectEditorHost(domain) {
+  if (!state.domainEditor) return;
+  const existing = existingDomainIndex(domain);
+  const rule = existing >= 0 ? state.settings.auto_tab_domains[existing] : null;
+  Object.assign(state.domainEditor, {
+    index: existing >= 0 ? existing : null,
+    domain,
+    includeSubdomains: rule?.include_subdomains ?? false,
+    revision: state.settings?.tab_rules_revision ?? "",
+    error: "",
+  });
+  renderDomainEditor(true);
+}
+
+function renderDomainEditor(focusDomain = false) {
+  const editor = state.domainEditor, dialog = document.getElementById("domain-editor");
+  if (!editor || !dialog) return;
+  const editing = editor.index != null;
+  const choices = editor.hostChoices.length > 1 ? `<label class="field">Open hostname<select id="domain-host-choice">${editor.hostChoices.map(choice => `<option value="${esc(choice.domain)}" ${choice.domain === editor.domain ? "selected" : ""}>${esc(choice.domain)} (${plural(choice.count, "tab")})</option>`).join("")}</select></label>` : "";
+  dialog.innerHTML = `<form method="dialog" class="review-content domain-editor-form" id="domain-editor-form">
+    <h2 id="domain-editor-title">${editing ? "Edit auto-close domain" : "Add auto-close domain"}</h2>
+    <p id="domain-editor-description">Use a hostname only. It applies to HTTP and HTTPS on every port, across all Chrome profiles.</p>
+    ${choices}
+    <label class="field">Domain<input id="domain-input" name="domain" type="text" inputmode="url" autocomplete="off" spellcheck="false" value="${esc(editor.domain)}" placeholder="example.com" required></label>
+    <label class="check-field"><input id="domain-subdomains" type="checkbox" ${editor.includeSubdomains ? "checked" : ""}>Include subdomains</label>
+    <div class="readonly-setting"><span>Inactive for</span><b>${esc(domainInactivityLabel(state.settings?.auto_tab_inactive_hours ?? 24))}</b></div>
+    <p class="muted">The shared timer is managed in Settings. Selected and pinned tabs stay open.</p>
+    <p class="field-error" id="domain-error" role="alert">${esc(editor.error)}</p>
+    <div class="review-actions"><button type="button" id="domain-cancel">Cancel</button><button type="submit" class="primary" id="domain-submit">${editing ? "Save changes" : "Add domain"}</button></div>
+  </form>`;
+  dialog.oncancel = () => { state.domainEditor = null; };
+  dialog.onclose = () => { state.domainEditor = null; };
+  const input = dialog.querySelector("#domain-input"), include = dialog.querySelector("#domain-subdomains");
+  input.oninput = () => { editor.domain = input.value; editor.error = ""; dialog.querySelector("#domain-error").textContent = ""; };
+  include.onchange = () => { editor.includeSubdomains = include.checked; };
+  dialog.querySelector("#domain-host-choice")?.addEventListener("change", event => selectEditorHost(event.target.value));
+  dialog.querySelector("#domain-cancel").onclick = () => dialog.close();
+  dialog.querySelector("#domain-editor-form").onsubmit = async event => {
+    event.preventDefault();
+    editor.domain = input.value;
+    editor.includeSubdomains = include.checked;
+    if (!draftDomain(editor.domain)) { editor.error = "Enter a domain."; dialog.querySelector("#domain-error").textContent = editor.error; input.focus(); return; }
+    if (editor.revision !== (state.settings?.tab_rules_revision ?? "")) { editor.error = "Domain rules changed outside this editor. Review the current list and try again."; dialog.querySelector("#domain-error").textContent = editor.error; input.focus(); return; }
+    const duplicate = existingDomainIndex(editor.domain, editor.index ?? -1);
+    if (duplicate >= 0) { editor.error = "That domain is already in the list."; dialog.querySelector("#domain-error").textContent = editor.error; input.focus(); return; }
+    const rules = [...(state.settings?.auto_tab_domains || [])];
+    const next = { domain: editor.domain, include_subdomains: editor.includeSubdomains };
+    if (editor.index == null) rules.push(next); else rules[editor.index] = next;
+    dialog.querySelectorAll("button, input, select").forEach(control => control.disabled = true);
+    const ok = await saveTabRules(rules, state.settings?.auto_tab_inactive_hours ?? 24);
+    if (!ok) { dialog.querySelectorAll("button, input, select").forEach(control => control.disabled = false); input.focus(); return; }
+    dialog.close();
+    toast(autoMode(state.settings) === "off" ? "Domain saved. Auto mode is off." : !state.settings.auto_close_tabs ? "Domain saved. Enable domain cleanup in Settings." : "Domain saved.");
+  };
+  if (!dialog.open) dialog.showModal();
+  (focusDomain ? dialog.querySelector("#domain-input") : dialog.querySelector(editor.hostChoices.length > 1 ? "#domain-host-choice" : "#domain-input"))?.focus();
+}
+
+const previewStatus = status => ({ eligible: "Eligible", waiting: "Waiting for inactivity", pinned: "Pinned", selected: "Selected", unknown_activity: "Unknown activity", unavailable: "Unavailable" })[status] || status;
+
+function renderTabPreview() {
+  const dialog = document.getElementById("tab-preview"), preview = state.tabPreview;
+  if (!dialog) return;
+  const rows = preview.rows || [];
+  const eligible = rows.filter(row => row.status === "eligible").length;
+  const waiting = rows.filter(row => row.status === "waiting").length;
+  const protectedCount = rows.length - eligible - waiting;
+  dialog.innerHTML = `<div class="review-content preview-content"><h2 id="tab-preview-title">Review matching Chrome tabs</h2><p id="tab-preview-description">Read-only preview. This does not close tabs or change Auto mode.</p>
+    ${preview.busy ? `<p class="muted" role="status">Scanning current Chrome session data…</p>` : preview.error ? `<p class="field-error" role="alert">${esc(preview.error)}</p>` : rows.length ? `<div class="preview-summary"><b>${plural(eligible, "eligible tab")}</b><span>${plural(protectedCount, "protected tab")}</span>${waiting ? `<span>${plural(waiting, "waiting tab")}</span>` : ""}</div><div class="preview-table-wrap"><table class="preview-table"><thead><tr><th>Tab / domain</th><th>Profile</th><th>Last selected</th><th>Status</th></tr></thead><tbody>${rows.map(row => `<tr><td><span class="l1">${esc(row.title || "Untitled tab")}</span><span class="l2">${esc(row.domain || "Unknown domain")}</span></td><td>${esc(row.profile || "Unknown")}</td><td>${row.idle_secs == null ? "Unknown" : esc(dur(row.idle_secs)) + " ago"}</td><td><span class="state ${row.status === "eligible" ? "stale" : row.status === "waiting" ? "idle" : "active"}">${esc(previewStatus(row.status))}</span>${row.reason ? `<span class="l2">${esc(row.reason)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">No open Chrome tabs match the saved domain list.</div>`}
+    <div class="review-actions"><button id="tab-preview-close" autofocus>Done</button></div></div>`;
+  dialog.querySelector("#tab-preview-close").onclick = () => dialog.close();
+}
+
+async function openTabPreview() {
+  const dialog = document.getElementById("tab-preview");
+  if (!dialog) return;
+  state.tabPreview.rows = [];
+  state.tabPreview.error = "";
+  state.tabPreview.busy = true;
+  renderTabPreview();
+  if (!dialog.open) dialog.showModal();
+  const requestId = state.tabPreview.requestId + 1;
+  await requestTabPreview(state.settings?.auto_tab_domains || [], state.settings?.auto_tab_inactive_hours ?? 24);
+  if (state.tabPreview.requestId === requestId && dialog.open) renderTabPreview();
 }
 
 // The dialog owns a frozen set of reviewed identities. Polling may update
@@ -267,12 +438,24 @@ function wire(root) {
   root.querySelectorAll("[data-restart]").forEach(b => b.onclick = () => twoStep(b, "r" + b.dataset.restart, async () => report(await invoke("restart_app", { name: b.dataset.restart, force: false }))));
   // The switches write config.toml; the daemon picks it up on its next tick.
   root.querySelectorAll("[data-auto]").forEach(cb => cb.onchange = () => saveAuto({ [cb.dataset.auto]: cb.checked }));
+  root.querySelectorAll("[data-auto-domain-target]").forEach(cb => cb.onchange = () => saveAuto(autoMode(state.settings) === "off" && cb.checked ? { close_tabs: true, dry_run: true } : { close_tabs: cb.checked }));
   root.querySelectorAll("[data-auto-mode]").forEach(r => r.onchange = () => saveAuto(autoModeValues(state.settings, r.dataset.autoMode)));
   root.querySelectorAll("[data-auto-off]").forEach(b => b.onclick = () => saveAuto(autoModeValues(state.settings, "off")));
   root.querySelectorAll("[data-launch-window]").forEach(cb => cb.onchange = async () => { cb.disabled = true; try { state.settings = await invoke("set_open_window_at_launch", { value: cb.checked }); } catch (e) { toast(String(e)); } refresh(); });
   root.querySelectorAll("[data-setup]").forEach(b => b.onclick = () => window.dispatchEvent(new Event("autotrim-setup")));
   root.querySelectorAll("[data-hide]").forEach(b => b.onclick = () => invoke("hide_window").catch(e => toast(String(e))));
   root.querySelectorAll("[data-update]").forEach(b => b.onclick = () => runUpdate(b.dataset.update));
+  root.querySelectorAll("[data-add-domain]").forEach(b => b.onclick = () => openDomainEditor());
+  root.querySelectorAll("[data-edit-domain]").forEach(b => b.onclick = () => openDomainEditor({ index: +b.dataset.editDomain }));
+  root.querySelectorAll("[data-remove-domain]").forEach(b => b.onclick = async () => { b.disabled = true; await removeDomainRule(+b.dataset.removeDomain); });
+  root.querySelectorAll("[data-domain-hours]").forEach(select => select.onchange = () => saveTabRules(state.settings?.auto_tab_domains || [], +select.value));
+  root.querySelectorAll("[data-review-domains]").forEach(b => b.onclick = () => openTabPreview());
+  root.querySelectorAll("[data-auto-domain-site]").forEach(button => button.onclick = () => {
+    const browser = state.snap.browsers.find(item => item.name === button.dataset.browser);
+    if (!browser) return;
+    const choices = siteHostChoices(browser, button.dataset.autoDomainSite, filteredTabs(browser));
+    if (choices.length) openDomainEditor({ domain: choices[0].domain, hostChoices: choices });
+  });
   root.querySelectorAll("[data-service]").forEach(b => {
     const what = b.dataset.service;
     const run = async () => { state.service = await invoke("service_" + what); toast(what === "install" ? "Installed the login service. The daemon runs now and at every login." : what === "restart" ? "The daemon was restarted." : "Removed the login service; the daemon has stopped. Its data is kept."); };
@@ -376,5 +559,5 @@ function wire(root) {
 }
 
 
-return { toast, copyText, copyCommand, twoStep, afterAction, report, refresh, navigate, saveAuto, reviewSessions, reviewTabs, reviewPorts, reviewNoun, reviewVerb, openReview, updateReviewTotal, executeReview, markGone, pruneGone, runUpdate, wire };
+return { toast, copyText, copyCommand, twoStep, afterAction, report, refresh, navigate, saveAuto, saveTabRules, removeDomainRule, requestTabPreview, openDomainEditor, openTabPreview, reviewSessions, reviewTabs, reviewPorts, reviewNoun, reviewVerb, openReview, updateReviewTotal, executeReview, markGone, pruneGone, runUpdate, wire };
 }

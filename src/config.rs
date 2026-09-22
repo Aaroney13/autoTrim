@@ -4,13 +4,19 @@
 
 use crate::paths;
 use crate::rules::Thresholds;
+use crate::tab_rules::{DomainRule, serialize_rules, validate_domain_rules};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Config {
+    /// Internal file identity, not a user setting. Even edits that restore the
+    /// previous values must invalidate a pending domain authorization.
+    #[serde(skip)]
+    pub file_revision: String,
     /// Seconds between daemon samples.
     pub interval_secs: u64,
     /// Rolling window, in seconds, for per-session CPU averaging.
@@ -74,6 +80,12 @@ pub struct Config {
     pub auto_close_sessions: bool,
     /// Stop old local servers on a timer. Off by default.
     pub auto_stop_servers: bool,
+    /// Close inactive tabs whose domains appear in `auto_tab_domains`.
+    pub auto_close_tabs: bool,
+    /// Shared inactivity threshold for listed domains.
+    pub auto_tab_inactive_hours: f64,
+    /// Domain allowlist for automatic Chrome tab cleanup.
+    pub auto_tab_domains: Vec<DomainRule>,
     /// Minutes between "will close" and closing. Anything that becomes
     /// active in between is spared.
     pub auto_grace_minutes: u64,
@@ -83,8 +95,8 @@ pub struct Config {
     /// sessions makes closing pointless, so this is an allowlist.
     pub auto_hosts: Vec<String>,
 
-    /// The menu bar app opens its window when it starts. Off leaves only
-    /// the menu bar item, for running in the background.
+    /// Open the dashboard at startup. Off keeps the Dock and menu bar icons
+    /// available without opening a window.
     pub open_window_at_launch: bool,
     /// The first-run wizard has been saved successfully.
     pub onboarding_completed: bool,
@@ -102,6 +114,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            file_revision: String::new(),
             interval_secs: 30,
             window_secs: 600,
             retention_days: 7,
@@ -130,6 +143,9 @@ impl Default for Config {
             probe_timeout_ms: 300,
             auto_close_sessions: false,
             auto_stop_servers: false,
+            auto_close_tabs: false,
+            auto_tab_inactive_hours: 24.0,
+            auto_tab_domains: Vec::new(),
             auto_grace_minutes: 10,
             auto_dry_run: false,
             auto_hosts: vec![
@@ -158,14 +174,20 @@ impl Config {
         let Some(path) = Self::path() else {
             return Ok((Config::default(), None));
         };
+        Self::load_at(&path)
+    }
+
+    fn load_at(path: &std::path::Path) -> Result<(Config, Option<PathBuf>)> {
         if !path.is_file() {
             return Ok((Config::default(), None));
         }
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let cfg: Config =
+        let (text, revision) = read_config_text(path)?;
+        let mut cfg: Config =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        Ok((cfg, Some(path)))
+        cfg.validate_tab_rules()
+            .with_context(|| format!("validating {}", path.display()))?;
+        cfg.file_revision = revision;
+        Ok((cfg, Some(path.to_path_buf())))
     }
 
     pub fn thresholds(&self) -> Thresholds {
@@ -250,13 +272,16 @@ probe_timeout_ms = {probe_timeout_ms}
 # notifies what it would have closed, and closes nothing.
 auto_close_sessions = {auto_close_sessions}
 auto_stop_servers = {auto_stop_servers}
+auto_close_tabs = {auto_close_tabs}
+auto_tab_inactive_hours = {auto_tab_inactive_hours}       # listed domains inactive this long may be closed
+auto_tab_domains = []                  # exact domains by default; entries may opt into subdomains
 auto_grace_minutes = {auto_grace_minutes}           # warning first, then this long before acting
 auto_dry_run = {auto_dry_run}
 auto_hosts = ["Claude app", "VS Code", "Cursor", "terminal"]   # sessions under other hosts are never auto-closed;
                                                               # an app's own agent engine never is
 
 # Menu bar app
-open_window_at_launch = {open_window_at_launch}   # false: start with only the menu bar item
+open_window_at_launch = {open_window_at_launch}   # false: start without opening the dashboard
 
 # First-run setup and sidebar priorities
 onboarding_completed = false
@@ -295,6 +320,8 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             probe_timeout_ms = d.probe_timeout_ms,
             auto_close_sessions = d.auto_close_sessions,
             auto_stop_servers = d.auto_stop_servers,
+            auto_close_tabs = d.auto_close_tabs,
+            auto_tab_inactive_hours = d.auto_tab_inactive_hours,
             auto_grace_minutes = d.auto_grace_minutes,
             auto_dry_run = d.auto_dry_run,
             open_window_at_launch = d.open_window_at_launch,
@@ -303,7 +330,13 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
 
     /// Whether auto mode does anything at all.
     pub fn auto_on(&self) -> bool {
-        self.auto_close_sessions || self.auto_stop_servers
+        self.auto_close_sessions || self.auto_stop_servers || self.auto_close_tabs
+    }
+
+    pub fn validate_tab_rules(&mut self) -> Result<()> {
+        self.auto_tab_domains =
+            validate_domain_rules(&self.auto_tab_domains, self.auto_tab_inactive_hours)?;
+        Ok(())
     }
 
     /// Whether `key` names a setting.
@@ -320,44 +353,175 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
     /// TOML: `true`, `5`, `"name"`, `["a", "b"]`.
     pub fn set_values(pairs: &[(&str, String)]) -> Result<PathBuf> {
         let path = Self::path().context("no data directory on this platform")?;
-        let text = if path.is_file() {
-            std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?
-        } else {
-            Self::template()
-        };
-        let edited = set_keys(&text, pairs);
-        toml::from_str::<Config>(&edited).context("the edited settings would not parse")?;
-        crate::storage::write_atomic(&path, edited.as_bytes())?;
+        set_values_at(&path, pairs)?;
+        Ok(path)
+    }
+
+    /// Save edits only while the caller's configuration snapshot is current.
+    pub fn set_values_if_unchanged(
+        pairs: &[(&str, String)],
+        expected_revision: &str,
+    ) -> Result<PathBuf> {
+        let path = Self::path().context("no data directory on this platform")?;
+        set_values_checked_at(&path, pairs, Some(expected_revision))?;
         Ok(path)
     }
 }
 
-/// The pure text edit behind `set_values`: replace the value on each key's
-/// line, keeping its trailing comment, and append keys the file lacks.
-fn set_keys(text: &str, pairs: &[(&str, String)]) -> String {
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+fn read_config_text(path: &std::path::Path) -> Result<(String, String)> {
+    // Read and identify the same open file, including across atomic saves.
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let before = file.metadata()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let after = file.metadata()?;
+    let revision = file_revision(&after)?;
+    anyhow::ensure!(
+        file_revision(&before)? == revision,
+        "settings changed while being read; retry"
+    );
+    Ok((text, revision))
+}
+
+pub(crate) fn file_revision(meta: &std::fs::Metadata) -> Result<String> {
+    let revision = format!(
+        "{:?}:{:?}:{}",
+        meta.modified()?,
+        meta.created().ok(),
+        meta.len()
+    );
+    #[cfg(unix)]
+    let revision = {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "{revision}:{}:{}:{}:{}",
+            meta.dev(),
+            meta.ino(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        )
+    };
+    Ok(revision)
+}
+
+fn set_values_at(path: &std::path::Path, pairs: &[(&str, String)]) -> Result<()> {
+    set_values_checked_at(path, pairs, None)
+}
+
+fn set_values_checked_at(
+    path: &std::path::Path,
+    pairs: &[(&str, String)],
+    expected_revision: Option<&str>,
+) -> Result<()> {
+    let (text, revision) = if path.is_file() {
+        read_config_text(path)?
+    } else {
+        (Config::template(), String::new())
+    };
+    if let Some(expected) = expected_revision {
+        anyhow::ensure!(
+            expected == revision,
+            "settings changed; review the current rules and try again"
+        );
+    }
+    let mut edited = set_keys(&text, pairs)?;
+    let mut cfg =
+        toml::from_str::<Config>(&edited).context("the edited settings would not parse")?;
+    cfg.validate_tab_rules()
+        .context("the edited auto tab settings are invalid")?;
+    if pairs.iter().any(|(key, _)| *key == "auto_tab_domains") {
+        let normalized = serialize_rules(&cfg.auto_tab_domains)?;
+        edited = set_keys(&edited, &[("auto_tab_domains", normalized)])?;
+    }
+    if expected_revision.is_some() {
+        let current = match std::fs::metadata(path) {
+            Ok(meta) => file_revision(&meta)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        anyhow::ensure!(
+            current == revision,
+            "settings changed; review the current rules and try again"
+        );
+    }
+    crate::storage::write_atomic(path, edited.as_bytes())?;
+    Ok(())
+}
+
+/// The pure text edit behind `set_values`: replace assigned values while
+/// preserving comments, including a multiline domain-rule array.
+fn set_keys(text: &str, pairs: &[(&str, String)]) -> Result<String> {
+    // Parser spans identify root values independently of quoted keys, nested
+    // tables, and multiline arrays. Replacing only values preserves comments.
+    let parsed: std::collections::BTreeMap<String, toml::Spanned<toml::Value>> =
+        toml::from_str(text).context("parsing settings for edit")?;
+    if let Some(rules) = parsed.get("auto_tab_domains") {
+        let raw = text[rules.span()].trim_start();
+        anyhow::ensure!(
+            raw.starts_with('[') && !raw.starts_with("[["),
+            "table-form auto_tab_domains is unsupported; use auto_tab_domains = [...] instead"
+        );
+    }
+    let mut edits = Vec::new();
     let mut missing = Vec::new();
-    for (key, value) in pairs {
-        match lines.iter().position(|l| key_of(l) == Some(key)) {
-            Some(i) => {
-                lines[i] = match trailing_comment(&lines[i]) {
-                    Some(c) => format!("{key} = {value}   {c}"),
-                    None => format!("{key} = {value}"),
-                };
-            }
-            None => missing.push(format!("{key} = {value}")),
+    // `config set` accepts repeated keys; retain the last requested value and
+    // apply each source span only once, even if replacement lengths differ.
+    let requested: std::collections::BTreeMap<_, _> =
+        pairs.iter().map(|(key, value)| (*key, value)).collect();
+    for (key, value) in requested {
+        if let Some(old) = parsed.get(key) {
+            edits.push((old.span(), value.clone()));
+        } else {
+            missing.push(format!("{key} = {value}"));
         }
     }
     if !missing.is_empty() {
-        if lines.last().is_some_and(|l| !l.trim().is_empty()) {
-            lines.push(String::new());
+        // Ignore bracket-looking lines inside a root value, such as an array
+        // or multiline string, when finding the first table header.
+        let values: Vec<_> = parsed
+            .values()
+            .filter(|v| !v.get_ref().is_table())
+            .map(|v| v.span())
+            .collect();
+        let mut offset = 0;
+        let mut attached_comments = None;
+        let mut insert_at = text.len();
+        for line in text.split_inclusive('\n') {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('[') && !values.iter().any(|span| span.contains(&offset)) {
+                insert_at = attached_comments.unwrap_or(offset);
+                break;
+            }
+            if trimmed.trim().is_empty() || trimmed.starts_with('#') {
+                attached_comments.get_or_insert(offset);
+            } else {
+                attached_comments = None;
+            }
+            offset += line.len();
         }
-        lines.push("# Added by autotrim".to_string());
-        lines.extend(missing);
+        let mut block = String::new();
+        if insert_at > 0 && !text[..insert_at].ends_with("\n\n") {
+            block.push('\n');
+        }
+        block.push_str("# Added by autotrim\n");
+        block.push_str(&missing.join("\n"));
+        block.push('\n');
+        if insert_at < text.len() && !text[insert_at..].starts_with('\n') {
+            block.push('\n');
+        }
+        edits.push((insert_at..insert_at, block));
     }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
+    edits.sort_by_key(|a| std::cmp::Reverse(a.0.start));
+    let mut out = text.to_string();
+    for (range, value) in edits {
+        out.replace_range(range, &value);
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// The key a line assigns, when it is a top-level `key = value` line.
@@ -374,32 +538,6 @@ fn key_of(line: &str) -> Option<&str> {
     .then_some(k)
 }
 
-/// The `# comment` at the end of a value line, ignoring a `#` inside a
-/// quoted string.
-fn trailing_comment(line: &str) -> Option<&str> {
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    for (i, c) in line.char_indices() {
-        match quote {
-            Some(q) => {
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' && q == '"' {
-                    escaped = true;
-                } else if c == q {
-                    quote = None;
-                }
-            }
-            None => match c {
-                '"' | '\'' => quote = Some(c),
-                '#' => return Some(line[i..].trim_end()),
-                _ => {}
-            },
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,12 +551,18 @@ mod tests {
                 ("auto_close_sessions", "true".to_string()),
                 ("auto_grace_minutes", "5".to_string()),
             ],
-        );
+        )
+        .unwrap();
         assert_eq!(before.lines().count(), after.lines().count());
         assert!(after.contains("auto_close_sessions = true\n"));
+        let old_line = before
+            .lines()
+            .find(|l| l.starts_with("auto_grace_minutes ="))
+            .unwrap();
         assert!(
             after
-                .contains("auto_grace_minutes = 5   # warning first, then this long before acting")
+                .lines()
+                .any(|line| line == old_line.replacen(" = 10", " = 5", 1))
         );
         let parsed: Config = toml::from_str(&after).unwrap();
         assert!(parsed.auto_close_sessions);
@@ -431,7 +575,8 @@ mod tests {
         let after = set_keys(
             "stale_after_hours = 2   # short\n",
             &[("auto_dry_run", "true".to_string())],
-        );
+        )
+        .unwrap();
         assert!(after.starts_with("stale_after_hours = 2   # short\n"));
         assert!(after.ends_with("# Added by autotrim\nauto_dry_run = true\n"));
         let parsed: Config = toml::from_str(&after).unwrap();
@@ -440,16 +585,27 @@ mod tests {
     }
 
     #[test]
-    fn comments_inside_strings_are_not_comments() {
+    fn repeated_key_updates_use_the_last_value_without_invalidating_spans() {
+        let after = set_keys(
+            "notify = false",
+            &[("notify", "true".into()), ("notify", "false".into())],
+        )
+        .unwrap();
+        assert!(!toml::from_str::<Config>(&after).unwrap().notify);
+        let after = set_keys(
+            "",
+            &[
+                ("auto_tab_inactive_hours", "100".into()),
+                ("auto_tab_inactive_hours", "24".into()),
+            ],
+        )
+        .unwrap();
         assert_eq!(
-            trailing_comment(r#"ignore_apps = ["a#b"]  # c"#),
-            Some("# c")
+            toml::from_str::<Config>(&after)
+                .unwrap()
+                .auto_tab_inactive_hours,
+            24.0
         );
-        assert_eq!(trailing_comment(r#"x = "a#b""#), None);
-        assert_eq!(trailing_comment("x = 'it''s #1'  # d"), Some("# d"));
-        assert_eq!(key_of("  auto_dry_run=false"), Some("auto_dry_run"));
-        assert_eq!(key_of("# auto_dry_run = false"), None);
-        assert_eq!(key_of("[table]"), None);
     }
 
     #[test]
@@ -479,6 +635,9 @@ mod tests {
             Config::default().tab_stale_after_hours
         );
         assert_eq!(parsed.auto_hosts, Config::default().auto_hosts);
+        assert!(!parsed.auto_close_tabs);
+        assert_eq!(parsed.auto_tab_inactive_hours, 24.0);
+        assert!(parsed.auto_tab_domains.is_empty());
         assert!(parsed.open_window_at_launch);
     }
 
@@ -489,5 +648,234 @@ mod tests {
         assert_eq!(parsed.stale_after_hours, 2.0);
         assert_eq!(parsed.ignore_ports, vec![5432]);
         assert_eq!(parsed.interval_secs, 30);
+    }
+
+    #[test]
+    fn partial_file_gets_safe_auto_tab_defaults() {
+        let mut parsed: Config = toml::from_str("notify = false\n").unwrap();
+        assert!(!parsed.auto_close_tabs);
+        assert_eq!(parsed.auto_tab_inactive_hours, 24.0);
+        assert!(parsed.auto_tab_domains.is_empty());
+        assert!(!parsed.auto_on());
+        parsed.auto_close_tabs = true;
+        assert!(parsed.auto_on());
+    }
+
+    #[test]
+    fn ten_minute_tab_timer_and_existing_whole_hours_load_correctly() {
+        use crate::daemon::{DaemonConfig, Overrides};
+        let mut cfg: Config =
+            toml::from_str("auto_tab_inactive_hours = 0.16666666666666666").unwrap();
+        cfg.validate_tab_rules().unwrap();
+        assert_eq!(
+            DaemonConfig::from_config(&cfg, &Overrides::default())
+                .auto
+                .tab_inactive_secs,
+            600
+        );
+        let mut legacy: Config = toml::from_str("auto_tab_inactive_hours = 24").unwrap();
+        legacy.validate_tab_rules().unwrap();
+        assert_eq!(
+            DaemonConfig::from_config(&legacy, &Overrides::default())
+                .auto
+                .tab_inactive_secs,
+            86_400
+        );
+    }
+
+    #[test]
+    fn validate_tab_rules_normalizes_domains_and_enforces_hours() {
+        let mut cfg = Config {
+            auto_tab_inactive_hours: 48.0,
+            auto_tab_domains: vec![crate::tab_rules::DomainRule {
+                domain: " Example.COM. ".to_string(),
+                include_subdomains: true,
+            }],
+            ..Config::default()
+        };
+        cfg.validate_tab_rules().unwrap();
+        assert_eq!(cfg.auto_tab_domains[0].domain, "example.com");
+
+        cfg.auto_tab_inactive_hours = 0.0;
+        assert!(cfg.validate_tab_rules().is_err());
+    }
+
+    #[test]
+    fn set_keys_replaces_multiline_rules_without_touching_other_content() {
+        let before = r#"# keep this
+notify = true
+auto_tab_domains = [
+  { domain = "old.example", include_subdomains = false },
+] # old rules
+ignore_apps = ["name#tag"] # quoted hash
+"#;
+        let after = set_keys(
+            before,
+            &[(
+                "auto_tab_domains",
+                r#"[{ domain = "new.example", include_subdomains = true }]"#.to_string(),
+            )],
+        )
+        .unwrap();
+        assert!(after.contains("# keep this\nnotify = true\n"));
+        assert!(after.contains(
+            r#"auto_tab_domains = [{ domain = "new.example", include_subdomains = true }] # old rules"#
+        ));
+        assert!(after.contains(r#"ignore_apps = ["name#tag"] # quoted hash"#));
+        assert!(!after.contains("old.example"));
+    }
+
+    #[test]
+    fn set_keys_inserts_missing_root_key_before_first_table() {
+        let before = "notify = true\n\n[future]\nvalue = 1\n";
+        let after = set_keys(before, &[("auto_tab_inactive_hours", "12".to_string())]).unwrap();
+        let inserted = after.find("auto_tab_inactive_hours = 12").unwrap();
+        let table = after.find("[future]").unwrap();
+        assert!(inserted < table);
+    }
+
+    #[test]
+    fn set_keys_rejects_array_of_tables_rules() {
+        let before = "notify = true\n[[auto_tab_domains]]\ndomain = \"example.com\"\n";
+        assert!(set_keys(before, &[("notify", "false".to_string())]).is_err());
+    }
+
+    #[test]
+    fn root_edits_preserve_nested_keys_and_table_comments() {
+        let before = "notify = true\n\n# Future settings\n[future]\nauto_close_tabs = false\nauto_tab_domains = []\n";
+        let after = set_keys(
+            before,
+            &[
+                ("auto_close_tabs", "true".into()),
+                ("auto_tab_domains", r#"[{domain = "example.com"}]"#.into()),
+            ],
+        )
+        .unwrap();
+        let cfg: Config = toml::from_str(&after).unwrap();
+        assert!(cfg.auto_close_tabs);
+        assert_eq!(cfg.auto_tab_domains[0].domain, "example.com");
+        assert!(after.ends_with(
+            "# Future settings\n[future]\nauto_close_tabs = false\nauto_tab_domains = []\n"
+        ));
+    }
+
+    #[test]
+    fn quoted_root_keys_and_table_form_rules_are_handled_without_data_loss() {
+        let after = set_keys(
+            "'auto_close_tabs' = false # keep\n",
+            &[("auto_close_tabs", "true".into())],
+        )
+        .unwrap();
+        assert!(toml::from_str::<Config>(&after).unwrap().auto_close_tabs);
+        assert!(after.contains("# keep"));
+        let table_form = "[[ 'auto_tab_domains' ]]\ndomain = 'example.com'\n";
+        assert!(set_keys(table_form, &[("auto_tab_domains", "[]".into())]).is_err());
+    }
+
+    #[test]
+    fn intervening_config_edits_never_revive_a_domain_warning() {
+        use crate::{
+            daemon::{DaemonConfig, Overrides},
+            policy::{PolicyState, decide},
+            test_support::chrome_snapshot,
+        };
+        let dir =
+            std::env::temp_dir().join(format!("autotrim-config-revision-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let initial = "auto_close_tabs = true\nauto_tab_domains = [{domain = 'example.com'}]\n";
+        let mut snap = chrome_snapshot();
+        snap.taken_at = 100_000;
+        snap.browsers[0].tabs[0].url = "https://example.com/page".into();
+        snap.browsers[0].tabs[0].last_active = Some(1);
+        for (key, revoked, restored) in [
+            ("auto_close_tabs", "false", "true"),
+            ("auto_dry_run", "true", "false"),
+            ("auto_tab_domains", "[]", "[{domain = 'example.com'}]"),
+        ] {
+            crate::storage::write_atomic(&path, initial.as_bytes()).unwrap();
+            let (file, _) = Config::load_at(&path).unwrap();
+            let cfg = DaemonConfig::from_config(&file, &Overrides::default());
+            let mut state = PolicyState::default();
+            assert_eq!(decide(&mut state, &snap, &cfg, 100_000).pending.len(), 1);
+            set_values_at(&path, &[(key, revoked.into())]).unwrap();
+            set_values_at(&path, &[(key, restored.into())]).unwrap();
+            // Also model a daemon restart, retaining only its persisted warnings.
+            state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            let (file, _) = Config::load_at(&path).unwrap();
+            let cfg = DaemonConfig::from_config(&file, &Overrides::default());
+            let fresh = decide(&mut state, &snap, &cfg, 100_600);
+            assert!(
+                fresh.eligible.is_empty(),
+                "revived warning after editing {key}"
+            );
+            assert_eq!(fresh.pending[0].due_at, 101_200);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_domain_save_cannot_restore_rules_removed_since_review() {
+        let dir = std::env::temp_dir().join(format!("autotrim-stale-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        set_values_at(
+            &path,
+            &[("auto_tab_domains", "[{domain = 'removed.example'}]".into())],
+        )
+        .unwrap();
+        let (reviewed, _) = Config::load_at(&path).unwrap();
+
+        // An external edit lands before the UI's next settings poll.
+        set_values_at(&path, &[("auto_tab_domains", "[]".into())]).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let stale = set_values_checked_at(
+            &path,
+            &[(
+                "auto_tab_domains",
+                "[{domain = 'removed.example'}, {domain = 'new.example'}]".into(),
+            )],
+            Some(&reviewed.file_revision),
+        );
+        assert!(stale.unwrap_err().to_string().contains("settings changed"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+        let (current, _) = Config::load_at(&path).unwrap();
+        set_values_checked_at(
+            &path,
+            &[("auto_tab_domains", "[{domain = 'new.example'}]".into())],
+            Some(&current.file_revision),
+        )
+        .unwrap();
+        let (saved, _) = Config::load_at(&path).unwrap();
+        assert_eq!(saved.auto_tab_domains.len(), 1);
+        assert_eq!(saved.auto_tab_domains[0].domain, "new.example");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scratch_write_is_atomic_on_invalid_tab_settings_and_normalizes_valid_rules() {
+        let dir = std::env::temp_dir().join(format!("autotrim-config-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "notify = true\n").unwrap();
+
+        let bad = set_values_at(&path, &[("auto_tab_inactive_hours", "0".to_string())]);
+        assert!(bad.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "notify = true\n");
+
+        set_values_at(
+            &path,
+            &[(
+                "auto_tab_domains",
+                r#"[{ domain = "EXAMPLE.COM.", include_subdomains = false }]"#.to_string(),
+            )],
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains(r#"domain = "example.com""#));
+        assert!(!saved.contains("EXAMPLE.COM."));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -82,7 +82,7 @@ export function initializeOnboarding(onSaved) {
         background: supported && (service.installed || !settings.onboarding_completed),
         open_window_at_launch: settings.open_window_at_launch ?? true,
       };
-      autoEnabled = settings.auto_close_sessions || settings.auto_stop_servers;
+      autoEnabled = settings.auto_close_sessions || settings.auto_stop_servers || settings.auto_close_tabs;
       step = force ? 1 : 0;
       draw();
       dialog.showModal();

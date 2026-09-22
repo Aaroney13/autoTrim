@@ -24,6 +24,10 @@ This installs the `autotrim` command and autoTrim.app in Applications. Open the
 app to choose what to monitor, idle thresholds, notifications, and whether to
 run at login. Revisit these choices in **Settings → Review setup**.
 
+autoTrim appears in the Dock while running. Click its Dock icon to open the
+dashboard again after closing it. To keep the icon after quitting, choose
+**Options → Keep in Dock** from the icon's shortcut menu.
+
 The app checks for updates automatically. To update manually, use
 **Settings → App updates → Check for updates → Install and restart**.
 Older installations and CLI-only installs can update with
@@ -64,6 +68,13 @@ autotrim restart <app>        # Quit and reopen an app
 The app provides search, filters, and target review before closing sessions,
 tabs, or servers. Settings offers **Off**, **Preview only**, and **On** for
 automatic cleanup. Auto mode warns first and rechecks activity before acting.
+
+**Chrome tab cleanup** in Settings adds an optional domain allowlist, with exact
+or subdomain matching and a read-only preview. Listed tabs wait 24 hours since
+their last selection by default; presets range from 10 minutes to 1 week, followed
+by the shared warning period. The list starts empty and adding a domain does not
+enable closing. Selected, pinned, and unknown-activity tabs stay open. Background
+page work and unsaved drafts cannot be detected.
 
 Actions save recovery details before execution, but cannot guarantee restoration
 of unsaved drafts or in-memory work. Memory figures describe current usage,

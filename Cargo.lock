@@ -285,6 +285,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "toml 1.1.6+spec-1.1.0",
+ "url",
 ]
 
 [[package]]
@@ -293,6 +294,9 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "autotrim",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tauri",

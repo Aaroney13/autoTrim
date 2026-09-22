@@ -1,8 +1,8 @@
 // Dashboard markup and DOM rendering.
-import { icon, GB, bytes, dur, pct, esc, plural, kindTag, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes, MB } from "./format.js";
-import { state, armed, listModels, goneTab, goneSession, holders, holderByKey, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
+import { icon, GB, bytes, dur, esc, plural, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes } from "./format.js";
+import { domainInactivityLabel, state, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs } from "./state.js";
 import { createActions } from "./actions.js";
-const { toast, copyText, copyCommand, twoStep, afterAction, report, refresh, navigate, saveAuto, reviewSessions, reviewTabs, reviewPorts, reviewNoun, reviewVerb, openReview, updateReviewTotal, executeReview, markGone, pruneGone, runUpdate, wire } = createActions({ renderAll: (...a) => renderAll(...a), renderMain: (...a) => renderMain(...a), renderSide: (...a) => renderSide(...a), renderHeader: (...a) => renderHeader(...a) });
+const { refresh, navigate, reviewSessions, reviewTabs, reviewPorts, wire } = createActions({ renderAll: (...a) => renderAll(...a), renderMain: (...a) => renderMain(...a), renderSide: (...a) => renderSide(...a), renderHeader: (...a) => renderHeader(...a) });
 function renderHeader() {
   const sys = state.snap.system, total = sys.total_mem;
   const used = total > 0 ? Math.max(0, Math.min(100, sys.used_mem * 100 / total)) : 0;
@@ -67,6 +67,11 @@ function tickSync() {
 
 
 
+function holderIcon(h) {
+  const data = state.appIcons.get(appIconName(h));
+  return `<span class="app-icon" aria-hidden="true">${data ? `<img src="${esc(data)}" alt="" width="32" height="32">` : icon(h.kind)}</span>`;
+}
+
 function renderSide() {
   const s = state.snap;
   const focus = state.settings?.focus_areas || [];
@@ -83,7 +88,7 @@ function renderSide() {
   const shown = state.showAll ? hs : hs.slice(0, LIMIT);
   const largest = Math.max(1, ...hs.map(h => h.rss));
   html += shown.map(h => `<a class="item${sel(h.key)}" data-view="${esc(h.key)}" title="${esc(h.name)} · ${esc(h.count)} · ${plural(h.procs, "process")} · ${h.cpu.toFixed(1)}% CPU">
-      <span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="holder-meter" aria-hidden="true"><i style="width:${Math.max(0, h.rss / largest * 100).toFixed(2)}%"></i></span></a>`).join("");
+      ${holderIcon(h)}<span class="name">${esc(h.name)}</span><span class="mem">${bytes(h.rss)}</span><span class="holder-meter" aria-hidden="true"><i style="width:${Math.max(0, h.rss / largest * 100).toFixed(2)}%"></i></span></a>`).join("");
   if (hs.length > shown.length) html += `<span class="more" data-more="1">${hs.length - shown.length} more…</span>`;
   else if (state.showAll && hs.length > LIMIT) html += `<span class="more" data-more="0">show fewer</span>`;
   html += `</div><div class="nav-status"><span class="${state.src.daemon_running ? "running" : ""}">${state.src.daemon_running ? '<i class="status-dot" aria-hidden="true"></i>Running in background' : "Background monitor stopped"}</span><a href="#settings" data-view="settings">Auto mode ${esc(autoMode(state.settings).replace("preview", "in preview"))}</a></div>`;
@@ -162,11 +167,11 @@ function autoCard() {
   for (const [key, label, checked, detail] of [["close_sessions", "Close stale agent sessions", c.auto_close_sessions, `Idle past ${dur(c.stale_after_secs ?? 21600)}, with transcript and CPU evidence.`], ["stop_servers", "Stop old local servers", c.auto_stop_servers, `Quiet dev servers open past ${dur(c.port_stale_after_secs ?? 86400)}.`]]) {
     html += `<div class="setting-row"><label><span>${label}<small class="muted" style="display:block">${detail}</small></span><input type="checkbox" data-auto="${key}" ${checked ? "checked" : ""} ${busy || mode === "off" || c.config_error ? "disabled" : ""}></label></div>`;
   }
-  html += `<p class="muted">Auto mode also closes empty Chrome New Tab pages after the warning period. Selected and pinned tabs stay open; visiting a tab or navigating away cancels its pending close.</p>`;
-  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, the newest session in each project, and selected or pinned browser tabs. Only these session hosts are allowed: ${esc(c.auto_hosts.join(", ") || "none")}. Activity during the grace period cancels that target’s close.</p></details>`;
+  html += domainSettings(c, mode, busy);
+  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, the newest session in each project, and selected or pinned browser tabs. Only these session hosts are allowed: ${esc((c.auto_hosts || []).join(", ") || "none")}. Activity during the warning period cancels that target’s close.</p></details>`;
   if (!state.src.daemon_running) html += `<p class="note">The background monitor is stopped. Start it below for auto mode to run.</p>`;
   else if (a) {
-    const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.dry_run === c.auto_dry_run;
+    const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.close_tabs === c.auto_close_tabs && a.dry_run === c.auto_dry_run && a.tab_rules_revision === c.tab_rules_revision;
     if (!applied || busy) html += `<p class="muted" role="status">Applying… the background monitor picks up changes on its next sample.</p>`;
     if (a.pending.length) html += pendingList(a) + (mode !== "off" ? `<div class="row2"><button data-auto-off ${busy ? "disabled" : ""}>Turn off auto mode</button><span class="muted">Cancels pending closes when the change is picked up.</span></div>` : "");
     else if (mode !== "off" && applied) html += `<p class="muted">Nothing is waiting to be closed.</p>`;
@@ -174,6 +179,24 @@ function autoCard() {
   const dry = state.log.filter(r => r.mode === "dry-run");
   if (dry.length) html += `<p class="muted">Preview history: ${plural(dry.length, "would-be close")} among the last ${state.log.length} logged actions.</p>`;
   return html + `</div>`;
+}
+
+function domainSettings(c, mode, busy) {
+  const rules = c.auto_tab_domains || [];
+  const hours = c.auto_tab_inactive_hours ?? 24;
+  const presets = [10 / 60, 20 / 60, 30 / 60, 45 / 60, 1, 2, 6, 12, 24, 48, 168];
+  const choices = presets.includes(hours) ? presets : [...presets, hours].sort((a, b) => a - b);
+  const blocked = busy || !!c.config_error;
+  return `<section class="domain-settings" aria-labelledby="domain-settings-title">
+    <div class="domain-section-head"><div><h3 id="domain-settings-title">Chrome tab cleanup</h3><p class="muted">Preview your matches first. autoTrim can’t detect drafts, media, uploads, or work inside a page.</p></div><span class="tag">All profiles</span></div>
+    <div class="setting-row static-setting"><span>Empty New Tab pages<small class="muted">Included in Auto mode</small></span><span class="muted">Included</span></div>
+    <div class="setting-row"><label><span>Close tabs from listed domains<small class="muted">A separate target that can run without session or server cleanup.</small></span><input type="checkbox" data-auto-domain-target ${c.auto_close_tabs ? "checked" : ""} ${blocked ? "disabled" : ""}></label></div>
+    <div class="domain-controls"><label>Inactive for<select data-domain-hours aria-label="Domain inactivity" ${blocked ? "disabled" : ""}>${choices.map(value => `<option value="${value}" ${value === hours ? "selected" : ""}>${esc(domainInactivityLabel(value))}${!presets.includes(value) ? " (custom)" : ""}</option>`).join("")}</select></label><span class="muted">Then warn for ${dur((c.auto_grace_minutes ?? 10) * 60)}. This warning period is shared by all automatic cleanup.</span></div>
+    <div class="domain-list" aria-label="Auto-close domains">${rules.length ? rules.map((rule, index) => `<div class="domain-row"><div><b>${esc(rule.domain)}</b><span>${rule.include_subdomains ? "Includes subdomains" : "Exact domain"}</span></div><div><button data-edit-domain="${index}" ${blocked ? "disabled" : ""}>Edit</button><button data-remove-domain="${index}" ${blocked ? "disabled" : ""}>Remove</button></div></div>`).join("") : `<div class="domain-empty"><b>No domains yet</b><span>Add a domain, then review its matching Chrome tabs before enabling cleanup.</span></div>`}</div>
+    <div class="domain-actions"><button data-add-domain ${blocked ? "disabled" : ""}>Add domain</button><button class="primary" data-review-domains ${blocked || !rules.length ? "disabled" : ""}>Review matches</button></div>
+    <p class="scope">HTTP and HTTPS on every port. Selected and pinned tabs stay open. Unsaved page content may be lost.</p>
+    ${mode === "off" && rules.length ? `<p class="muted">Saved; Auto mode is off.</p>` : ""}
+  </section>`;
 }
 
 
@@ -190,7 +213,7 @@ function backgroundCard() {
     <div class="muted">${status}</div>
     ${sv.binary || sv.pid ? `<details class="help" data-keep-open="service-details"><summary>Service details</summary><p>${sv.pid ? `PID: ${sv.pid}<br>` : ""}${esc(sv.binary || "")}</p></details>` : ""}
     <div class="row2">${buttons}</div>
-    <label style="margin-top:8px" title="off: the app starts as a menu bar item only; Open autoTrim… in its menu brings the window back"><input type="checkbox" data-launch-window ${c.open_window_at_launch ? "checked" : ""}>Open this window when the app starts</label>
+    <label style="margin-top:8px" title="off: start without the dashboard; click the Dock icon or Open autoTrim… in the menu bar to open it"><input type="checkbox" data-launch-window ${c.open_window_at_launch ? "checked" : ""}>Open this window when the app starts</label>
     <div class="row2"><button data-hide>Hide window</button><span class="muted">The menu bar item stays. The daemon keeps working with the window closed, and with the app quit.</span></div></div>`;
 }
 
@@ -364,7 +387,7 @@ function viewAgents(h) {
   const appRss = h.app ? Math.max(0, h.rss - h.sessions.reduce((n, x) => n + x.rss, 0)) : 0;
   const ports = s.ports.filter(p => h.pids.includes(p.pid) && !h.sessions.some(x => (x.pids || []).includes(p.pid)));
   const trend = (s.trends || []).find(t => t.key === h.key && t.span_secs >= 600);
-  return `<h1>${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> across ${plural(h.procs, "process")}</span><span>${sessionCount(live)}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
+  return `<h1>${holderIcon(h)}${esc(h.name)} <span class="pill">Agent</span></h1><div class="sub"><span><b>${bytes(h.rss)}</b> across ${plural(h.procs, "process")}</span><span>${sessionCount(live)}</span><span>${h.cpu.toFixed(1)}% CPU</span></div>
     <div class="list-toolbar"><label class="search">${icon("search")}<input type="search" data-session-filter aria-label="Search sessions" placeholder="Search tasks, sessions or projects" value="${esc(state.sessFilter)}"></label><select data-sess-sort aria-label="Sort sessions">${["rss", "idle", "age", "name"].map(k => `<option value="${k}" ${state.sessSort === k ? "selected" : ""}>${(state.sessReverse && state.sessSort === k ? {rss:"Least memory",idle:"Shortest idle",age:"Newest",name:"Name Z–A"} : {rss:"Most memory",idle:"Longest idle",age:"Oldest",name:"Name A–Z"})[k]}</option>`).join("")}</select></div>
     <div class="filter-row">${filterChips("session", state.sessState, [["all", "All sessions"], ["stale", "Stale"], ["active", "Active"]])}<span class="muted">${visible.length} shown</span></div>
     ${sessionTable(visible)}<p class="help">Select rows to close several sessions together. Active sessions and app engines stay open.</p>
@@ -393,7 +416,7 @@ function viewBrowser(h) {
   const counts = { all: matching.length, stale: matching.filter(t => isStale(b, t) && !t.pinned).length, chat: matching.filter(t => t.kind === "chat").length };
   const threshold = state.settings?.tab_stale_after_secs ?? 86400;
   const profile = b.open_profiles.find(p => p.dir === state.tabProfile)?.label || state.tabProfile;
-  let html = `<div class="browser-heading"><h1>${esc(h.name)}</h1><span>${bytes(h.rss)} · ${plural(live.length, "tab")}</span></div>`;
+  let html = `<div class="browser-heading"><h1>${holderIcon(h)}${esc(h.name)}</h1><span>${bytes(h.rss)} · ${plural(live.length, "tab")}</span></div>`;
   if (!live.length) return html + `<p class="note">No tabs to show. ${esc(b.tabs_note || "")}</p>` + holderMemoryHelp(h) + quitBlock(h);
   if (stale.length) html += `<section class="cleanup-summary" aria-label="Stale tab cleanup"><div><strong>${plural(stale.length, 'tab')} untouched for ${compactDuration(threshold)} or more</strong><p>${est ? `<b>≈ ${bytes(stale.length * est)}</b> estimated footprint` : 'Ready to review'}${state.tabFilter || state.tabProfile || state.tabState !== 'all' ? ' in these results' : ''}</p></div><button class="primary" data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button></section>`;
   html += `<div class="list-toolbar browser-toolbar"><label class="search">${icon("search")}<input type="search" data-tab-filter aria-label="Search tabs" placeholder="Search titles or URLs" value="${esc(state.tabFilter)}"></label>
@@ -434,7 +457,7 @@ function viewApp(h) {
   const hosted = s.sessions.filter(x => x.host_app === h.name);
   const trend = (s.trends || []).find(t => t.key === "g:" + h.name && t.span_secs >= 600);
   const ports = s.ports.filter(p => h.pids.includes(p.pid));
-  let html = `<h1>${esc(h.name)} <span class="pill">${h.kind === "app" ? "app" : "process"}</span></h1>
+  let html = `<h1>${holderIcon(h)}${esc(h.name)} <span class="pill">${h.kind === "app" ? "app" : "process"}</span></h1>
     <div class="sub"><span><b>${bytes(h.rss)}</b> process total</span><span><b>${h.cpu.toFixed(1)}%</b> cpu</span><span><b>${plural(h.procs, "process")}</b></span>${trend ? `<span>${trend.growth >= 0 ? "grew" : "shrank"} <b>${bytes(Math.abs(trend.growth))}</b> over ${dur(trend.span_secs)}</span>` : ""}</div>`;
   if (hosted.length) {
     html += `<h2>Agent sessions it hosts</h2>${sessionTable(hosted)}`;
@@ -455,7 +478,9 @@ function viewApp(h) {
 function sitesTable(b, tabs) {
   const rows = sitesOf(b, tabs).slice(0, 12).map(st => {
     const closable = tabs.filter(t => t.site === st.site && canCloseTab(b, t)), stale = closable.filter(t => isStale(b, t));
-    return { id: st.site, title: st.site, context: `${plural(st.tabs, "tab")} · ${st.stale_tabs} stale`, type: "Site", metric: b.per_tab_estimate ? "≈ " + bytes(st.est_rss) : "—", metricLabel: "Average per tab × selected site tabs (estimate)", facts: [["Tabs", st.tabs], ["Stale", st.stale_tabs], ["Oldest untouched", st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "Unknown"]], note: "These counts follow your search and profile filters. Pinned and active tabs stay open.", action: `<button class="primary" ${stale.length ? '' : 'disabled'} data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button><button ${closable.length ? '' : 'disabled'} data-close-tabs="${closable.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review all ${plural(closable.length, 'eligible tab')}</button>` };
+    const domains = siteHostChoices(b, st.site, tabs);
+    const domainAction = /^(Google )?Chrome$/.test(b.name) && domains.length ? `<button data-auto-domain-site="${esc(st.site)}" data-browser="${esc(b.name)}" ${state.settings?.config_error ? "disabled" : ""}>Auto-close this domain…</button>` : "";
+    return { id: st.site, title: st.site, context: `${plural(st.tabs, "tab")} · ${st.stale_tabs} stale`, type: "Site", metric: b.per_tab_estimate ? "≈ " + bytes(st.est_rss) : "—", metricLabel: "Average per tab × selected site tabs (estimate)", facts: [["Tabs", st.tabs], ["Stale", st.stale_tabs], ["Oldest untouched", st.oldest_idle_secs != null ? dur(st.oldest_idle_secs) : "Unknown"]], note: "These counts follow your search and profile filters. Pinned and active tabs stay open.", action: `<button class="primary" ${stale.length ? '' : 'disabled'} data-close-tabs="${stale.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review ${plural(stale.length, 'stale tab')}</button><button ${closable.length ? '' : 'disabled'} data-close-tabs="${closable.map(t => t.id).join(',')}" data-browser="${esc(b.name)}">Review all ${plural(closable.length, 'eligible tab')}</button>${domainAction}` };
   });
   return compactList("sites", rows, { label: "Sites in these results", title: "Site / tabs", metric: "≈ Memory", noun: "site" });
 }
