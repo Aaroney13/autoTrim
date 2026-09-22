@@ -98,8 +98,8 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > release-check/release.json
           node scripts/verify-update.mjs release-check "$RELEASE_VERSION"
           tar -xzf release-check/*.app.tar.gz -C release-check
-          lipo -verify_arch arm64 x86_64 release-check/autoTrim.app/Contents/MacOS/autotrim-tray
-          lipo -verify_arch arm64 x86_64 release-check/autoTrim.app/Contents/MacOS/autotrim
+          lipo release-check/autoTrim.app/Contents/MacOS/autotrim-tray -verify_arch arm64 x86_64
+          lipo release-check/autoTrim.app/Contents/MacOS/autotrim -verify_arch arm64 x86_64
           test "$(release-check/autoTrim.app/Contents/MacOS/autotrim --version)" = "autotrim $RELEASE_VERSION"
       - name: Publish the complete update
         env:

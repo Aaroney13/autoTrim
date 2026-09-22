@@ -112,6 +112,37 @@ function siteHostChoices(browser, site, tabs = browser.tabs) {
   return [...counts].map(([domain, count]) => ({ domain, count })).sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain));
 }
 
+// Snapshot-based suggestions; the native preview rechecks matching tabs.
+function domainRecommendations() {
+  const byDomain = new Map(), rules = state.settings?.auto_tab_domains || [];
+  const inactiveSecs = Math.round((state.settings?.auto_tab_inactive_hours ?? 24) * 3600);
+  for (const browser of state.snap?.browsers || []) {
+    if (!['Google Chrome', 'Chrome'].includes(browser.name) || !browser.can_close_tabs || browser.tabs_note) continue;
+    for (const tab of browser.tabs) {
+      if (goneTab(tab)) continue;
+      const domain = hostnameOfTab(tab);
+      // Only suggest DNS names accepted by the rule editor, never IPs or local labels.
+      if (!domain || domain.length > 253 || !domain.includes('.') || /^\d+(\.\d+){3}$/.test(domain)
+        || !domain.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) continue;
+      if (rules.some(rule => {
+        const listed = rule.domain.toLowerCase().replace(/\.$/, '');
+        return domain === listed || rule.include_subdomains && domain.endsWith('.' + listed);
+      })) continue;
+      const row = byDomain.get(domain) || { domain, count: 0, inactiveCount: 0, oldestIdleSecs: null };
+      row.count++;
+      if (!tab.pinned && !tab.active && tab.last_active > 0 && tab.last_active <= state.snap.taken_at) {
+        const idle = state.snap.taken_at - tab.last_active;
+        row.oldestIdleSecs = Math.max(row.oldestIdleSecs ?? 0, idle);
+        if (idle >= inactiveSecs) row.inactiveCount++;
+      }
+      byDomain.set(domain, row);
+    }
+  }
+  return [...byDomain.values()].sort((a, b) => b.inactiveCount - a.inactiveCount
+    || (b.oldestIdleSecs ?? -1) - (a.oldestIdleSecs ?? -1)
+    || b.count - a.count || a.domain.localeCompare(b.domain));
+}
+
 // Remember what was closed from here until a snapshot no longer lists it.
 
 const canCloseSession = x => !goneSession(x) && !x.is_self && !x.engine && x.state !== "active";
@@ -149,4 +180,4 @@ function domainInactivityLabel(hours) {
     ? plural(Math.round(hours * 60), "minute") : plural(hours, "hour");
 }
 
-export { domainInactivityLabel, state, armed, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };
+export { domainInactivityLabel, domainRecommendations, state, armed, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };

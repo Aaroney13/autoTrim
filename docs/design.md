@@ -70,7 +70,14 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   Fractional hours are supported in config (10 minutes is `0.16666666666666666`),
   with a minimum of 10 minutes; the separate warning period follows inactivity.
   Settings provides add/edit/remove, exact or include-subdomains matching,
-  and a read-only preview of matching tabs; Chrome's site inspector opens the
+  and a read-only preview of matching tabs. The add dialog suggests actual URL
+  hostnames from the latest available Chrome snapshot across all profiles,
+  excluding domains already covered by a rule. Suggestions rank by the number
+  of unpinned, unselected tabs past the shared inactivity timer, then longest
+  known inactivity, tab count, and hostname. They show total and inactive tab
+  counts; typing filters the list and choosing a row fills the exact hostname
+  for review before saving. The list stays stable while the dialog is open.
+  Chrome's site inspector opens the
   same editor using actual URL hosts. A site group containing multiple hosts
   offers a choice rather than expanding the rule silently. The rule list applies
   to all open Chrome profiles and HTTP/HTTPS ports. Editing rules never enables
@@ -193,7 +200,12 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   nothing to open again. macOS only, like the other Apple Event verbs. The
   same checks as `quit`, and the same log entry, with the `open` command.
 - **The tray app** (`tray/`, a separate binary in the same workspace): a
-  menu bar item showing the percentage of RAM used, with a menu that carries the summary
+  menu bar item showing the percentage of RAM used beside a twelve-segment
+  circular dial that fills clockwise from twelve o'clock using the same
+  used/total values. The last active segment fills proportionally; unused
+  segments stay faint. The dial refreshes with the label and adapts to light
+  and dark menu bars; before a sample is available all segments are faint.
+  Its menu carries the summary
   line, the current advice, "Close N stale sessions", and "Open autoTrim…".
   The header is a compact single line with physical memory used/total, a
   small bar (compressed memory in a second shade), swap on disk, and CPU.
