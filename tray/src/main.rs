@@ -520,14 +520,21 @@ fn show_window_at<R: Runtime>(app: &AppHandle<R>, settings: bool) {
     )
     .title("autoTrim")
     .theme(Some(tauri::Theme::Dark))
+    .background_color(tauri::webview::Color(17, 19, 23, 255))
+    // macOS cannot color the webview before navigation. Reveal it only
+    // after the local page and styles load, without waiting for a scan.
+    .visible(false)
+    .on_page_load(|window, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    })
     .inner_size(1000.0, 740.0)
     .min_inner_size(760.0, 500.0)
     .build();
-    match built {
-        Ok(w) => {
-            let _ = w.set_focus();
-        }
-        Err(e) => eprintln!("could not open the autoTrim window: {e}"),
+    if let Err(e) = built {
+        eprintln!("could not open the autoTrim window: {e}");
     }
 }
 
@@ -764,6 +771,7 @@ fn main() {
             set_auto,
             tab_cleanup::set_tab_rules,
             tab_cleanup::preview_tab_rules,
+            tab_cleanup::suggest_tab_rules,
             set_open_window_at_launch,
             service_info,
             service_install,

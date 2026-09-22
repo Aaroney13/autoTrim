@@ -126,8 +126,8 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   so bursts do not count. *Pressure rising*: swap climbing faster than a
   gigabyte an hour, with the fastest-growing apps named as the likely
   cause. Growth is advice, never an action; a leak and a legitimately busy
-  program look the same from outside. `scan`, `status`, and the window
-  show a Trends table once the daemon has ten minutes of history. This is
+  program look the same from outside. `scan`, `status`, and app detail views
+  show trends once the daemon has ten minutes of history. This is
   the part macOS does not do at all: Activity Monitor shows an instant,
   never a direction, and never says what changed.
 - **Browser tabs.** Every open tab in every running Chrome profile (and
@@ -217,7 +217,7 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   what each contains (sessions, tabs, processes). Click one for the
   detail: an agent's searchable sessions with state filters and expandable
   CPU, age, host, PID, and ports; a browser's searchable tabs and site
-  summaries with profile and state filters. Batch reviews apply to the
+  summaries with profile and state filters. Batch actions apply to the
   displayed results; pinned and active tabs remain protected. Stale-tab
   filters use the configured threshold. The existing app trends, hosted
   sessions, ports, Quit, and Restart remain available. Overview puts advice
@@ -232,12 +232,13 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   service and has the "Run in background" button that installs it (with
   the `autotrim` binary next to the app, inside its bundle, or on PATH), a
   "Hide window" button, and the choice of whether the window opens when
-  the app starts (`open_window_at_launch`). Session and tab closing opens
+  the app starts (`open_window_at_launch`). Session closing opens
   a persistent review with exact targets, deselection, memory held, and
   recovery guidance. Polling does not replace that selection. The backend
   re-checks session start times and tab URLs/profiles against the reviewed
-  identities, plus active/pinned status, before closing. Results and partial
-  failures stay in the dialog; Actions has readable history and copyable
+  identities, plus active/pinned status, before closing. Tab closing acts directly on frozen selected identities, with a counted Close
+  button and disabled controls while pending. Tab results appear in a toast;
+  session results and partial failures stay in the dialog; Actions has readable history and copyable
   recovery commands. Click a command or use Enter or Space on its Copy control
   to copy it. Successful copies show a green highlight and “✓ Copied!” for
   2.5 seconds; background refresh preserves that feedback, and reduced-motion
@@ -258,7 +259,7 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   range selection apply only to expanded rows. Search, state filters, and
   other sort modes show flat results. Collapse state and table scroll survive
   background refresh. The stale cleanup summary follows search/profile/state
-  filters and reviews only eligible tabs; it describes estimated footprint,
+  filters and closes only eligible tabs; it describes estimated footprint,
   not guaranteed RAM savings. The browser view has one search/filter toolbar;
   profile and ordering controls live in View options. Bulk controls appear only
   after selection. Each tab uses two lines (title and URL), with profile/window
@@ -287,6 +288,9 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   Closing the window keeps the app running with its Dock and menu bar icons;
   quitting the app leaves the separate daemon running. The window is created
   when you open it and destroyed when you close it, releasing its web view.
+  New windows stay hidden until the local page and styles load, with a dark
+  native and initial HTML background to prevent a white flash on opening.
+  Showing the window does not wait for a snapshot scan.
   The startup preference controls only whether the dashboard opens. Built with
   Tauri on the system web view: measured at about 60 MB resident idle on
   macOS, which is the runtime's price, against the daemon's 13 MB footprint
@@ -631,7 +635,18 @@ The dashboard and native window use dark appearance regardless of the system
 appearance. The Grouped work design uses graphite surfaces, quiet blue selection,
 compact secondary controls, and one main content column. Overview puts a compact workload summary
 above full-width recommendations, with the footprint breakdown collapsed below.
-Settings follows a vertical sequence of sections with a readable maximum width.
+At the bottom, three mini charts show RAM used, whole-machine CPU, and swap used
+over the last ten minutes sampled while the dashboard is open. Accepted snapshots
+feed a bounded in-memory series across navigation; repeated timestamps replace
+the current point. Missing samples and long gaps are not interpolated. RAM and CPU
+use fixed scales (installed RAM and 100%); swap scales to the observed peak with
+a 1 GB minimum. These replace the Overview trends table; daemon growth advice
+and app-level trends are unchanged.
+Settings keeps auto mode, background monitoring, preferences, and updates in a
+compact vertical layout. Cleanup targets and Chrome domain rules live under a
+collapsed Cleanup options disclosure; maintenance controls live under Background
+service details. Pending closes and configuration errors stay visible. Saving
+cleanup settings preserves open disclosures and scroll position.
 Browser tabs group by website; agent sessions and loaded tasks group by full
 project path, with short labels where unambiguous. Groups collapse independently.
 Search opens from the heading, reveals matching collapsed groups, and restores
@@ -639,7 +654,8 @@ their previous state when cleared. Activity filtering is a single dropdown;
 profile, sorting, and batch selection live in the heading's options menu.
 Checkboxes (including Shift-click ranges) select eligible visible items. Collapsing
 or filtering away rows clears their selection. Titles and info buttons open inline
-details; close actions still go through the existing frozen-target review.
+details. Tab Close buttons act directly, freezing URL/profile identities for
+native revalidation; sessions retain the target review dialog.
 Loaded tasks cannot be selected or closed individually and never receive a share
 of backend memory. Task transcript timestamps are not classified as session
 activity; the session filters apply only to sessions. Shared backend totals remain
@@ -683,10 +699,11 @@ needs testing; this is not a native automatic archive rule. See the
 ## First-run setup
 
 The tray opens its window while `onboarding_completed` is false, even if
-`open_window_at_launch` is false. A four-step modal loads settings independently
-of the first snapshot: welcome with Continue free (Enter, no account required)
-and an optional Sign up / log in button for future paid features,
-interests, idle thresholds and notifications, then startup. Drafts stay in memory
+`open_window_at_launch` is false. A modal loads settings independently
+of the first snapshot: two welcome cards, Sign up / sign in (coming soon) and
+Continue free (Enter, no account required), followed by three interest cards
+with locally bundled app logos, idle thresholds and notifications, a Chrome domain review (when browser
+monitoring is selected), then startup. Drafts stay in memory
 while moving Back/Continue or while snapshots refresh. Cancel/Set up later leaves
 setup incomplete; the next app launch offers it again. Settings → Review setup
 reopens the preferences with saved values. The account button currently explains
@@ -699,6 +716,34 @@ all holders remain visible. This is presentation priority, not a collection
 filter. Session/tab thresholds and notifications use their existing config keys.
 Setup preserves existing auto mode settings and never enables cleanup itself.
 
+The Chrome step first explains built-in empty-new-tab cleanup and offers unchecked
+starter choices for Google searches, Reddit, Instagram, Facebook, X/Twitter, and
+TikTok. Each choice lists its exact hostnames and authorizes all pages on those
+hosts, not just search results or feeds. Google excludes Gmail, Docs, and other
+subdomains. Existing rules (including subdomain coverage) are preserved and fully
+covered choices are marked already whitelisted. Starters work without a Chrome
+scan; choosing Review my tabs opens the personalized review. Back returns to the
+starter choices with the draft intact. No starter choice enables auto-close.
+
+The Chrome review uses one read-only scan on request and the existing auto-close
+inactivity timer, independent of the advice threshold. It groups eligible tabs
+across profiles by exact HTTP(S) hostname and ranks domains by oldest eligible
+tab, then tab count. Shared policy excludes pinned, selected, unknown-activity,
+and unavailable tabs; existing exact/subdomain rules are excluded too. Each
+card shows tab titles, profiles, and inactivity, with Add to whitelist / Skip
+and a previous-site control. Selections remain a draft until Finish setup;
+reviewing again or removing a selection is reversible. Empty and unreadable
+scans are distinct, retryable states; leaving during a scan cannot replace the
+next page. The review explains domain-wide scope, unsaved-work limitations,
+and whether existing auto mode is off, previewing, or live.
+
+Finish merges normalized exact-host additions into current rules, preserving
+existing subdomain choices and the cleanup timer. New additions require the
+reviewed rule revision and an unchanged config at write time; retry after a
+startup failure does not duplicate already-saved rules. Short, directional CSS
+transitions run only on navigation/review, with no animation library or ongoing
+animation loop, and are disabled for reduced-motion preferences.
+
 Always on installs the existing daemon login service now and at every login;
 manual removes that service. The menu bar app itself is still opened from
 Applications. The dashboard-at-launch checkbox is independent. Unsupported
@@ -707,7 +752,7 @@ installation to setup; CLI-only installs keep their existing service behavior,
 and app upgrades rebind only a service that already exists.
 
 The native command validates categories and finite positive hour ranges before
-writing through `Config::set_values`. It refuses an unreadable config, saves
+writing through the shared config writer with a file-revision check. It refuses an unreadable config, saves
 preferences before starting the service, and records completion only after the
 service change succeeds. Service failures retain the wizard and explain that
 preferences were saved; the user can retry or select manual. Browser tests use
@@ -749,3 +794,21 @@ swap, concurrent cleanup, and a restarted app still loading affect the result.
 The app and CLI label this as an observed whole-machine change, not attributed
 savings; overlapping observations must not be added together. Observation write
 failures report that the action completed, while retaining the earlier completion.
+
+Overview and Actions show a compact Recent cleanup summary over the loaded action
+history (currently the last 30 actions), with the scope visible beside its title.
+It counts successful closures and their automatic subset, and sums the footprints
+those items held before closing. Tab estimates are marked; missing footprint data
+is disclosed. Previews, incomplete/failed/partial/skipped actions, already-absent
+targets, and app restarts do not contribute. Repeated closures of a reopened item
+are separate events, so the total is neither unique memory nor current RAM saved.
+Measurement notes and the newest valid whole-machine observation sit under a
+collapsed Details disclosure, with signed RAM and swap changes, including increases
+and failed attempts. These observations are
+never summed or restricted to decreases. Empty history shows an explanatory state
+instead of inventing a savings figure.
+
+Action history uses compact table rows. Selecting a target expands one full-width
+detail row beneath it, with the complete result, aligned RAM/swap observations,
+and a copyable recovery command. Disclosure state follows the action ID through
+refreshes and reordering; Escape closes the details and returns keyboard focus.

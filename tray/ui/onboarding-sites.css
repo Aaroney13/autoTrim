@@ -1,0 +1,14 @@
+/* Chrome starter choices use the setup wizard's existing palette and type. */
+.setup-new-tabs { padding: 12px 15px; background: var(--soft); border-radius: 8px; }
+.setup-new-tabs p, .setup-review-entry p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.setup-starters { min-width: 0; padding: 0; margin: 20px 0 0; border: 0; }
+.setup-starters legend { padding: 0; font-weight: 600; font-size: 15px; }
+.setup-starters > p { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
+.setup-starter { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); cursor: pointer; }
+.setup-starter input { flex: none; margin: 3px 0 0; accent-color: var(--button); }
+.setup-starter span { min-width: 0; }
+.setup-starter small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.setup-starter .setup-starter-domains { font-size: 11px; overflow-wrap: anywhere; }
+.setup-starter em { display: inline-block; font-size: 11px; font-style: normal; color: var(--accent); margin-left: 8px; }
+.setup-review-entry { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.setup-review-entry > div { flex: 1 1 230px; }

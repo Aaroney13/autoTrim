@@ -22,7 +22,9 @@ cd autoTrim
 
 This installs the `autotrim` command and autoTrim.app in Applications. Open the
 app to choose what to monitor, idle thresholds, notifications, and whether to
-run at login. Revisit these choices in **Settings → Review setup**.
+run at login. The wizard explains empty-new-tab cleanup, offers optional Google
+and social-site whitelist suggestions, and can review your idle Chrome tabs.
+Revisit these choices in **Settings → Review setup**.
 
 autoTrim appears in the Dock while running. Click its Dock icon to open the
 dashboard again after closing it. To keep the icon after quitting, choose
@@ -65,8 +67,8 @@ autotrim quit <app>           # Ask an app to quit
 autotrim restart <app>        # Quit and reopen an app
 ```
 
-The app provides search, filters, and target review before closing sessions,
-tabs, or servers. Settings offers **Off**, **Preview only**, and **On** for
+The app provides search and filters. Tabs close directly from the selection or
+details; sessions and servers have a target review before closing. Settings offers **Off**, **Preview only**, and **On** for
 automatic cleanup. Auto mode warns first and rechecks activity before acting.
 
 **Chrome tab cleanup** in Settings adds an optional domain allowlist, with exact

@@ -1,10 +1,59 @@
 // Explicit application state and pure selectors.
 import { plural } from "./format.js";
-const state = { actionReview: null, domainEditor: null, tabPreview: { requestId: 0, busy: false, rows: [], error: "" }, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), searchOpen: new Set(), settingsBusy: false, update: null, updateBusy: false,
+const state = { actionReview: null, tabsClosing: false, domainEditor: null, tabPreview: { requestId: 0, busy: false, rows: [], error: "" }, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), searchOpen: new Set(), settingsBusy: false, update: null, updateBusy: false,
   // Things closed from here that the daemon's snapshot has not caught up with yet.
   gone: { tabs: new Set(), pids: new Set() } };
 
 const armed = {};
+state.expandedAction = null;
+
+const ACTIVITY_WINDOW = 600;
+state.activityHistory = [];
+
+// Keep only observed samples; polling the same snapshot must not invent history.
+function recordActivity(snap) {
+  if (!Number.isFinite(snap?.taken_at) || !snap.system) return;
+  const history = state.activityHistory, last = history.at(-1);
+  if (last && snap.taken_at < last.taken_at) return;
+  const sample = { taken_at: snap.taken_at, used_mem: snap.system.used_mem,
+    cpu_pct: snap.system.cpu_pct, used_swap: snap.system.used_swap };
+  if (last?.taken_at === sample.taken_at) history[history.length - 1] = sample;
+  else history.push(sample);
+  state.activityHistory = history.filter(point => point.taken_at >= sample.taken_at - ACTIVITY_WINDOW).slice(-601);
+}
+
+// Summarize the bounded action history, never cumulative physical RAM savings.
+function cleanupImpact(log = state.log) {
+  const unique = new Map();
+  log.forEach((record, index) => unique.set(record.id || index, record));
+  const records = [...unique.values()];
+  const impact = { recorded: records.length, closed: 0, automatic: 0, footprint: 0, measured: 0, estimated: false, latest: null };
+  const closing = new Set(["close_session", "close_tab", "stop_server", "quit_app"]);
+  for (const record of records) {
+    if (record.mode === "dry-run" || ["dry_run", "intent", "skipped"].includes(record.status)) continue;
+    const observation = record.memory_observation;
+    const validSample = sample => sample && [sample.taken_at_ms, sample.used_mem, sample.used_swap].every(value => Number.isFinite(value) && value >= 0);
+    if (validSample(observation?.before) && validSample(observation?.after)
+      && observation.after.taken_at_ms >= observation.before.taken_at_ms
+      && (!impact.latest || observation.after.taken_at_ms > impact.latest.after.taken_at_ms)) {
+      impact.latest = observation;
+    }
+    // Already-absent targets and restarted apps did not leave a closed workload.
+    const legacy = !record.status || record.status === "legacy";
+    const success = record.status === "success" || legacy && /^(terminated|closed|stopped|quit)\b/i.test(record.result);
+    if (!closing.has(record.action) || !success || /already gone|not open any more|fail|error|refus|still running|could not/i.test(record.result)) continue;
+    const processes = record.termination?.processes;
+    if (processes && !processes.some(process => ["graceful", "forced"].includes(process.exit))) continue;
+    impact.closed++;
+    if (record.mode === "auto") impact.automatic++;
+    if (Number.isFinite(record.rss) && record.rss > 0) {
+      impact.footprint += record.rss;
+      impact.measured++;
+      if (record.action === "close_tab") impact.estimated = true;
+    }
+  }
+  return impact;
+}
 
 state.appIcons = new Map();
 state.appIconsPending = new Set();
@@ -180,4 +229,4 @@ function domainInactivityLabel(hours) {
     ? plural(Math.round(hours * 60), "minute") : plural(hours, "hour");
 }
 
-export { domainInactivityLabel, domainRecommendations, state, armed, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };
+export { ACTIVITY_WINDOW, recordActivity, cleanupImpact, domainInactivityLabel, domainRecommendations, state, armed, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };

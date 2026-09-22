@@ -38,9 +38,9 @@ function load(invoke = async () => {}, source = script) {
   // Rendering is tested in the browser. These tests check decisions and
   // bridge calls independently from the DOM implementation.
   vm.runInContext('const actualRefresh = refresh; const actualRenderHeader = renderHeader; renderAll = () => {}; renderHeader = () => {}; renderMain = () => {}; renderSide = () => {}; afterAction = () => {}; refresh = async () => {};', context);
-  const api = vm.runInContext(`({ state, filteredSessions, filteredTabs,
+  const api = vm.runInContext(`({ state, cleanupImpact, cleanupSummary, filteredSessions, filteredTabs,
     canCloseSession, canCloseTab, isStale, autoMode, autoModeValues,
-    refreshNow: actualRefresh, actionSucceeded, twoStep, viewActions, sessionTable, sitesTable, saveAuto, executeReview, reconcileList, sessionKey, tabKey, reviewPorts, updateCard, runUpdate,
+    refreshNow: actualRefresh, actionSucceeded, twoStep, viewActions, sessionTable, sitesTable, saveAuto, closeTabs, executeReview, reconcileList, sessionKey, tabKey, reviewPorts, updateCard, runUpdate,
     saveTabRules, removeDomainRule, requestTabPreview, hostnameOfTab, siteHostChoices,
     setReview(value) { state.actionReview = value; } })`, context);
   return { ...api, elements, context };
@@ -349,21 +349,42 @@ test('confirmation sends only selected frozen identities and accounts for partia
   assert.equal(ui.elements.get('review-submit').textContent, 'View actions');
 });
 
-test('tab confirmation sends the reviewed URL and profile', async () => {
-  let payload;
-  const ui = load(async (command, args) => { assert.equal(command, 'close_tabs'); payload = args; return [{ result: 'closed' }]; });
-  ui.setReview({ kind: 'tabs', browser: 'Chrome', targets: [{ id: 7, url: 'https://example.com', profile: 'Work' }], selected: new Set([7]), busy: false });
-  await ui.executeReview();
-  assert.equal(JSON.stringify(payload.expectedTabs), JSON.stringify([{ id: 7, url: 'https://example.com', profile: 'Work' }]));
+test('direct tab close freezes identities, excludes protected tabs, and blocks duplicate requests', async () => {
+  let payload, finish;
+  const calls = [];
+  const ui = load((command, args) => { calls.push(command); payload = args; return new Promise(resolve => { finish = resolve; }); });
+  const tabs = [
+    { id: 7, url: 'https://example.com', profile: 'Work' },
+    { id: 8, url: 'https://example.com/pinned', profile: 'Work', pinned: true },
+    { id: 9, url: 'https://example.com/active', profile: 'Work', active: true },
+    { id: 10, url: 'https://example.com/changed', profile: 'Work' },
+  ];
+  const browser = { name: 'Chrome', can_close_tabs: true };
+  const closing = ui.closeTabs(browser, tabs);
+  tabs[0].url = 'https://new.example.com';
+  await ui.closeTabs(browser, tabs);
+  assert.deepEqual(calls, ['close_tabs']);
+  assert.equal(ui.state.tabsClosing, true);
+  assert.equal(ui.state.actionReview, null);
+  assert.equal(JSON.stringify(payload.expectedTabs), JSON.stringify([
+    { id: 7, url: 'https://example.com', profile: 'Work' },
+    { id: 10, url: 'https://example.com/changed', profile: 'Work' },
+  ]));
+  finish([{ status: 'success', result: 'closed' }, { status: 'skipped', result: 'URL changed' }]);
+  await closing;
   assert.equal(ui.state.gone.tabs.has(7), true);
+  assert.equal(ui.state.gone.tabs.has(10), false);
+  assert.equal(ui.state.tabsClosing, false);
+  assert.match(ui.elements.get('toast').textContent, /1 tab stayed open/);
 });
 
-test('a failed request never offers an automatic retry', async () => {
-  const ui = load(async () => { throw new Error('Connection interrupted'); });
-  ui.setReview({ kind: 'tabs', browser: 'Chrome', targets: [{ id: 7, url: 'https://example.com', profile: 'Work' }], selected: new Set([7]), busy: false });
-  await ui.executeReview();
-  assert.match(ui.elements.get('review-status').textContent, /Check Actions and refresh/);
-  assert.equal(ui.elements.get('review-submit').textContent, 'View actions');
+test('a failed direct close reports uncertainty without retrying', async () => {
+  let calls = 0;
+  const ui = load(async () => { calls++; throw new Error('Connection interrupted'); });
+  await ui.closeTabs({ name: 'Chrome', can_close_tabs: true }, [{ id: 7, url: 'https://example.com', profile: 'Work' }]);
+  assert.match(ui.elements.get('toast').textContent, /Check Actions and refresh/);
+  assert.equal(calls, 1);
+  assert.equal(ui.state.tabsClosing, false);
   assert.equal(ui.state.gone.tabs.size, 0);
 });
 
@@ -582,15 +603,64 @@ test('memory units and observed changes keep increases, decreases, and zero dist
   ui.state.log = [record];
   const markup = ui.viewActions();
   assert.match(markup, /batch of 5 tab attempts/);
-  assert.match(markup, /RAM used: 2.0 GiB → 1.0 GiB \(−1.0 GiB\)/);
-  assert.match(markup, /Swap used: 0 B → 1 MiB \(\+1 MiB\)/);
+  assert.match(markup, /RAM used<\/dt><dd><span>2.0 GiB → 1.0 GiB<\/span><b>−1.0 GiB/);
+  assert.match(markup, /Swap used<\/dt><dd><span>0 B → 1 MiB<\/span><b>\+1 MiB/);
   assert.match(markup, /Over 1.5 seconds/);
-  assert.match(markup, /not savings attributable to an individual tab/);
+  assert.match(markup, /Includes other activity; not attributed savings/);
   record.memory_observation.after.used_mem = record.memory_observation.before.used_mem;
-  assert.match(ui.viewActions(), /RAM used: 2.0 GiB → 2.0 GiB \(0 B\)/);
+  assert.match(ui.viewActions(), /RAM used<\/dt><dd><span>2.0 GiB → 2.0 GiB<\/span><b>0 B/);
   delete record.memory_observation;
   assert.doesNotMatch(ui.viewActions(), /Observed whole-machine change/);
   assert.match(ui.viewActions(), /held before the action \(estimated\)/);
+});
+
+test('cleanup impact counts completed closures once and excludes no-ops and uncertain outcomes', () => {
+  const ui = load();
+  const closed = { id: 'session', status: 'success', mode: 'auto', action: 'close_session', result: 'terminated: all target processes verified gone', rss: 200,
+    termination: { processes: [{ exit: 'graceful' }, { exit: 'already_gone' }] } };
+  ui.state.log = [
+    { ...closed, status: 'intent' }, closed, { ...closed },
+    ...['failure', 'partial', 'skipped', 'dry_run', 'intent'].map(status => ({ ...closed, id: status, status })),
+    { ...closed, id: 'preview', mode: 'dry-run' },
+    { ...closed, id: 'absent', result: 'already gone' },
+    { ...closed, id: 'all-gone', termination: { processes: [{ exit: 'already_gone' }] } },
+    { ...closed, id: 'restart', action: 'restart_app', result: 'quit and relaunched' },
+    { status: 'legacy', mode: 'manual', action: 'close_tab', result: 'closed', rss: 100 },
+    { status: 'success', mode: 'manual', action: 'close_tab', result: 'not open any more', rss: 100 },
+    { status: 'success', mode: 'manual', action: 'quit_app', result: 'quit', rss: 0 },
+    { status: 'legacy', mode: 'manual', action: 'stop_server', result: 'terminated; still running', rss: 900 },
+  ];
+  const impact = ui.cleanupImpact();
+  assert.equal(impact.closed, 3);
+  assert.equal(impact.automatic, 1);
+  assert.equal(impact.footprint, 300);
+  assert.equal(impact.measured, 2);
+  assert.equal(impact.estimated, true);
+  assert.match(ui.cleanupSummary(), /Memory available for 2 of 3 items/);
+  assert.match(ui.cleanupSummary(), /Includes tab estimates/);
+});
+
+test('cleanup summary keeps the latest measured increase, not summed or cherry-picked savings', () => {
+  const ui = load();
+  const observation = (time, before, after) => ({ before: { taken_at_ms: time, used_mem: before, used_swap: 0 }, after: { taken_at_ms: time + 1000, used_mem: after, used_swap: 0 }, tab_batch: true, attempted_actions: 3 });
+  const record = { status: 'success', mode: 'manual', action: 'close_tab', result: 'closed', rss: 1024 };
+  ui.state.log = [
+    { ...record, memory_observation: observation(3000, 1024, 3072), status: 'failure', result: 'failed' },
+    { ...record, memory_observation: observation(1000, 4096, 1024) },
+    { ...record, memory_observation: observation(5000, 4096, 0), mode: 'dry-run' },
+    { ...record, memory_observation: observation(6000, 4096, NaN) },
+  ];
+  assert.equal(ui.cleanupImpact().latest.after.used_mem, 3072);
+  const markup = ui.cleanupSummary();
+  assert.match(markup, /Last 4 actions/);
+  assert.match(markup, /Latest measured change \(3 tab attempts\)/);
+  assert.match(markup, /RAM <b>\+2 KiB<\/b>/);
+  assert.match(markup, /Swap <b>0 B<\/b>/);
+  assert.match(markup, /Whole machine; includes other activity/);
+  ui.state.log = [];
+  assert.equal(ui.cleanupImpact().closed, 0);
+  assert.match(ui.cleanupSummary(), /Close an item to see your cleanup activity/);
+  assert.doesNotMatch(ui.cleanupSummary(), /0 B|Latest measured change/);
 });
 
 test('website groups retain activity, unknown timestamps, and drop collapsed selections', () => {
@@ -621,4 +691,43 @@ test('website groups retain activity, unknown timestamps, and drop collapsed sel
   ui.state.tabFilter = 'old';
   render();
   assert.equal(vm.runInContext('[...listModels.values()][0].rows.some(row => row.title === "Old")', ui.context), true);
+});
+
+
+test('activity samples deduplicate polling, reject older snapshots, and expire after ten minutes', () => {
+  const ui = load();
+  const record = (taken_at, used_mem = 100) => {
+    ui.state.snap = { taken_at, system: { used_mem, cpu_pct: 5, used_swap: 0 } };
+    vm.runInContext('recordActivity(state.snap)', ui.context);
+  };
+  record(1000);
+  record(1000, 200);
+  record(999);
+  assert.equal(ui.state.activityHistory.length, 1);
+  assert.equal(ui.state.activityHistory[0].used_mem, 200);
+  record(1300);
+  record(1600);
+  assert.equal(ui.state.activityHistory.length, 3);
+  record(1601);
+  assert.deepEqual(Array.from(ui.state.activityHistory, point => point.taken_at), [1300, 1600, 1601]);
+});
+
+test('activity charts show real zero values and leave gaps for missing readings or sleep', () => {
+  const ui = load();
+  ui.state.src = { interval_secs: 30 };
+  ui.state.snap = { taken_at: 1000, system: { total_mem: 1000, used_mem: 0, cpu_pct: 0, used_swap: 0 } };
+  vm.runInContext('recordActivity(state.snap)', ui.context);
+  let html = vm.runInContext('activityCharts()', ui.context);
+  assert.match(html, /Collecting samples/);
+  assert.match(html, /CPU: 0.0%/);
+  assert.doesNotMatch(html, /class="activity-line"/);
+  ui.state.activityHistory = [
+    { taken_at: 500, used_mem: 200, cpu_pct: 5, used_swap: 0 },
+    { taken_at: 530, used_mem: 250, cpu_pct: NaN, used_swap: 0 },
+    { taken_at: 1000, used_mem: 0, cpu_pct: 0, used_swap: 0 },
+  ];
+  html = vm.runInContext('activityCharts()', ui.context);
+  assert.equal((html.match(/class="activity-line"/g) || []).length, 2);
+  assert.doesNotMatch(html, /NaN|Infinity/);
+  assert.doesNotMatch(html, /Collecting samples/);
 });
