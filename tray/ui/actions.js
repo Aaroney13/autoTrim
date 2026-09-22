@@ -130,7 +130,7 @@ async function refresh(opts = {}) {
 
 
 function navigate(view) {
-  if (state.view !== view) { state.sessFilter = ""; state.sessState = "all"; state.tabFilter = ""; state.tabProfile = ""; state.tabState = "all"; state.listState.clear(); }
+  if (state.view !== view) { state.sessFilter = ""; state.sessState = "all"; state.tabFilter = ""; state.tabProfile = ""; state.tabState = "all"; state.listState.clear(); state.searchOpen.clear(); }
   state.view = view; renderSide(); renderMain(true);
 }
 
@@ -494,22 +494,46 @@ function wire(root) {
   root.querySelectorAll(".list-options").forEach(options => options.onkeydown = event => {
     if (event.key === "Escape") { options.open = false; options.querySelector("summary").focus(); }
   });
-  root.querySelectorAll("[data-tab-profile]").forEach(el => el.onchange = () => { state.tabProfile = el.value; renderMain(true); });
-  root.querySelectorAll("[data-tab-sort]").forEach(el => el.onchange = () => { state.tabSort = el.value; state.tabReverse = false; renderMain(true); });
-  root.querySelectorAll("[data-sess-sort]").forEach(el => el.onchange = () => { state.sessSort = el.value; state.sessReverse = false; renderMain(true); });
+  root.querySelectorAll("[data-search-toggle]").forEach(button => button.onclick = () => {
+    const key = button.dataset.searchToggle === 'tab' ? 'tabFilter' : 'sessFilter';
+    const open = state.searchOpen.has(state.view) || !!state[key];
+    if (open) { state.searchOpen.delete(state.view); state[key] = ''; }
+    else state.searchOpen.add(state.view);
+    button.focus({ preventScroll: true });
+    renderMain(false, true);
+    if (!open) document.querySelector('[data-tab-filter], [data-session-filter]')?.focus();
+  });
+  root.querySelectorAll("[data-tab-profile]").forEach(el => el.onchange = () => { state.tabProfile = el.value; renderMain(false, true); });
+  root.querySelectorAll("[data-tab-sort]").forEach(el => el.onchange = () => { state.tabSort = el.value; state.tabReverse = false; renderMain(false, true); });
+  root.querySelectorAll("[data-sess-sort]").forEach(el => el.onchange = () => { state.sessSort = el.value; state.sessReverse = false; renderMain(false, true); });
+  root.querySelectorAll("[data-activity-filter]").forEach(el => el.onchange = () => {
+    state[el.dataset.activityFilter === 'tab' ? 'tabState' : 'sessState'] = el.value;
+    renderMain(false, true);
+  });
   for (const [attribute, key] of [["data-tab-filter", "tabFilter"], ["data-session-filter", "sessFilter"]]) {
-    root.querySelectorAll(`[${attribute}]`).forEach(input => input.oninput = () => {
-      state[key] = input.value; const pos = input.selectionStart; renderMain(true);
-      const next = document.querySelector(`[${attribute}]`); next.focus(); if (pos != null) next.setSelectionRange(pos, pos);
+    root.querySelectorAll(`[${attribute}]`).forEach(input => {
+      input.oninput = () => {
+        state[key] = input.value;
+        const start = input.selectionStart, end = input.selectionEnd, direction = input.selectionDirection;
+        renderMain(false, true);
+        const next = document.querySelector(`[${attribute}]`);
+        // Keep edits in the middle of a query in place across a render.
+        if (start != null && end != null) {
+          try { next.setSelectionRange(start, end, direction); } catch (_) { /* Older web views may not support a search selection. */ }
+        }
+      };
+      input.onkeydown = event => {
+        if (event.key === 'Escape') { event.preventDefault(); state[key] = ''; state.searchOpen.delete(state.view); renderMain(false, true); document.querySelector('[data-search-toggle]')?.focus(); }
+      };
     });
   }
-  root.querySelectorAll("[data-tab-state]").forEach(b => b.onclick = () => { state.tabState = b.dataset.tabState; renderMain(true); });
-  root.querySelectorAll("[data-session-state]").forEach(b => b.onclick = () => { state.sessState = b.dataset.sessionState; renderMain(true); });
   root.querySelectorAll("[data-list-inspect]").forEach(b => b.onclick = () => {
     b.focus({ preventScroll: true });
-    listModels.get(b.dataset.list).saved.inspected = b.dataset.row; renderMain(false, true);
+    const saved = listModels.get(b.dataset.list).saved;
+    saved.inspected = saved.inspected === b.dataset.row ? null : b.dataset.row;
+    renderMain(false, true);
   });
-  root.querySelectorAll(".compact-table tbody tr").forEach(row => row.onclick = e => {
+  root.querySelectorAll(".compact-table tbody tr.compact-row, .work-row").forEach(row => row.onclick = e => {
     // The whole highlighted row opens details; embedded controls act on their own.
     if (e.target.closest("button, input, a, select, textarea, label")) return;
     const selection = window.getSelection();
@@ -533,45 +557,12 @@ function wire(root) {
       selectResource(model, row, cb.checked, cb._range);
     };
   });
-  root.querySelectorAll("[data-resource-select]").forEach(button => button.onclick = event => {
-    button.focus({ preventScroll: true });
-    const model = listModels.get(button.dataset.list), row = model.rows.find(r => r.id === button.dataset.row);
-    selectResource(model, row, !model.saved.selected.has(row.id), event.shiftKey);
-  });
-  root.querySelectorAll(".resource-table tr[data-selectable]").forEach(row => row.onclick = event => {
-    if (event.target.closest("button, input, a, label")) return;
-    const selection = window.getSelection();
-    if (selection && !selection.isCollapsed && row.contains(selection.anchorNode)) return;
-    const button = row.querySelector("[data-resource-select]");
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: event.shiftKey }));
-  });
-  root.querySelectorAll("[data-resource-close]").forEach(button => button.onclick = () => {
-    const model = listModels.get(button.dataset.list), row = model.rows.find(r => r.id === button.dataset.row);
-    if (row?.eligible) model.options.review([row]);
-  });
-  root.querySelectorAll("[data-resource-sort]").forEach(button => button.onclick = () => {
-    const key = button.dataset.sortKind, value = button.dataset.resourceSort;
-    state[key + "Reverse"] = state[key + "Sort"] === value ? !state[key + "Reverse"] : false;
-    state[key + "Sort"] = value;
-    button.focus({ preventScroll: true });
-    renderMain(false, true);
-    root.querySelectorAll("[data-list-scroll]").forEach(el => el.scrollTop = 0);
-  });
   root.querySelectorAll("[data-list-group]").forEach(button => button.onclick = () => {
     button.focus({ preventScroll: true });
     const model = listModels.get(button.dataset.list), group = button.dataset.listGroup;
-    model.saved.collapsed.has(group) ? model.saved.collapsed.delete(group) : model.saved.collapsed.add(group);
+    const collapsed = model.saved.activeCollapsed || model.saved.collapsed;
+    collapsed.has(group) ? collapsed.delete(group) : collapsed.add(group);
     renderMain(false, true);
-  });
-  root.querySelectorAll("[data-list-group-all]").forEach(cb => {
-    const model = listModels.get(cb.dataset.list), group = model.rows.filter(r => r.group === cb.dataset.listGroupAll && r.eligible);
-    const chosen = group.filter(r => model.saved.selected.has(r.id)).length;
-    cb.indeterminate = chosen > 0 && chosen < group.length;
-    cb.onchange = () => {
-      cb.focus({ preventScroll: true });
-      group.forEach(r => cb.checked ? model.saved.selected.add(r.id) : model.saved.selected.delete(r.id));
-      renderMain(false, true);
-    };
   });
   root.querySelectorAll("[data-list-all]").forEach(cb => {
     const model = listModels.get(cb.dataset.listAll), count = model.saved.selected.size, total = model.rows.filter(r => r.eligible).length;
@@ -579,7 +570,11 @@ function wire(root) {
     cb.onchange = () => { cb.focus({ preventScroll: true }); model.saved.selected = new Set(cb.checked ? model.rows.filter(r => r.eligible).map(r => r.id) : []); renderMain(false, true); };
   });
   for (const [attribute, action] of [["data-list-clear", m => m.saved.selected.clear()], ["data-list-eligible", m => { m.saved.selected = new Set(m.rows.filter(r => r.eligible).map(r => r.id)); }], ["data-list-review", m => m.options.review(m.rows.filter(r => r.eligible && m.saved.selected.has(r.id)))], ["data-list-stale", m => m.options.review(m.rows.filter(r => r.eligible && r.status === "stale"))]]) {
-    root.querySelectorAll(`[${attribute}]`).forEach(b => b.onclick = () => { const model = listModels.get(b.getAttribute(attribute)); action(model); if (!state.actionReview) renderMain(false, true); });
+    root.querySelectorAll(`[${attribute}]`).forEach(b => {
+      const initial = listModels.get(b.getAttribute(attribute));
+      if (initial && ['data-list-eligible', 'data-list-stale'].includes(attribute)) b.disabled = !initial.rows.some(r => r.eligible && (attribute !== 'data-list-stale' || r.status === 'stale'));
+      b.onclick = () => { const model = listModels.get(b.getAttribute(attribute)); if (!model) return; action(model); const options = b.closest(".list-options"); if (options) { options.open = false; options.querySelector("summary").focus({ preventScroll: true }); } if (!state.actionReview) renderMain(false, true); };
+    });
   }
   root.querySelectorAll("[data-review-port]").forEach(b => b.onclick = () => reviewPorts(state.snap.ports.filter(p => p.pid === +b.dataset.reviewPort)));
   root.querySelectorAll("[data-copy-command]").forEach(b => b.onclick = () => copyCommand(b));

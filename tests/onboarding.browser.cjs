@@ -14,6 +14,7 @@ const fixture = fs.readFileSync(path.join(__dirname, 'tray-fixture.js'), 'utf8')
     page.on('pageerror', e => errors.push(e.message));
     await page.route('**/*', route => {
       const name = new URL(route.request().url()).pathname.slice(1) || 'index.html';
+      if (name === 'logo.png') return route.fulfill({path:path.join(__dirname, '../tray/ui/logo.png'),contentType:'image/png'});
       if (name === 'fixture.js') return route.fulfill({contentType:'text/javascript', body: fixture + `
         const originalInvoke = window.__TAURI__.core.invoke;
         const saved = JSON.parse(sessionStorage.getItem('setup-saved') || 'null');

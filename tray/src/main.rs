@@ -519,6 +519,7 @@ fn show_window_at<R: Runtime>(app: &AppHandle<R>, settings: bool) {
         ),
     )
     .title("autoTrim")
+    .theme(Some(tauri::Theme::Dark))
     .inner_size(1000.0, 740.0)
     .min_inner_size(760.0, 500.0)
     .build();

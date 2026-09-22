@@ -1,6 +1,6 @@
 // Explicit application state and pure selectors.
 import { plural } from "./format.js";
-const state = { actionReview: null, domainEditor: null, tabPreview: { requestId: 0, busy: false, rows: [], error: "" }, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), settingsBusy: false, update: null, updateBusy: false,
+const state = { actionReview: null, domainEditor: null, tabPreview: { requestId: 0, busy: false, rows: [], error: "" }, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), searchOpen: new Set(), settingsBusy: false, update: null, updateBusy: false,
   // Things closed from here that the daemon's snapshot has not caught up with yet.
   gone: { tabs: new Set(), pids: new Set() } };
 
@@ -71,7 +71,7 @@ function reconcileList(key, rows) {
   if (!saved) { saved = { inspected: null, selected: new Set() }; state.listState.set(key, saved); }
   const eligible = new Set(rows.filter(r => r.eligible).map(r => r.id));
   saved.selected = new Set([...saved.selected].filter(id => eligible.has(id)));
-  if (!rows.some(r => r.id === saved.inspected)) saved.inspected = rows[0]?.id ?? null;
+  if (!rows.some(r => r.id === saved.inspected)) saved.inspected = null;
   return saved;
 }
 
