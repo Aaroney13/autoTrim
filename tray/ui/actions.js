@@ -1,6 +1,6 @@
 // IPC, confirmation, polling, and event handlers. Renderer callbacks are injected.
 import { icon, bytes, dur, esc, plural } from "./format.js";
-import { domainInactivityLabel, state, armed, listModels, holders, holderByKey, appIconName, sync, autoMode, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
+import { domainInactivityLabel, domainRecommendations, state, armed, listModels, holders, holderByKey, appIconName, sync, autoMode, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
 
 const invoke = (...a) => window.__TAURI__.core.invoke(...a);
 
@@ -206,6 +206,7 @@ function openDomainEditor({ index = null, domain = "", hostChoices = [] } = {}) 
     includeSubdomains: rule?.include_subdomains ?? false,
     revision: state.settings?.tab_rules_revision ?? "",
     hostChoices,
+    suggestions: index == null && !hostChoices.length ? domainRecommendations() : null,
     error: "",
   };
   renderDomainEditor();
@@ -225,6 +226,31 @@ function selectEditorHost(domain) {
   renderDomainEditor(true);
 }
 
+function renderDomainSuggestions() {
+  const editor = state.domainEditor, root = document.getElementById("domain-suggestions");
+  if (!editor?.suggestions || !root) return;
+  const query = draftDomain(editor.domain);
+  const matches = editor.suggestions.filter(row => row.domain.includes(query));
+  const empty = editor.suggestions.length
+    ? "No matching suggestions. You can still add this domain."
+    : "No new domains to suggest from your Chrome tabs. You can still enter a domain above.";
+  root.innerHTML = `<div class="domain-suggestions-heading"><h3 id="domain-suggestions-title">Suggested domains</h3><span class="muted" role="status">${plural(matches.length, "domain")}</span></div>
+    <p>From your latest Chrome scan, with inactive tabs first. Type above to filter.</p>
+    ${matches.length ? `<div class="domain-suggestion-list">${matches.map((row, index) => {
+      const selected = query === row.domain;
+      const detail = row.inactiveCount ? `${row.inactiveCount} inactive · longest ${dur(row.oldestIdleSecs)}` : "None past the timer";
+      return `<button type="button" class="domain-suggestion" data-domain-suggestion="${esc(row.domain)}" aria-label="Use ${esc(row.domain)}" aria-describedby="domain-suggestion-detail-${index}" aria-pressed="${selected}"><span><b>${esc(row.domain)}</b><small id="domain-suggestion-detail-${index}">${plural(row.count, "tab")} · ${esc(detail)}</small></span><span class="domain-suggestion-use" aria-hidden="true">${selected ? "Selected" : "Use domain"}</span></button>`;
+    }).join("")}</div>` : `<div class="domain-suggestions-empty">${empty}</div>`}`;
+  root.querySelectorAll("[data-domain-suggestion]").forEach(button => button.onclick = () => {
+    editor.domain = button.dataset.domainSuggestion;
+    editor.error = "";
+    document.getElementById("domain-input").value = editor.domain;
+    document.getElementById("domain-error").textContent = "";
+    renderDomainSuggestions();
+    document.getElementById("domain-submit").focus();
+  });
+}
+
 function renderDomainEditor(focusDomain = false) {
   const editor = state.domainEditor, dialog = document.getElementById("domain-editor");
   if (!editor || !dialog) return;
@@ -236,6 +262,7 @@ function renderDomainEditor(focusDomain = false) {
     ${choices}
     <label class="field">Domain<input id="domain-input" name="domain" type="text" inputmode="url" autocomplete="off" spellcheck="false" value="${esc(editor.domain)}" placeholder="example.com" required></label>
     <label class="check-field"><input id="domain-subdomains" type="checkbox" ${editor.includeSubdomains ? "checked" : ""}>Include subdomains</label>
+    ${editor.suggestions ? `<section id="domain-suggestions" aria-labelledby="domain-suggestions-title"></section>` : ""}
     <div class="readonly-setting"><span>Inactive for</span><b>${esc(domainInactivityLabel(state.settings?.auto_tab_inactive_hours ?? 24))}</b></div>
     <p class="muted">The shared timer is managed in Settings. Selected and pinned tabs stay open.</p>
     <p class="field-error" id="domain-error" role="alert">${esc(editor.error)}</p>
@@ -244,7 +271,7 @@ function renderDomainEditor(focusDomain = false) {
   dialog.oncancel = () => { state.domainEditor = null; };
   dialog.onclose = () => { state.domainEditor = null; };
   const input = dialog.querySelector("#domain-input"), include = dialog.querySelector("#domain-subdomains");
-  input.oninput = () => { editor.domain = input.value; editor.error = ""; dialog.querySelector("#domain-error").textContent = ""; };
+  input.oninput = () => { editor.domain = input.value; editor.error = ""; dialog.querySelector("#domain-error").textContent = ""; renderDomainSuggestions(); };
   include.onchange = () => { editor.includeSubdomains = include.checked; };
   dialog.querySelector("#domain-host-choice")?.addEventListener("change", event => selectEditorHost(event.target.value));
   dialog.querySelector("#domain-cancel").onclick = () => dialog.close();
@@ -265,6 +292,7 @@ function renderDomainEditor(focusDomain = false) {
     dialog.close();
     toast(autoMode(state.settings) === "off" ? "Domain saved. Auto mode is off." : !state.settings.auto_close_tabs ? "Domain saved. Enable domain cleanup in Settings." : "Domain saved.");
   };
+  renderDomainSuggestions();
   if (!dialog.open) dialog.showModal();
   (focusDomain ? dialog.querySelector("#domain-input") : dialog.querySelector(editor.hostChoices.length > 1 ? "#domain-host-choice" : "#domain-input"))?.focus();
 }

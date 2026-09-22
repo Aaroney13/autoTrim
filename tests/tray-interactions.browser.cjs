@@ -211,6 +211,47 @@ const uiDir = path.join(__dirname, '../tray/ui');
       await page.emulateMedia({colorScheme});
       await page.setViewportSize({width:760,height:740});
       await page.evaluate(()=>{state.settings.auto_tab_domains=[];state.settings.auto_tab_inactive_hours=24;state.view='settings';renderAll(true);window.__bridgeCalls=[];});
+      await check(`${colorScheme} suggestions filter and add an exact domain by keyboard`,async()=>{
+        await page.evaluate(()=>{
+          for (const tab of state.snap.browsers[0].tabs) tab.last_active=state.snap.taken_at-tab.idle_secs;
+        });
+        await page.locator('[data-add-domain]').click();
+        try {
+          const suggestions=page.locator('[data-domain-suggestion]');
+          assert.equal(await suggestions.count(),2);
+          assert.equal(await suggestions.first().getAttribute('data-domain-suggestion'),'www.example.com');
+          assert.match(await suggestions.first().textContent(),/2 tabs.*1 inactive/);
+          assert.equal(await page.locator('#domain-input').evaluate(el=>el===document.activeElement),true);
+          const description=await suggestions.first().getAttribute('aria-describedby');
+          assert.match(await page.locator('#'+description).textContent(),/2 tabs.*1 inactive/);
+          await page.locator('#domain-editor').screenshot({path:`/private/tmp/autotrim-domain-recommendations-${colorScheme}.png`});
+          await page.locator('#domain-input').fill('SHOP');
+          assert.equal(await suggestions.count(),1);
+          assert.match(await suggestions.textContent(),/shop\.example\.com/);
+          await page.locator('#domain-input').fill('www');
+          await suggestions.focus();
+          await page.keyboard.press('Enter');
+          assert.equal(await page.locator('#domain-input').inputValue(),'www.example.com');
+          assert.equal(await page.locator('#domain-subdomains').isChecked(),false);
+          assert.equal(await page.evaluate(()=>window.__bridgeCalls.length),0,'choosing a suggestion only fills the draft');
+          await page.evaluate(()=>refresh());
+          assert.equal(await page.locator('#domain-input').inputValue(),'www.example.com');
+          await page.locator('#domain-submit').click();
+          const writes=await page.evaluate(()=>window.__bridgeCalls.filter(([command])=>command==='set_tab_rules'));
+          assert.deepEqual(writes[0][1].domains,[{domain:'www.example.com',include_subdomains:false}]);
+          assert.equal(await page.evaluate(()=>window.__bridgeCalls.some(([command])=>command==='set_auto'||command==='close_tabs')),false);
+          await page.locator('[data-add-domain]').click();
+          assert.equal(await page.locator('[data-domain-suggestion="www.example.com"]').count(),0);
+          await page.locator('#domain-input').fill('custom.example.com');
+          assert.equal(await suggestions.count(),0);
+          assert.match(await page.locator('#domain-suggestions').textContent(),/enter.*domain|add.*domain/i);
+          await page.locator('#domain-input').fill('');
+          assert.equal(await suggestions.count(),1);
+        } finally {
+          await page.locator('#domain-cancel').click();
+          await page.evaluate(()=>{state.settings.auto_tab_domains=[];renderAll(true);window.__bridgeCalls=[];});
+        }
+      });
       await check(`${colorScheme} domain settings fit 760px and add by keyboard`,async()=>{
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true);
         assert.equal(await page.locator('[data-auto-domain-target]').locator('xpath=preceding-sibling::span/small').evaluate(el=>getComputedStyle(el).display),'block');
@@ -222,6 +263,36 @@ const uiDir = path.join(__dirname, '../tray/ui');
         const calls=await page.evaluate(()=>window.__bridgeCalls.map(call=>call[0]));
         assert.equal(calls.includes('set_tab_rules'),true);
         assert.equal(calls.includes('set_auto'),false);
+      });
+      await check(`${colorScheme} long suggestion lists fit narrow dialogs and empty lists allow manual entry`,async()=>{
+        const originalTabs=await page.evaluate(()=>state.snap.browsers[0].tabs);
+        try {
+          await page.evaluate(()=>{
+            const hosts=['github.com','stackoverflow.com','news.ycombinator.com','docs.google.com','reddit.com','youtube.com',`${'long-domain-'.repeat(4)}example.example.com`];
+            state.snap.browsers[0].tabs=hosts.map((host,i)=>({id:500+i,profile:'Default',url:'https://'+host,title:host,site:host,pinned:false,active:false,last_active:state.snap.taken_at-(i+1)*86400,idle_secs:(i+1)*86400}));
+          });
+          await page.locator('[data-add-domain]').click();
+          for (const width of [760,420]) {
+            await page.setViewportSize({width,height:740});
+            assert.equal(await page.locator('#domain-editor').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
+            assert.equal(await page.locator('.domain-suggestion-list').evaluate(el=>el.scrollHeight>el.clientHeight),true);
+            await page.locator('[data-domain-suggestion]').last().focus();
+            await page.screenshot({path:`/private/tmp/autotrim-domain-suggestions-${colorScheme}-${width}.png`});
+          }
+          await page.keyboard.press('Enter');
+          assert.equal(await page.locator('#domain-input').inputValue(),'github.com');
+          await page.locator('#domain-cancel').click();
+          await page.evaluate(()=>{state.snap.browsers[0].tabs=[];});
+          await page.locator('[data-add-domain]').click();
+          assert.equal(await page.locator('[data-domain-suggestion]').count(),0);
+          assert.match(await page.locator('#domain-suggestions').textContent(),/enter a domain/i);
+          await page.locator('#domain-input').fill('manual.example.com');
+          assert.equal(await page.locator('#domain-submit').isEnabled(),true);
+        } finally {
+          await page.locator('#domain-cancel').click();
+          await page.evaluate(tabs=>{state.snap.browsers[0].tabs=tabs;},originalTabs);
+          await page.setViewportSize({width:760,height:740});
+        }
       });
       await check(`${colorScheme} editor survives polling with draft and focus`,async()=>{
         await page.locator('[data-add-domain]').click();
