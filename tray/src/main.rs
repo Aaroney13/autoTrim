@@ -174,18 +174,57 @@ fn fresh_snapshot(t: &Thresholds) -> Snapshot {
     snap
 }
 
-/// A 22-pixel ring, black on transparent, so macOS can treat it as a
-/// template image and recolour it for light and dark menu bars.
-fn tray_image() -> Image<'static> {
-    const N: u32 = 22;
+/// A twelve-segment RAM dial, filled clockwise from twelve o'clock. Remaining
+/// segments are faint; template alpha adapts both shades to the menu bar.
+fn tray_image(used: u64, total: u64) -> Image<'static> {
+    const N: u32 = 44;
+    const SAMPLES: u32 = 4;
+    const OUTER_RADIUS: f64 = 17.2;
+    const INNER_RADIUS: f64 = 11.2;
+    const SEGMENTS: f64 = 12.0;
+    const SEGMENT_ANGLE: f64 = std::f64::consts::TAU / SEGMENTS;
+    const HALF_GAP: f64 = SEGMENT_ANGLE * 0.1;
+    const REMAINING_ALPHA: u32 = 56;
+    let fraction = if total == 0 {
+        0.0
+    } else {
+        used.min(total) as f64 / total as f64
+    };
+    let filled_segments = fraction * SEGMENTS;
     let mut rgba = Vec::with_capacity((N * N * 4) as usize);
     for y in 0..N {
         for x in 0..N {
-            let dx = x as f32 - 10.5;
-            let dy = y as f32 - 10.5;
-            let r = (dx * dx + dy * dy).sqrt();
-            let a = if (5.2..=8.6).contains(&r) { 255 } else { 0 };
-            rgba.extend_from_slice(&[0, 0, 0, a]);
+            let mut alpha_sum = 0;
+            for sy in 0..SAMPLES {
+                for sx in 0..SAMPLES {
+                    let dx = x as f64 + (sx as f64 + 0.5) / SAMPLES as f64 - N as f64 / 2.0;
+                    let dy = y as f64 + (sy as f64 + 0.5) / SAMPLES as f64 - N as f64 / 2.0;
+                    let radius_squared = dx * dx + dy * dy;
+                    if !(INNER_RADIUS * INNER_RADIUS..=OUTER_RADIUS * OUTER_RADIUS)
+                        .contains(&radius_squared)
+                    {
+                        continue;
+                    }
+                    let angle = dx.atan2(-dy).rem_euclid(std::f64::consts::TAU);
+                    let segment = (angle / SEGMENT_ANGLE).floor();
+                    let offset = angle - segment * SEGMENT_ANGLE;
+                    if !(HALF_GAP..=SEGMENT_ANGLE - HALF_GAP).contains(&offset) {
+                        continue;
+                    }
+                    // Fill the last segment proportionally, so the dial doesn't
+                    // jump in whole-segment steps as memory usage changes.
+                    let fill_end = HALF_GAP
+                        + (filled_segments - segment).clamp(0.0, 1.0)
+                            * (SEGMENT_ANGLE - 2.0 * HALF_GAP);
+                    alpha_sum += if offset < fill_end {
+                        255
+                    } else {
+                        REMAINING_ALPHA
+                    };
+                }
+            }
+            let alpha = (alpha_sum / (SAMPLES * SAMPLES)) as u8;
+            rgba.extend_from_slice(&[0, 0, 0, alpha]);
         }
     }
     Image::new_owned(rgba, N, N)
@@ -422,6 +461,10 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
             fmt::pct(snap.system.used_mem, snap.system.total_mem)
         );
         let _ = tray.set_title(Some(title));
+        let _ = tray.set_icon_with_as_template(
+            Some(tray_image(snap.system.used_mem, snap.system.total_mem)),
+            true,
+        );
         let auto = snap
             .auto
             .as_ref()
@@ -744,7 +787,7 @@ fn main() {
             let menu = Menu::new(app)?;
             app.manage(menu.clone());
             let _tray: TrayIcon = TrayIconBuilder::with_id(TRAY_ID)
-                .icon(tray_image())
+                .icon(tray_image(0, 0))
                 .icon_as_template(true)
                 .tooltip("autoTrim")
                 .menu(&menu)
