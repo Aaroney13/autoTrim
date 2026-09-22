@@ -10,6 +10,9 @@ staged="tray/binaries/autotrim-$target"
 if [ "$target" = universal-apple-darwin ]; then
   cargo build --locked --release -p autotrim --target aarch64-apple-darwin
   cargo build --locked --release -p autotrim --target x86_64-apple-darwin
+  # Tauri's per-architecture build scripts need these before universal bundling.
+  cp target/aarch64-apple-darwin/release/autotrim tray/binaries/autotrim-aarch64-apple-darwin
+  cp target/x86_64-apple-darwin/release/autotrim tray/binaries/autotrim-x86_64-apple-darwin
   lipo -create target/aarch64-apple-darwin/release/autotrim \
     target/x86_64-apple-darwin/release/autotrim -output "$staged"
 else
