@@ -11,6 +11,7 @@ function renderHeader() {
   const memoryOpen = document.getElementById("memory-details")?.open;
   const memoryFocused = document.activeElement?.id === "memory-summary";
   document.getElementById("head").innerHTML = `
+    <div class="app-brand" aria-label="autoTrim"><span class="brand-mark" aria-hidden="true"></span><span>autoTrim</span></div>
     <details class="mem" id="memory-details" ${memoryOpen ? "open" : ""}>
       <summary id="memory-summary" title="Show memory breakdown"><span class="muted">RAM used</span><b>${total >= GB && sys.used_mem >= GB ? `${(sys.used_mem / GB).toFixed(1)} / ${bytes(total)}` : `${bytes(sys.used_mem)} / ${bytes(total)}`}</b>
         <span class="meter" role="img" aria-label="${esc(`${bytes(sys.used_mem)} of ${bytes(total)} RAM in use`)}"><i class="used" style="width:${(used - comp).toFixed(1)}%"></i><i class="comp" style="width:${comp.toFixed(1)}%"></i></span><span class="memory-chevron" aria-hidden="true"></span>
@@ -202,28 +203,30 @@ function viewOverview() {
   const s = state.snap, a = s.auto;
   const trends = (s.trends || []).filter(t => t.kind !== "renderer" && t.span_secs >= 600).slice(0, 8);
   const observations = s.advice.filter(isObservation), advice = s.advice.filter(a => !isObservation(a));
-  return `<h1>Overview <span class="monitor-status ${state.src.daemon_running ? "on" : ""}">${icon(state.src.daemon_running ? "check" : "info")}${state.src.daemon_running ? "Monitoring" : "Manual scans"}</span></h1>
-    <div class="sub"><span><b>${sessionCount(s.sessions.filter(x => !goneSession(x)))}</b></span><span><b>${plural(s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0), "browser tab")}</b></span></div>
-    ${a && a.pending.length ? `<div class="card">${pendingList(a)}</div>` : ""}
-    <h2>Worth a look <small>Choose what to review</small></h2>${adviceCards(advice)}
-    ${observations.length ? observationCards(observations) : ""}
-    ${kindBar()}
-    ${trendsTable(trends)}
+  const sessions = s.sessions.filter(x => !goneSession(x));
+  const tabs = s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0);
+  return `<div class="overview-heading"><div><h1>Overview</h1><p>Current workload and the few things that may need your attention.</p></div><span class="monitor-status ${state.src.daemon_running ? "on" : ""}">${icon(state.src.daemon_running ? "check" : "info")}${state.src.daemon_running ? "Monitoring" : "Manual scans"}</span></div>
+    <div class="overview-layout"><section class="overview-focus"><div class="section-heading"><h2>Worth a look</h2><span>${advice.length ? plural(advice.length, "item") : "All clear"}</span></div>
+      ${a && a.pending.length ? `<div class="card">${pendingList(a)}</div>` : ""}
+      ${adviceCards(advice)}${observations.length ? observationCards(observations) : ""}
+    </section><aside class="overview-rail" aria-label="Current workload"><section><div class="section-heading"><h2>Current load</h2><span>Now</span></div>
+      <dl class="overview-stats"><div><dt>Agent work</dt><dd>${sessionCount(sessions)}</dd></div><div><dt>Browser activity</dt><dd>${plural(tabs, "open tab")}</dd></div><div><dt>Memory holders</dt><dd>${plural(s.groups.length, "group")}</dd></div></dl></section>${kindBar(true)}</aside></div>
+    <section class="overview-trends">${trendsTable(trends)}</section>
     ${!state.src.daemon_running ? `<p class="note" style="margin-top:16px">The daemon is not running, so this window is scanning on its own and there are no trends. Start it from Settings.</p>` : (trends.length ? "" : `<p class="note" style="margin-top:16px">Trends appear once the daemon has about ten minutes of history.</p>`)}`;
 }
 
 // One bar for what the sidebar lists, added up by kind.
 
-function kindBar() {
+function kindBar(compact = false) {
   const sum = {};
   for (const h of holders(state.snap)) sum[h.kind] = (sum[h.kind] || 0) + h.rss;
   const total = Object.values(sum).reduce((n, v) => n + v, 0);
   if (!total) return "";
   const kinds = [["agent", "Agent sessions"], ["browser", "Browsers"], ["app", "Apps"], ["other", "Other processes"]].filter(([k]) => sum[k]);
-  return `<h2>Process memory by kind <small class="muted">${plural(state.snap.groups.length, "holder")}</small></h2>
-    <p class="help">Grouped process totals, including helpers. On macOS, these include compressed and swapped allocations at their original size and do not add up to physical RAM used.</p>
+  return `<section class="memory-mix ${compact ? "compact" : ""}"><div class="section-heading"><h2>${compact ? "Memory mix" : "Process memory by kind"}</h2><span>${plural(state.snap.groups.length, "holder")}</span></div>
+    ${compact ? "" : `<p class="help">Grouped process totals, including helpers. On macOS, these include compressed and swapped allocations at their original size and do not add up to physical RAM used.</p>`}
     <div class="kbar">${kinds.map(([k]) => `<i class="${k}" style="width:${(sum[k] * 100 / total).toFixed(1)}%"></i>`).join("")}</div>
-    <div class="legend">${kinds.map(([k, l]) => `<span><i class="${k}"></i>${l} <b>${bytes(sum[k])}</b></span>`).join("")}</div>`;
+    <div class="legend">${kinds.map(([k, l]) => `<span><i class="${k}"></i>${l} <b>${bytes(sum[k])}</b></span>`).join("")}</div>${compact ? `<p class="memory-note">Process totals, not physical RAM used.</p>` : ""}</section>`;
 }
 
 
@@ -254,7 +257,12 @@ function rowStatus(r) {
 
 function compactInspector(r, label) {
   if (!r) return "";
-  return `<aside class="list-inspector" aria-label="${esc(label)} details"><div class="inspector-kind"><span>${esc(r.type)}</span>${r.statusLabel ? rowStatus(r) : icon("history")}</div><h3>${esc(r.title)}</h3><p class="context">${esc(r.context)}</p><div class="inspector-metric">${esc(r.detailMetric ?? r.metric)}<small>${esc(r.metricLabel)}</small></div><dl>${r.facts.map(([k,v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>${r.note ? `<div class="inspector-note">${icon("info")}<span>${esc(r.note)}</span></div>` : ""}${r.action ? `<div class="inspector-actions">${r.action}</div>` : ""}</aside>`;
+  return `<aside class="list-inspector" aria-label="${esc(label)} details">
+    <div class="inspector-head"><div class="inspector-kind"><span>${esc(r.type)}</span>${r.statusLabel ? rowStatus(r) : icon("history")}</div><h3>${esc(r.title)}</h3><p class="context">${esc(r.context)}</p></div>
+    <section class="inspector-primary" aria-label="Primary measurement"><span>Primary measurement</span><strong>${esc(r.detailMetric ?? r.metric)}</strong><small>${esc(r.metricLabel)}</small></section>
+    <section class="inspector-section" aria-labelledby="${esc(r.id)}-facts"><h4 id="${esc(r.id)}-facts">Details</h4><dl>${r.facts.map(([k,v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl></section>
+    ${r.note ? `<section class="inspector-note" aria-label="Context">${icon("info")}<div><b>Keep in mind</b><span>${esc(r.note)}</span></div></section>` : ""}
+    ${r.action ? `<footer class="inspector-actions">${r.action}</footer>` : ""}</aside>`;
 }
 
 function compactList(key, rows, options) {
@@ -394,15 +402,14 @@ function viewBrowser(h) {
     <label>Profile<select data-tab-profile aria-label="Filter by profile"><option value="">All profiles</option>${b.open_profiles.map(p => `<option value="${esc(p.dir)}" ${state.tabProfile === p.dir ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select></label>
     <label>Sort by<select data-tab-sort aria-label="Sort tabs">${["idle", "site", "title", "window"].map(k => `<option value="${k}" ${state.tabSort === k ? "selected" : ""}>${(state.tabReverse && state.tabSort === k ? {idle:"Recently viewed",site:"Site Z–A",title:"Title Z–A",window:"Reverse window order"} : {idle:"Longest untouched",site:"Site A–Z",title:"Title A–Z",window:"Window order"})[k]}</option>`).join("")}</select></label></div></details></div>
     ${tabTable(b, visible)}
-    <details class="browser-details" data-keep-open="browser-details"><summary>Browser details &amp; actions</summary>
-    <p class="help">${plural(h.procs, 'process')} · ${h.cpu.toFixed(1)}% CPU · ${plural(b.open_profiles.length, 'profile')}</p>
-    ${holderMemoryHelp(h)}
-    <p class="help">Stale means not viewed for ${dur(threshold)}. Pinned and active tabs stay open. Sort by last viewed to group tabs by activity.</p>
-    <h2>Sites in these results</h2>${sitesTable(b, visible)}`;
+    <details class="browser-details" data-keep-open="browser-details"><summary><span>Browser details &amp; actions</span><small>Memory, sites, recovery, and app controls</small></summary><div class="browser-detail-body">
+    <dl class="detail-metrics" aria-label="Browser summary"><div><dt>Processes</dt><dd>${h.procs}</dd></div><div><dt>CPU</dt><dd>${h.cpu.toFixed(1)}%</dd></div><div><dt>Profiles</dt><dd>${b.open_profiles.length}</dd></div><div><dt>Renderer memory</dt><dd>${bytes(b.renderer_rss)}</dd></div></dl>
+    <section class="detail-block"><h2>How memory is counted</h2>${holderMemoryHelp(h)}</section>
+    <section class="detail-block"><h2>Sites in these results</h2><p class="help">Stale means not viewed for ${dur(threshold)}. Pinned and active tabs stay open.</p>${sitesTable(b, visible)}</section>`;
   const growing = (s.trends || []).filter(t => t.kind === "renderer" && t.growth > 0 && t.span_secs >= 600 && (b.renderer_procs || []).some(r => `r:${r.pid}:${r.start_time}` === t.key)).sort((x, y) => y.growth - x.growth).slice(0, 5);
-  if (growing.length) html += trendsTable(growing, "Pages growing", "growing") + `<p class="help">Each row is a renderer process; the browser does not identify its tab.</p>`;
-  html += `<h2>Memory and recovery</h2><p class="help">Per-tab estimates divide total renderer memory evenly across all open tabs; individual tabs may use more or less. Site estimates multiply that average by the selected tab count. ${bytes(b.renderer_rss)} is held by ${plural(b.renderers, "page renderer")}, plus ${plural(b.extension_renderers, "extension renderer")}. ${b.can_close_tabs ? "Use ⌘⇧T in the same profile to reopen a recently closed tab; its URL is saved in Actions. Unsaved drafts and temporary chats may not be restored." : "Closing tabs is unavailable on this platform."}</p>`;
-  return html + quitBlock(h) + `</details>`;
+  if (growing.length) html += `<section class="detail-block">${trendsTable(growing, "Pages growing", "growing")}<p class="help">Each row is a renderer process; the browser does not identify its tab.</p></section>`;
+  html += `<section class="detail-block"><h2>Recovery and estimates</h2><p class="help">Per-tab estimates divide total renderer memory evenly across all open tabs; individual tabs may use more or less. Site estimates multiply that average by the selected tab count. ${bytes(b.renderer_rss)} is held by ${plural(b.renderers, "page renderer")}, plus ${plural(b.extension_renderers, "extension renderer")}. ${b.can_close_tabs ? "Use ⌘⇧T in the same profile to reopen a recently closed tab; its URL is saved in Actions. Unsaved drafts and temporary chats may not be restored." : "Closing tabs is unavailable on this platform."}</p></section>`;
+  return html + `<section class="detail-block detail-actions">${quitBlock(h)}</section></div></details>`;
 }
 
 function quitBlock(h) {
@@ -514,7 +521,7 @@ function viewActions() {
     const preview = r.mode === "dry-run", failed = /fail|error|refus|still running|could not/i.test(r.result);
     const mode = preview ? "Preview only" : r.mode === "auto" ? "Automatic" : "Manual";
     const key = `${r.ts}:${r.action}:${r.pid}:${r.target}`;
-    return `<article class="history-entry"><div class="event-head"><span class="event-icon ${preview ? "neutral" : failed ? "warning" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "" : "neutral"}">${icon(preview || failed ? "info" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "check" : "history")}</span><b>${esc(labels[r.action] || r.action.replace(/_/g, " "))}</b><span class="tag ${preview ? "" : "on"}">${mode}</span><time>${esc(new Date(r.ts * 1000).toLocaleString())}</time></div><p class="result">${esc(r.target)}</p><p class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</p>${r.rss ? `<p>${r.action === "close_tab" ? "≈ " : ""}${bytes(r.rss)} ${preview ? "held when evaluated" : "held before the action"}${r.action === "close_tab" ? " (estimated)" : ""}</p>` : ""}${!preview ? observedMemory(r) : ""}${r.resume && !preview ? `<details data-keep-open="${esc(key)}"><summary>${r.action === "close_session" ? "How to resume" : "How to reopen"}</summary>${recoveryControl(r)}</details>` : ""}</article>`;
+    return `<article class="history-entry"><div class="event-head"><span class="event-icon ${preview ? "neutral" : failed ? "warning" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "" : "neutral"}">${icon(preview || failed ? "info" : /terminated|closed|stopped|quit and relaunched/i.test(r.result) ? "check" : "history")}</span><b>${esc(labels[r.action] || r.action.replace(/_/g, " "))}</b><span class="tag ${preview ? "" : "on"}">${mode}</span><time>${esc(new Date(r.ts * 1000).toLocaleString())}</time></div><div class="event-body"><strong class="result">${esc(r.target)}</strong><dl class="event-facts"><div><dt>Result</dt><dd class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</dd></div>${r.rss ? `<div><dt>Memory context</dt><dd>${r.action === "close_tab" ? "≈ " : ""}${bytes(r.rss)} ${preview ? "held when evaluated" : "held before the action"}${r.action === "close_tab" ? " (estimated)" : ""}</dd></div>` : ""}</dl>${!preview ? observedMemory(r) : ""}${r.resume && !preview ? `<details data-keep-open="${esc(key)}"><summary>${r.action === "close_session" ? "How to resume" : "How to reopen"}</summary>${recoveryControl(r)}</details>` : ""}</div></article>`;
   }).join("") + `<p class="help">Memory shown is what a target held before the action, not a measurement of memory recovered. Observed RAM and swap changes cover the whole machine, include other activity, and must not be added up as savings.</p>` : `<div class="note">No actions yet. When you close something, its result and available recovery instructions will appear here.</div>`);
 }
 
