@@ -446,7 +446,7 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// The window is built on first open and destroyed on close, so an idle
-/// tray is only the menu item: no web view sitting in memory for nothing.
+/// app keeps its Dock and menu bar icons without an idle web view in memory.
 /// `main` keeps the app alive once the last window is gone.
 fn show_window<R: Runtime>(app: &AppHandle<R>) {
     show_window_at(app, false);
@@ -736,7 +736,7 @@ fn main() {
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             let handle = app.handle().clone();
             let menu = Menu::new(app)?;
@@ -780,9 +780,8 @@ fn main() {
 
             refresh(&handle);
             updates::start(handle.clone());
-            // Show the window on launch so the app is not just a small icon
-            // among many, unless the person asked for the menu bar item
-            // only. Closing it leaves the tray running either way.
+            // The startup preference controls the window, not Dock visibility.
+            // Closing the window leaves the Dock and menu bar icons available.
             if open_window {
                 show_window(&handle);
             }
@@ -797,6 +796,11 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("autoTrim tray failed to start")
         .run(|_app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_window(_app);
+            }
+
             // Tauri exits when its last window is destroyed, which would take
             // the menu bar item with the window. That request carries no exit
             // code; "Quit autoTrim" calls `exit(0)`, which does, and goes

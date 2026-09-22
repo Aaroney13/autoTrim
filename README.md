@@ -24,6 +24,10 @@ This installs the `autotrim` command and autoTrim.app in Applications. Open the
 app to choose what to monitor, idle thresholds, notifications, and whether to
 run at login. Revisit these choices in **Settings → Review setup**.
 
+autoTrim appears in the Dock while running. Click its Dock icon to open the
+dashboard again after closing it. To keep the icon after quitting, choose
+**Options → Keep in Dock** from the icon's shortcut menu.
+
 The app checks for updates automatically. To update manually, use
 **Settings → App updates → Check for updates → Install and restart**.
 Older installations and CLI-only installs can update with
