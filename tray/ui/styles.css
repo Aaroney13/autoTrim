@@ -320,6 +320,21 @@
   .domain-editor-form .field { display: grid; gap: 5px; margin: 13px 0; font-weight: 600; cursor: default; }
   .domain-editor-form .field input, .domain-editor-form .field select { width: 100%; }
   .domain-editor-form .check-field { display: flex; align-items: center; gap: 3px; margin: 12px 0; }
+  #domain-suggestions { margin: 18px 0; }
+  .domain-suggestions-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .domain-suggestions-heading h3 { margin: 0; font-size: 13px; font-weight: 600; }
+  .domain-suggestions-heading > span { font-size: 11px; }
+  #domain-suggestions p { margin: 3px 0 9px; font-size: 11px; }
+  .domain-suggestion-list { max-height: 188px; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; }
+  .domain-suggestion { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: left; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 9px 10px; white-space: normal; }
+  .domain-suggestion:last-child { border-bottom: 0; }
+  .domain-suggestion > span:first-child { min-width: 0; }
+  .domain-suggestion b { display: block; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+  .domain-suggestion small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+  .domain-suggestion-use { flex: none; font-size: 11px; color: var(--accent); }
+  .domain-suggestion[aria-pressed=true] { background: var(--sel); }
+  .domain-suggestion:focus-visible { outline-offset: -3px; }
+  .domain-suggestions-empty { border: 1px dashed var(--line); border-radius: 7px; padding: 12px; color: var(--muted); font-size: 12px; }
   .readonly-setting { display: flex; justify-content: space-between; gap: 16px; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 13px; }
   .field-error { min-height: 1.5em; color: var(--danger); margin: 8px 0; }
   .preview-summary { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; padding: 9px 0 12px; color: var(--muted); font-size: 12px; }

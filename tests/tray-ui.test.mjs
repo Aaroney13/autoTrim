@@ -267,6 +267,67 @@ test('config errors disable domain writes from the Chrome Sites inspector', () =
   assert.match(markup, /data-auto-domain-site="example\.com"[^>]*disabled/);
 });
 
+const recommendationTab = (id, host, overrides = {}) => ({ id, profile: 'Default',
+  url: `https://${host}/page`, site: 'display-only.example', active: false, pinned: false,
+  last_active: 99000, idle_secs: 1000, ...overrides });
+const recommendations = ui => JSON.parse(vm.runInContext('JSON.stringify(domainRecommendations())', ui.context));
+
+test('domain recommendations rank inactive tabs across Chrome profiles using the shared timer', () => {
+  const ui = load();
+  ui.state.settings = { auto_tab_inactive_hours: 1 / 6, auto_tab_domains: [] };
+  ui.state.snap = { taken_at: 100000, browsers: [{ name: 'Google Chrome', can_close_tabs: true, tabs: [
+    recommendationTab(1, 'many.example', { last_active: 99400 }),
+    recommendationTab(2, 'many.example', { profile: 'Work', last_active: 99000 }),
+    recommendationTab(3, 'old.example', { last_active: 80000 }),
+    recommendationTab(4, 'recent.example', { last_active: 99900 }),
+    recommendationTab(5, 'many.example', { active: true, last_active: 100 }),
+  ] }] };
+  assert.deepEqual(recommendations(ui), [
+    { domain: 'many.example', count: 3, inactiveCount: 2, oldestIdleSecs: 1000 },
+    { domain: 'old.example', count: 1, inactiveCount: 1, oldestIdleSecs: 20000 },
+    { domain: 'recent.example', count: 1, inactiveCount: 0, oldestIdleSecs: 100 },
+  ]);
+  ui.state.settings.auto_tab_inactive_hours = 1;
+  assert.equal(recommendations(ui)[0].domain, 'old.example');
+});
+
+test('recommendations omit covered domains, unsupported hosts, other browsers, and closed tabs', () => {
+  const ui = load();
+  ui.state.settings = { auto_tab_domains: [
+    { domain: 'EXAMPLE.com.', include_subdomains: true },
+    { domain: 'exact.org', include_subdomains: false },
+  ] };
+  const hosts = ['example.com', 'www.example.com', 'exact.org', 'sub.exact.org', 'notexample.com',
+    'EXAMPLE.com.evil.org.', 'localhost', '127.0.0.1', '[::1]', '-bad.example', 'bad_.example',
+    'bad..example', `${'a'.repeat(64)}.example`, 'example%2Eorg'];
+  const tabs = hosts.map((host, id) => recommendationTab(id, host));
+  tabs.push(recommendationTab(99, 'closed.example'), recommendationTab(100, 'ignored', { url: 'chrome://newtab' }));
+  ui.state.gone.tabs.add(99);
+  ui.state.snap = { taken_at: 100000, browsers: [
+    { name: 'Chrome', can_close_tabs: true, tabs },
+    { name: 'Edge', can_close_tabs: true, tabs: [recommendationTab(200, 'edge.example')] },
+    { name: 'Google Chrome', can_close_tabs: false, tabs: [recommendationTab(201, 'unavailable.example')] },
+  ] };
+  assert.deepEqual(recommendations(ui).map(row => row.domain), ['example.com.evil.org', 'notexample.com', 'sub.exact.org']);
+});
+
+test('protected and unknown-activity tabs do not inflate recommendation inactivity', () => {
+  const ui = load();
+  ui.state.settings = { auto_tab_inactive_hours: 1 / 6 };
+  ui.state.snap = { taken_at: 100000, browsers: [{ name: 'Google Chrome', can_close_tabs: true, tabs: [
+    recommendationTab(1, 'protected.example', { pinned: true }),
+    recommendationTab(2, 'protected.example', { active: true }),
+    recommendationTab(3, 'protected.example', { last_active: null }),
+    recommendationTab(4, 'protected.example', { last_active: 0 }),
+    recommendationTab(5, 'protected.example', { last_active: 100001 }),
+  ] }] };
+  assert.deepEqual(recommendations(ui), [
+    { domain: 'protected.example', count: 5, inactiveCount: 0, oldestIdleSecs: null },
+  ]);
+  ui.state.snap = null;
+  assert.deepEqual(recommendations(ui), []);
+});
+
 test('confirmation sends only selected frozen identities and accounts for partial failure', async () => {
   const calls = [];
   const ui = load(async (command, args) => {
