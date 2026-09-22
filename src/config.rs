@@ -95,8 +95,8 @@ pub struct Config {
     /// sessions makes closing pointless, so this is an allowlist.
     pub auto_hosts: Vec<String>,
 
-    /// The menu bar app opens its window when it starts. Off leaves only
-    /// the menu bar item, for running in the background.
+    /// Open the dashboard at startup. Off keeps the Dock and menu bar icons
+    /// available without opening a window.
     pub open_window_at_launch: bool,
     /// The first-run wizard has been saved successfully.
     pub onboarding_completed: bool,
@@ -281,7 +281,7 @@ auto_hosts = ["Claude app", "VS Code", "Cursor", "terminal"]   # sessions under 
                                                               # an app's own agent engine never is
 
 # Menu bar app
-open_window_at_launch = {open_window_at_launch}   # false: start with only the menu bar item
+open_window_at_launch = {open_window_at_launch}   # false: start without opening the dashboard
 
 # First-run setup and sidebar priorities
 onboarding_completed = false

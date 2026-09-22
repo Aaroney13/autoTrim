@@ -207,7 +207,7 @@ function backgroundCard() {
     <div class="muted">${status}</div>
     ${sv.binary || sv.pid ? `<details class="help" data-keep-open="service-details"><summary>Service details</summary><p>${sv.pid ? `PID: ${sv.pid}<br>` : ""}${esc(sv.binary || "")}</p></details>` : ""}
     <div class="row2">${buttons}</div>
-    <label style="margin-top:8px" title="off: the app starts as a menu bar item only; Open autoTrim… in its menu brings the window back"><input type="checkbox" data-launch-window ${c.open_window_at_launch ? "checked" : ""}>Open this window when the app starts</label>
+    <label style="margin-top:8px" title="off: start without the dashboard; click the Dock icon or Open autoTrim… in the menu bar to open it"><input type="checkbox" data-launch-window ${c.open_window_at_launch ? "checked" : ""}>Open this window when the app starts</label>
     <div class="row2"><button data-hide>Hide window</button><span class="muted">The menu bar item stays. The daemon keeps working with the window closed, and with the app quit.</span></div></div>`;
 }
 
