@@ -219,7 +219,7 @@ export function initializeOnboarding(onSaved) {
       existingRules = settings.auto_tab_domains || [];
       tabHours = settings.auto_tab_inactive_hours ?? 24;
       tabMode = !settings.auto_close_tabs ? "off" : settings.auto_dry_run ? "preview" : "on";
-      autoEnabled = settings.auto_close_sessions || settings.auto_stop_servers || settings.auto_close_tabs;
+      autoEnabled = settings.auto_close_sessions || settings.auto_archive_codex || settings.auto_stop_servers || settings.auto_close_tabs;
       step = force ? 1 : 0;
       draw();
       dialog.showModal();

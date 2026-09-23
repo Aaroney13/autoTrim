@@ -1,8 +1,10 @@
 # Codex bridge prototype (macOS)
 
 An opt-in transport experiment. It does not enable automatic cleanup, make
-model calls, edit the Codex app, or change its backend code. The ordinary
-AutoTrim daemon and app do not depend on these Python files.
+model calls, edit the Codex app, or change its backend code. AutoTrim can inspect
+an already-running bridge and offer reviewed individual task archiving, plus
+optional timed archiving through its separate **Archive idle Codex tasks** setting. It embeds
+the transport code; it does not run this launcher automatically.
 
 The desktop launches `bridge.py` using a per-launch `CODEX_CLI_PATH` override.
 The bridge forwards the app's arguments and environment to its installed Codex
@@ -75,7 +77,8 @@ different sockets and registry files. Socket access is limited to the same user.
 
 This is a prototype, not a shipped native cleanup setting. Native approval and
 plugin workflows, update compatibility and long-running load still need desktop
-testing. Each message is capped at 64 MiB. A real archive action would also need
-AutoTrim's shared recovery journal, idle revalidation, and protection for scheduled
-tasks and descendants before being exposed as a UI control. Per-task RAM is
+testing. Each message is capped at 64 MiB. AutoTrim now exposes manual
+**Archive task** through its shared recovery journal,
+with idle revalidation and protection for scheduled tasks and descendants.
+Automatic task archiving is not enabled. Per-task RAM is
 not available from this protocol. The previous Codex heartbeat remains paused.

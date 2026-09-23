@@ -19,6 +19,10 @@ pub(crate) struct PolicyState {
 
 pub(crate) enum Target {
     Session(AgentSession),
+    Codex {
+        task: crate::codex::Task,
+        rule_revision: String,
+    },
     Server(crate::ports::PortInfo),
     Tab {
         browser: String,
@@ -30,6 +34,21 @@ impl Target {
     pub fn key(&self) -> String {
         match self {
             Self::Session(s) => format!("s:{}:{}", s.pid, s.start_time),
+            Self::Codex {
+                task,
+                rule_revision,
+            } => format!(
+                "c:{}",
+                serde_json::to_string(&(
+                    task.backend_pid,
+                    task.backend_created_at,
+                    &task.codex_home,
+                    &task.id,
+                    &task.revision,
+                    rule_revision,
+                ))
+                .expect("task identity is serializable")
+            ),
             Self::Server(p) => format!("p:{}:{}:{}", p.pid, p.start_time, p.port),
             Self::Tab {
                 browser,
@@ -98,6 +117,53 @@ pub(crate) fn auto_session_candidates<'a>(
             _ => true,
         })
         .collect()
+}
+
+/// Only verified, unchanged idle task identities may enter the warning period.
+/// Keep the newest loaded task in each project (including ties); missing backend
+/// evidence prevents us from knowing which task is newest, so fail closed.
+pub(crate) fn auto_codex_candidates<'a>(
+    snap: &'a Snapshot,
+    cfg: &DaemonConfig,
+) -> Vec<&'a crate::codex::Task> {
+    if !cfg.auto.archive_codex || snap.codex_backends.iter().any(|b| b.error.is_some()) {
+        return Vec::new();
+    }
+    let mut newest: HashMap<(&str, &str), u64> = HashMap::new();
+    for task in snap.codex_backends.iter().flat_map(|b| &b.tasks) {
+        let latest = newest.entry((&task.codex_home, &task.cwd)).or_default();
+        *latest = (*latest).max(task.updated_at);
+    }
+    let mut candidates: Vec<_> = snap
+        .codex_backends
+        .iter()
+        .flat_map(|b| &b.tasks)
+        .filter(|t| {
+            t.state == "idle" && t.protection.is_none() && !t.cwd.is_empty() && t.updated_at > 0
+        })
+        .filter(|t| snap.taken_at.saturating_sub(t.updated_at) >= cfg.thresholds.stale_after_secs)
+        .filter(|t| {
+            newest
+                .get(&(t.codex_home.as_str(), t.cwd.as_str()))
+                .is_some_and(|new| t.updated_at < *new)
+        })
+        .filter(|t| {
+            !cfg.thresholds
+                .ignore_projects
+                .iter()
+                .any(|p| !p.is_empty() && t.cwd.contains(p))
+        })
+        .filter(|_| {
+            !cfg.thresholds.ignore_apps.iter().any(|a| {
+                matches!(
+                    a.as_str(),
+                    "Codex" | "ChatGPT" | "Codex app" | "ChatGPT app"
+                )
+            })
+        })
+        .collect();
+    candidates.sort_by_key(|t| (t.updated_at, &t.id));
+    candidates
 }
 
 /// Servers auto mode may stop: the old-servers rule's targets, narrowed to
@@ -169,6 +235,46 @@ pub(crate) fn decide(
                     rss: s.rss,
                     since: first,
                     due_at: first + grace,
+                });
+            }
+        }
+    }
+    if auto.archive_codex {
+        let mut archives = 0;
+        for task in auto_codex_candidates(snap, cfg) {
+            let target = Target::Codex {
+                task: task.clone(),
+                rule_revision: cfg.codex_rules_revision(),
+            };
+            let key = target.key();
+            live.insert(key.clone());
+            if auto.dry_run && state.dry_done.contains(&key) {
+                continue;
+            }
+            let first = *state.pending.entry(key.clone()).or_insert_with(|| {
+                warned.push(format!("Codex · {} (will archive)", task.name));
+                now
+            });
+            // Always observe on a later tick, even with a zero configured grace.
+            // Limit archiving to two tasks per pass; later targets stay pending.
+            if now > first && now.saturating_sub(first) >= grace && archives < 2 {
+                acted.push(target);
+                archives += 1;
+                if auto.dry_run {
+                    state.dry_done.insert(key);
+                }
+            } else {
+                pending.push(PendingTarget {
+                    kind: "codex_task".into(),
+                    pid: task.backend_pid,
+                    target: format!("Codex · {}", task.name),
+                    detail: format!(
+                        "idle {} · archive task",
+                        dur(now.saturating_sub(task.updated_at))
+                    ),
+                    rss: 0,
+                    since: first,
+                    due_at: first.saturating_add(grace),
                 });
             }
         }
@@ -623,6 +729,148 @@ mod domain_tab_tests {
         assert_eq!(
             decide(&mut state, &snap, &cfg, 101_201).pending[0].due_at,
             101_801
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod codex_tests {
+    use super::*;
+    use crate::{
+        codex::{Backend, Task},
+        config::Config,
+        daemon::Overrides,
+        test_support::snapshot,
+    };
+
+    pub(crate) fn fixture() -> (Snapshot, DaemonConfig) {
+        let cfg = DaemonConfig::from_config(
+            &Config {
+                auto_archive_codex: true,
+                stale_after_hours: 1.0,
+                ..Config::default()
+            },
+            &Overrides::default(),
+        );
+        let mut snap = snapshot();
+        snap.taken_at = 10000;
+        let task = Task {
+            backend_pid: 42,
+            backend_created_at: 1,
+            id: "old".into(),
+            codex_home: "/codex".into(),
+            revision: "old-revision".into(),
+            name: "Old task".into(),
+            cwd: "/project".into(),
+            transcript: "/old".into(),
+            updated_at: 100,
+            state: "idle".into(),
+            protection: None,
+        };
+        let newer = Task {
+            id: "new".into(),
+            updated_at: 200,
+            ..task.clone()
+        };
+        snap.codex_backends.push(Backend {
+            pid: 42,
+            tasks: vec![task, newer],
+            error: None,
+        });
+        (snap, cfg)
+    }
+
+    #[test]
+    fn candidates_keep_newest_ties_and_reject_protected_or_missing_evidence() {
+        let (mut snap, mut cfg) = fixture();
+        assert_eq!(auto_codex_candidates(&snap, &cfg).len(), 1);
+        let mut tie = snap.codex_backends[0].tasks[1].clone();
+        tie.id = "tie".into();
+        snap.codex_backends[0].tasks.push(tie);
+        assert_eq!(auto_codex_candidates(&snap, &cfg)[0].id, "old");
+        for reason in [
+            "Pinned task",
+            "Unfinished goal",
+            "Queued work",
+            "Linked to an automation",
+            "Has child tasks",
+        ] {
+            snap.codex_backends[0].tasks[0].protection = Some(reason.into());
+            assert!(auto_codex_candidates(&snap, &cfg).is_empty());
+        }
+        snap.codex_backends[0].tasks[0].protection = None;
+        snap.codex_backends[0].tasks[0].state = "active".into();
+        assert!(auto_codex_candidates(&snap, &cfg).is_empty());
+        snap.codex_backends[0].tasks[0].state = "idle".into();
+        snap.codex_backends[0].error = Some("disconnected".into());
+        assert!(auto_codex_candidates(&snap, &cfg).is_empty());
+        snap.codex_backends[0].error = None;
+        cfg.thresholds.ignore_projects.push("/project".into());
+        assert!(auto_codex_candidates(&snap, &cfg).is_empty());
+        cfg.thresholds.ignore_projects.clear();
+        cfg.auto.archive_codex = false;
+        assert!(auto_codex_candidates(&snap, &cfg).is_empty());
+    }
+
+    #[test]
+    fn inactivity_grace_activity_and_config_edits_require_new_warnings() {
+        let (mut snap, mut cfg) = fixture();
+        let mut state = PolicyState::default();
+        snap.taken_at = 3699;
+        assert!(decide(&mut state, &snap, &cfg, 3699).pending.is_empty());
+        snap.taken_at = 3700;
+        let first = decide(&mut state, &snap, &cfg, 3700);
+        assert_eq!(first.pending[0].kind, "codex_task");
+        assert_eq!(first.pending[0].due_at, 4300);
+        assert!(decide(&mut state, &snap, &cfg, 4299).eligible.is_empty());
+        state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(decide(&mut state, &snap, &cfg, 4300).eligible.len(), 1);
+        snap.codex_backends[0].tasks[0].revision = "new activity".into();
+        let changed = decide(&mut state, &snap, &cfg, 4301);
+        assert_eq!(changed.cancelled.len(), 1);
+        assert_eq!(changed.pending[0].due_at, 4901);
+        cfg.auto.config_file_revision = "changed settings".into();
+        let changed = decide(&mut state, &snap, &cfg, 4400);
+        assert_eq!(changed.cancelled.len(), 1);
+        assert_eq!(changed.pending[0].due_at, 5000);
+        cfg.auto.archive_codex = false;
+        assert_eq!(decide(&mut state, &snap, &cfg, 4500).cancelled.len(), 1);
+        cfg.auto.archive_codex = true;
+        assert_eq!(
+            decide(&mut state, &snap, &cfg, 5000).pending[0].due_at,
+            5600
+        );
+        snap.codex_backends[0].tasks.remove(1);
+        assert!(
+            decide(&mut state, &snap, &cfg, 5600).eligible.is_empty(),
+            "retain sole remaining task"
+        );
+    }
+
+    #[test]
+    fn preview_and_archive_limit_and_later_tick() {
+        let (mut snap, mut cfg) = fixture();
+        let mut state = PolicyState::default();
+        cfg.auto.dry_run = true;
+        cfg.auto.grace = std::time::Duration::ZERO;
+        let original = snap.codex_backends[0].tasks[0].clone();
+        for id in ["old2", "old3"] {
+            snap.codex_backends[0].tasks.push(Task {
+                id: id.into(),
+                ..original.clone()
+            });
+        }
+        assert_eq!(decide(&mut state, &snap, &cfg, 10000).pending.len(), 3);
+        let due = decide(&mut state, &snap, &cfg, 10001);
+        assert_eq!(due.eligible.len(), 2);
+        assert_eq!(due.pending.len(), 1);
+        assert_eq!(decide(&mut state, &snap, &cfg, 10002).eligible.len(), 1);
+        assert!(decide(&mut state, &snap, &cfg, 10003).eligible.is_empty());
+        cfg.auto.dry_run = false;
+        assert_eq!(
+            decide(&mut state, &snap, &cfg, 10004).pending.len(),
+            3,
+            "leaving preview requires fresh warnings"
         );
     }
 }

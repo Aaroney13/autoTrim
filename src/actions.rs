@@ -861,6 +861,18 @@ fn log(rec: &ActionRecord) -> Result<()> {
     append_record(&dir.join("actions.jsonl"), rec)
 }
 fn outcome_status(rec: &ActionRecord) -> &'static str {
+    if rec.action == "archive_codex_task" && rec.result == "archived; unloading not verified" {
+        return "partial";
+    }
+    if matches!(
+        rec.action.as_str(),
+        "archive_codex_task" | "restore_codex_task"
+    ) && matches!(
+        rec.result.as_str(),
+        "archived and verified unloaded" | "restored" | "already restored"
+    ) {
+        return "success";
+    }
     if let Some(out) = &rec.termination {
         return if out.success() { "success" } else { "partial" };
     }
@@ -1090,6 +1102,169 @@ fn close_by_pid_checked(
     execute_process(close_session(s, mode, true), &sys, &s.pids, mode, dry_run)
 }
 
+/// Archive one reviewed Codex task. The helper revalidates on its owning
+/// backend after the durable intent is written. It never signals a process.
+pub fn archive_codex_task(expected: &crate::codex::Task) -> Result<ActionRecord> {
+    let task = crate::codex::prepare(expected)?;
+    let plan = codex_plan(&task, "archive_codex_task");
+    let mut outcome = plan.clone();
+    journal_with(plan, "manual", false, log, || {
+        outcome.result = match crate::codex::perform("archive", &task) {
+            Ok(result) => result,
+            Err(e) => format!("archive not confirmed: {e}; inspect the task before retrying"),
+        };
+        outcome
+    })
+}
+
+fn archive_codex_automatic(
+    task: &crate::codex::Task,
+    cfg: &crate::daemon::DaemonConfig,
+    revision: &str,
+) -> Result<ActionRecord> {
+    let task = crate::codex::prepare(task)?;
+    let plan = codex_plan(&task, "archive_codex_task");
+    let mut outcome = plan.clone();
+    // Validate settings again before previewing or writing the intent.
+    crate::codex::auto_guard(cfg, revision)?;
+    journal_with(plan, "auto", cfg.auto.dry_run, log, || {
+        outcome.result = match crate::codex::perform_auto(&task, cfg, revision) {
+            Ok(result) => result,
+            Err(e) => format!("archive not confirmed: {e}; inspect the task before retrying"),
+        };
+        outcome
+    })
+}
+
+/// Restore only identities previously saved by AutoTrim, including incomplete
+/// intents whose response may have been lost. Never restore an arbitrary UI path.
+pub fn restore_codex_task(action_id: &str) -> Result<ActionRecord> {
+    let original = read_log(1000)?
+        .into_iter()
+        .find(|r| r.id.as_deref() == Some(action_id))
+        .context("archive record is no longer available")?;
+    if original.action != "archive_codex_task" || original.mode == "dry-run" {
+        anyhow::bail!("not a recoverable Codex archive record");
+    }
+    let task: crate::codex::Task =
+        serde_json::from_value(original.target_identity.context("missing task identity")?)?;
+    let plan = codex_plan(&task, "restore_codex_task");
+    let mut outcome = plan.clone();
+    journal_with(plan, "manual", false, log, || {
+        outcome.result = match crate::codex::perform("restore", &task) {
+            Ok(result) => result,
+            Err(e) => format!("restore not confirmed: {e}"),
+        };
+        outcome
+    })
+}
+
+#[cfg(test)]
+mod codex_journal_tests {
+    use super::*;
+
+    fn task() -> crate::codex::Task {
+        crate::codex::Task {
+            backend_pid: 42,
+            backend_created_at: 1,
+            id: "task-id".into(),
+            codex_home: "/scratch/codex".into(),
+            revision: "a".repeat(64),
+            name: "Task".into(),
+            cwd: "/scratch/project".into(),
+            transcript: "/scratch/transcript.jsonl".into(),
+            updated_at: 1,
+            state: "idle".into(),
+            protection: None,
+        }
+    }
+
+    #[test]
+    fn automatic_codex_requires_current_identity_and_configuration() {
+        let (mut snap, mut cfg) = crate::policy::codex_tests::fixture();
+        let target = crate::policy::Target::Codex {
+            task: snap.codex_backends[0].tasks[0].clone(),
+            rule_revision: cfg.codex_rules_revision(),
+        };
+        assert!(auto_target_eligible(&target, &snap, &cfg));
+        snap.codex_backends[0].tasks[0].revision = "new activity".into();
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        snap.codex_backends[0].tasks[0].revision = "old-revision".into();
+        cfg.auto.dry_run = !cfg.auto.dry_run;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+        cfg.auto.dry_run = !cfg.auto.dry_run;
+        cfg.auto.archive_codex = false;
+        assert!(!auto_target_eligible(&target, &snap, &cfg));
+    }
+
+    #[test]
+    fn automatic_codex_preview_never_calls_archive() {
+        let record = journal_with(
+            codex_plan(&task(), "archive_codex_task"),
+            "auto",
+            true,
+            |_| Ok(()),
+            || panic!("preview must not archive"),
+        )
+        .unwrap();
+        assert_eq!(record.mode, "dry-run");
+    }
+
+    #[test]
+    fn task_archive_journals_recovery_before_execution_and_reports_partial_unload() {
+        let plan = codex_plan(&task(), "archive_codex_task");
+        let events = std::cell::RefCell::new(Vec::new());
+        let record = journal_with(
+            plan.clone(),
+            "manual",
+            false,
+            |r| {
+                assert_eq!(r.session_id.as_deref(), Some("task-id"));
+                assert!(r.target_identity.is_some());
+                assert!(r.resume.is_some());
+                events.borrow_mut().push(r.status.clone());
+                Ok(())
+            },
+            || {
+                assert_eq!(*events.borrow(), vec!["intent"]);
+                let mut result = plan.clone();
+                result.result = "archived; unloading not verified".into();
+                result
+            },
+        )
+        .unwrap();
+        assert_eq!(record.status, "partial");
+        assert_eq!(*events.borrow(), vec!["intent", "partial"]);
+        assert_eq!(record.rss, 0, "never attribute backend memory to a task");
+        assert!(
+            journal_with(
+                plan.clone(),
+                "manual",
+                false,
+                |_| anyhow::bail!("disk full"),
+                || panic!("must not archive without journal")
+            )
+            .is_err()
+        );
+        let mut complete = plan;
+        complete.result = "archived and verified unloaded".into();
+        assert_eq!(outcome_status(&complete), "success");
+    }
+}
+
+fn codex_plan(task: &crate::codex::Task, action: &str) -> ActionRecord {
+    ActionRecord {
+        id: None, status: "intent".into(), identities: vec![],
+        target_identity: Some(serde_json::to_value(task).expect("serializable task")),
+        termination: None, memory_observation: None, ts: now_epoch(), mode: "manual".into(),
+        action: action.into(), pid: task.backend_pid, target: format!("Codex · {}", task.name),
+        project: Some(task.cwd.clone()), session_id: Some(task.id.clone()),
+        transcript: Some(task.transcript.clone()),
+        resume: (action == "archive_codex_task").then(|| format!("Restore task {} from Codex's archived tasks, or use Restore task in AutoTrim Actions.", task.id)),
+        rss: 0, result: String::new(),
+    }
+}
+
 /// Stop a listening process by pid: only unmanaged ones without `force`.
 pub fn stop_by_pid(
     pid: u32,
@@ -1150,6 +1325,16 @@ pub(crate) fn execute_auto(
                 },
             )
         }
+        Target::Codex {
+            task,
+            rule_revision,
+        } => {
+            anyhow::ensure!(
+                eligible,
+                "Codex task changed, was used, or settings prohibit archiving"
+            );
+            return archive_codex_automatic(task, cfg, rule_revision);
+        }
         Target::Server(old) => {
             let current = auto_server_candidates(snap, &cfg.thresholds)
                 .into_iter()
@@ -1207,7 +1392,9 @@ fn auto_target_eligible(
     snap: &crate::Snapshot,
     cfg: &crate::daemon::DaemonConfig,
 ) -> bool {
-    use crate::policy::{Target, auto_server_candidates, auto_session_candidates};
+    use crate::policy::{
+        Target, auto_codex_candidates, auto_server_candidates, auto_session_candidates,
+    };
     match target {
         Target::Session(old) => {
             cfg.auto.close_sessions
@@ -1218,6 +1405,13 @@ fn auto_target_eligible(
                             && s.start_time == old.start_time
                             && s.cpu < cfg.thresholds.quiet_cpu
                     })
+        }
+        Target::Codex {
+            task,
+            rule_revision,
+        } => {
+            rule_revision == &cfg.codex_rules_revision()
+                && auto_codex_candidates(snap, cfg).contains(&task)
         }
         Target::Server(old) => {
             cfg.auto.stop_servers

@@ -1,6 +1,6 @@
 // Dashboard markup and DOM rendering.
 import { icon, bytes, dur, esc, plural, AGENT_LABEL, epochNow, nowSecs, compactDuration, signedBytes } from "./format.js";
-import { ACTIVITY_WINDOW, cleanupImpact, domainInactivityLabel, state, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs } from "./state.js";
+import { ACTIVITY_WINDOW, cleanupImpact, domainInactivityLabel, state, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, codexBackend, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs } from "./state.js";
 import { createActions } from "./actions.js";
 const { refresh, navigate, reviewSessions, closeTabs, reviewPorts, wire } = createActions({ renderAll: (...a) => renderAll(...a), renderMain: (...a) => renderMain(...a), renderSide: (...a) => renderSide(...a), renderHeader: (...a) => renderHeader(...a) });
 function renderHeader() {
@@ -114,13 +114,13 @@ function adviceTarget(a) {
 
 
 function adviceCards(list) {
-  if (!list.length) return `<div class="note">Nothing needs attention right now. autoTrim will keep monitoring.</div>`;
+  if (!list.length) return `<p class="overview-clear">${icon("check")}Nothing needs attention.</p>`;
   return `<div class="advice-list">${list.map(a => {
     const target = adviceTarget(a);
     const estimate = ["browser_sprawl", "conversation_tabs"].includes(a.id);
     const recovery = a.recovery > 0 ? `<div class="impact"><b>${estimate ? "≈ " : ""}${bytes(a.recovery)}</b><span>${estimate ? "estimated memory" : "memory held"}</span></div>` : "";
     const label = target === "ports" ? "Review servers" : target && holderByKey(target)?.kind === "agent" ? "Review sessions" : target && holderByKey(target)?.browser ? "Review browser" : "View details";
-    return `<div class="advice-row ${esc(a.severity)}"><div><div class="t">${esc(a.title)}</div><div class="e">${esc(a.evidence.join("\n"))}</div>${recovery}${!target ? `<div class="a">${esc(a.action)}</div>` : ""}</div>${target ? `<a data-goto="${esc(target)}" title="${esc(a.action)}">${label}</a>` : ""}</div>`;
+    return `<div class="advice-row ${esc(a.severity)}"><div><div class="t">${esc(a.title)}</div>${recovery}${a.evidence.length || !target && a.action ? `<details class="advice-details" data-keep-open="advice:${esc(a.id)}:${esc(a.title)}"><summary>Details</summary><div class="e">${esc(a.evidence.join("\n"))}</div>${!target ? `<div class="a">${esc(a.action)}</div>` : ""}</details>` : ""}</div>${target ? `<a data-goto="${esc(target)}" title="${esc(a.action)}">${label}</a>` : ""}</div>`;
   }).join("")}</div>`;
 }
 
@@ -149,7 +149,7 @@ function controlCards() {
 
 function pendingList(a) {
   const now = epochNow();
-  return `<div class="pending">${a.pending.map(p => `<div><span class="l1" title="${esc(p.target + " · " + p.detail)}">${esc(p.target)} <span class="muted">· ${esc(p.detail)} · ${bytes(p.rss)}</span></span><span class="num state stale">${a.dry_run ? "would close" : "closing"} in ${dur(Math.max(0, p.due_at - now))}</span></div>`).join("")}</div>`;
+  return `<div class="pending">${a.pending.map(p => `<div><span class="l1" title="${esc(p.target + " · " + p.detail)}">${esc(p.target)} <span class="muted">· ${esc(p.detail)}${p.kind === "codex_task" ? "" : " · " + bytes(p.rss)}</span></span><span class="num state stale">${p.kind === "codex_task" ? a.dry_run ? "would archive" : "archiving" : a.dry_run ? "would close" : "closing"} in ${dur(Math.max(0, p.due_at - now))}</span></div>`).join("")}</div>`;
 }
 
 // The file's settings are the switches; what the daemon is running with
@@ -162,17 +162,17 @@ function autoCard() {
   if (c.config_error) html += `<p class="state stale">Settings could not be read; defaults are shown: ${esc(c.config_error)}</p>`;
   html += `<div class="mode-choices" role="group" aria-label="Auto mode">${[["off", "Off"], ["preview", "Preview only"], ["on", "On"]].map(([value, label]) => `<label class="mode-choice"><input type="radio" name="auto-mode" data-auto-mode="${value}" data-list-control="auto-mode-${value}" ${mode === value ? "checked" : ""} ${busy || c.config_error ? "disabled" : ""}><span>${label}</span></label>`).join("")}</div>`;
   html += `<p class="muted">${mode === "off" ? "Monitoring and advice continue. All closing stays manual." : mode === "preview" ? "Preview records what would have closed in Actions. Nothing is closed." : `Warns first, then waits ${dur(c.auto_grace_minutes * 60)}. Anything used during that time is spared.`}</p>`;
-  const targets = [c.auto_close_sessions && "Agent sessions", c.auto_stop_servers && "Local servers", c.auto_close_tabs && "Listed websites", mode !== "off" && "Empty New Tabs"].filter(Boolean);
+  const targets = [c.auto_close_sessions && "Agent sessions", c.auto_archive_codex && "Codex tasks", c.auto_stop_servers && "Local servers", c.auto_close_tabs && "Listed websites", mode !== "off" && "Empty New Tabs"].filter(Boolean);
   html += `<details class="settings-disclosure" data-keep-open="cleanup-options"><summary>Cleanup options<span>${esc(targets.join(", ") || "Sessions, servers & Chrome tabs")}</span></summary><div class="settings-disclosure-body">`;
-  for (const [key, label, checked, detail] of [["close_sessions", "Close idle agent sessions", c.auto_close_sessions, `Inactive for ${dur(c.stale_after_secs ?? 21600)} or more.`], ["stop_servers", "Stop idle local servers", c.auto_stop_servers, `Quiet dev servers open for ${dur(c.port_stale_after_secs ?? 86400)} or more.`]]) {
+  for (const [key, label, checked, detail] of [["close_sessions", "Close idle agent sessions", c.auto_close_sessions, `Separate session processes inactive for ${dur(c.stale_after_secs ?? 21600)} or more. Active work and the newest session per project stay open.`], ["archive_codex", "Archive idle Codex tasks", c.auto_archive_codex, `Inactive for ${dur(c.stale_after_secs ?? 21600)} or more, then a ${dur(c.auto_grace_minutes * 60)} warning. Keeps the newest task per project. Restore from Actions.`], ["stop_servers", "Stop idle local servers", c.auto_stop_servers, `Quiet dev servers open for ${dur(c.port_stale_after_secs ?? 86400)} or more.`]]) {
     html += `<div class="setting-row"><label><span>${label}<small class="muted" style="display:block">${detail}</small></span><input type="checkbox" data-auto="${key}" data-list-control="auto-${key}" ${checked ? "checked" : ""} ${busy || mode === "off" || c.config_error ? "disabled" : ""}></label></div>`;
   }
   html += domainSettings(c, mode, busy);
-  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, the newest session in each project, and selected or pinned browser tabs. Only these session hosts are allowed: ${esc((c.auto_hosts || []).join(", ") || "none")}. Activity during the warning period cancels that target’s close.</p></details>`;
+  html += `<details class="help" data-keep-open="auto-protection"><summary>What auto mode always keeps open</summary><p>Active sessions, app engines, protected Codex tasks, the newest session or Codex task in each project, and selected or pinned browser tabs. Only these session hosts are allowed: ${esc((c.auto_hosts || []).join(", ") || "none")}. Activity during the warning period cancels that target’s close.</p></details>`;
   html += `</div></details>`;
   if (!state.src.daemon_running) html += `<p class="note">The background monitor is stopped. Start it below for auto mode to run.</p>`;
   else if (a) {
-    const applied = a.close_sessions === c.auto_close_sessions && a.stop_servers === c.auto_stop_servers && a.close_tabs === c.auto_close_tabs && a.dry_run === c.auto_dry_run && a.tab_rules_revision === c.tab_rules_revision;
+    const applied = a.close_sessions === c.auto_close_sessions && !!a.archive_codex === !!c.auto_archive_codex && a.stop_servers === c.auto_stop_servers && a.close_tabs === c.auto_close_tabs && a.dry_run === c.auto_dry_run && a.tab_rules_revision === c.tab_rules_revision;
     if (!applied || busy) html += `<p class="muted" role="status">Applying… the background monitor picks up changes on its next sample.</p>`;
     if (a.pending.length) html += pendingList(a) + (mode !== "off" ? `<div class="row2"><button data-auto-off ${busy ? "disabled" : ""}>Turn off auto mode</button><span class="muted">Cancels pending closes when the change is picked up.</span></div>` : "");
   }
@@ -285,7 +285,7 @@ function activityCharts() {
         </svg><div class="activity-axis"><span>10 min ago</span><span>Latest</span></div>
       </figure>`;
     }).join("")}</div>
-    ${history.length < 2 ? `<p class="activity-hint">Collecting samples. Charts fill in as the dashboard refreshes.</p>` : ""}
+    ${history.length < 2 ? `<p class="activity-hint">Collecting samples…</p>` : ""}
   </section>`;
 }
 
@@ -294,15 +294,18 @@ function viewOverview() {
   const observations = s.advice.filter(isObservation), advice = s.advice.filter(a => !isObservation(a));
   const sessions = s.sessions.filter(x => !goneSession(x));
   const tabs = s.browsers.reduce((n, b) => n + b.tabs.filter(t => !goneTab(t)).length, 0);
-  return `<div class="overview-heading"><div><h1>Overview</h1><p>Current workload and the few things that may need your attention.</p></div><span class="monitor-status ${state.src.daemon_running ? "on" : ""}">${icon(state.src.daemon_running ? "check" : "info")}${state.src.daemon_running ? "Monitoring" : "Manual scans"}</span></div>
-    <dl class="overview-stats" aria-label="Current workload"><div><dt>Agent work</dt><dd>${sessionCount(sessions)}</dd></div><div><dt>Browser activity</dt><dd>${plural(tabs, "open tab")}</dd></div><div><dt>Memory holders</dt><dd>${plural(s.groups.length, "group")}</dd></div></dl>
-    ${cleanupSummary({ linkToActions: true })}
-    <section class="overview-focus"><div class="section-heading"><h2>Worth a look</h2><span>${advice.length ? plural(advice.length, "item") : "All clear"}</span></div>
-      ${a && a.pending.length ? `<div class="card">${pendingList(a)}</div>` : ""}
-      ${adviceCards(advice)}${observations.length ? observationCards(observations) : ""}
+  return `<div class="overview-heading"><h1>Overview</h1><span class="monitor-status ${state.src.daemon_running ? "on" : ""}">${icon(state.src.daemon_running ? "check" : "info")}${state.src.daemon_running ? "Monitoring" : "Manual scans"}</span></div>
+    ${activityCharts()}
+    <dl class="overview-stats" aria-label="Current workload"><div><dt>Agent work</dt><dd>${sessionCount(sessions)}</dd></div><div><dt>Browser tabs</dt><dd>${tabs}</dd></div><div><dt>Apps &amp; processes</dt><dd>${s.groups.length}</dd></div></dl>
+    <section class="overview-focus" aria-label="Needs attention">
+      ${a && a.pending.length ? `<div class="overview-pending"><div class="section-heading"><h2>Upcoming cleanup</h2><a data-goto="settings">Manage</a></div>${pendingList(a)}</div>` : ""}
+      ${advice.length ? `<div class="section-heading"><h2>Needs attention</h2><span>${plural(advice.length, "item")}</span></div>` : ""}
+      ${adviceCards(advice)}
     </section>
-    <details class="overview-memory" data-keep-open="overview-memory"><summary>Memory footprint breakdown</summary>${kindBar()}</details>
-    ${activityCharts()}`;
+    <div class="overview-details">
+      ${observations.length ? `<details data-keep-open="overview-observations"><summary>Observations <span>${observations.length}</span></summary>${observationCards(observations)}</details>` : ""}
+      <details class="overview-memory" data-keep-open="overview-memory"><summary>Memory breakdown</summary>${kindBar()}</details>
+    </div>`;
 }
 
 // One bar for what the sidebar lists, added up by kind.
@@ -349,6 +352,7 @@ function compactInspector(r, label) {
   return `<section class="list-inspector" aria-label="${esc(label)} details">
     <div class="inspector-head"><h3>${esc(r.title)}</h3>${r.statusLabel ? rowStatus(r) : ""}</div>
     <dl><div><dt>${esc(r.metricLabel)}</dt><dd>${esc(r.detailMetric ?? r.metric)}</dd></div>${r.facts.map(([k,v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+    ${r.protection ? `<p class="inspector-note">${icon("lock")} ${esc(r.protection)}</p>` : ""}
     ${r.note ? `<p class="inspector-note">${esc(r.note)}</p>` : ""}
     ${r.action ? `<footer class="inspector-actions">${r.action}</footer>` : ""}</section>`;
 }
@@ -392,7 +396,7 @@ function resourceList(key, rows, options) {
     const expanded = saved.inspected === r.id, detailId = `${key}:detail:${index}`;
     const activity = r.status === "active" ? options.kind === "tab" ? "Active tab" : "Working now" : r.protection && !r.task ? r.protection : r.idle == null ? "Activity unknown" : `${compactDuration(r.idle)}${r.idleIsDuration ? " quiet" : " ago"}`;
     return `<li class="work-item"><div class="work-row ${saved.selected.has(r.id) ? 'selected' : ''}">
-      <div class="work-check">${r.eligible ? `<input type="checkbox" data-list-select ${controls(r)} data-list-control="${esc(key + ':select:' + r.id)}" aria-label="Select ${esc(r.title)}" ${saved.selected.has(r.id) ? 'checked' : ''}>` : `<span class="row-lock" role="img" title="${esc(r.protection)}" aria-label="${esc(r.protection)}">${icon("lock")}</span>`}</div>
+      <div class="work-check">${r.archiveTask ? `<button class="work-info" data-review-codex="${esc(r.archiveTask.id)}" data-backend-pid="${r.archiveTask.backend_pid}" aria-label="Review archive ${esc(r.title)}" title="Review archive task">${icon("history")}</button>` : r.eligible ? `<input type="checkbox" data-list-select ${controls(r)} data-list-control="${esc(key + ':select:' + r.id)}" aria-label="Select ${esc(r.title)}" ${saved.selected.has(r.id) ? 'checked' : ''}>` : `<span class="row-lock" role="img" title="${esc(r.protection)}" aria-label="${esc(r.protection)}">${icon("lock")}</span>`}</div>
       <div class="work-content"><button class="row-title" data-list-inspect ${controls(r)} data-list-control="${esc(key + ':inspect:' + r.id)}" aria-expanded="${expanded}" ${expanded ? `aria-controls="${esc(detailId)}"` : ''} title="${esc(r.title)}">${esc(r.title)}</button><div class="row-context" title="${esc([r.context, r.location].filter(Boolean).join(' · '))}">${esc(r.context)}${r.location ? `<span class="work-location">${esc(r.location)}</span>` : ''}</div></div>
       <span class="work-activity ${esc(r.status)}" title="${esc(r.idleLabel)}${r.idle != null ? ': ' + dur(r.idle) : ''}">${esc(activity)}</span>
       <button class="work-info" data-list-inspect ${controls(r)} data-list-control="${esc(key + ':info:' + r.id)}" aria-label="Details for ${esc(r.title)}" aria-expanded="${expanded}">${icon("info")}</button>
@@ -418,18 +422,32 @@ function projectGroup(project) {
 function sessionRows(list) {
   const rows = [];
   for (const x of filteredSessions(list)) {
+    const verified = codexBackend(x.pid);
+    if (verified && state.sessState === 'all') for (const t of verified.tasks) {
+      const q = state.sessFilter.trim().toLowerCase();
+      if (q && !taskSearch(t).includes(q) && ![x.host, x.project].join(' ').toLowerCase().includes(q)) continue;
+      rows.push({ id: `${sessionKey(x)}:task:${t.id}`, ...projectGroup(t.cwd), task: true,
+        archiveTask: t.protection ? null : t, title: t.name, context: `Loaded task · ${x.host}`, location: t.cwd,
+        type: 'Codex task', status: t.state === 'active' ? 'active' : t.state === 'idle' ? 'idle' : 'unknown',
+        statusLabel: t.protection || 'Idle · archive available', protection: t.protection || '',
+        idle: Math.max(0, state.snap.taken_at - t.updated_at), idleLabel: 'Last task update',
+        metric: 'Shared by the backend', metricLabel: 'Memory / CPU',
+        facts: [['Project', t.cwd], ['Task ID', t.id], ['Backend PID', x.pid], ['Visibility', 'Confirmed loaded by Codex']],
+        note: 'Archiving removes this task from the active list and unloads it. The shared backend and other tasks stay running. Restore it from Actions. Memory savings are not measured per task.',
+        action: t.protection ? '' : `<button class="primary" data-review-codex="${esc(t.id)}" data-backend-pid="${x.pid}">Archive task…</button>` });
+    }
     if (x.threads?.length) {
       const q = state.sessFilter.trim().toLowerCase();
       const matchesBackend = [x.session_name, x.project, x.first_prompt, x.host].join(' ').toLowerCase().includes(q);
       // Transcript activity is not proof that a loaded task is active or stale.
-      // Activity filters refer to sessions; loaded tasks are visible in All activity.
-      if (state.sessState === 'all') for (const t of x.threads.filter(t => !q || matchesBackend || taskSearch(t).includes(q))) {
+      // Activity filters refer to sessions; observed tasks are visible in All activity.
+      if (state.sessState === 'all') for (const t of x.threads.filter(t => !verified?.tasks.some(v => v.id === t.id) && (!q || matchesBackend || taskSearch(t).includes(q)))) {
         const ago = t.last_activity == null || state.snap?.taken_at == null ? null : Math.max(0, state.snap.taken_at - t.last_activity);
         rows.push({ id: `${sessionKey(x)}:task:${t.id || t.transcript}`, ...projectGroup(t.cwd), task: true,
-          title: t.name || t.first_prompt || t.id || 'Unnamed task', context: `${t.helper ? 'Helper task' : 'Loaded task'} · ${x.host}`, location: t.cwd || '',
-          type: t.helper ? 'Helper task' : 'Loaded task', status: 'idle', statusLabel: 'Loaded', idle: ago, idleLabel: 'Last transcript activity', protection: 'Managed in the host app',
+          title: t.name || t.first_prompt || t.id || 'Unnamed task', context: `${t.helper ? 'Helper task' : 'Observed task'} · ${x.host}`, location: t.cwd || '',
+          type: t.helper ? 'Helper task' : 'Observed task', status: 'unknown', statusLabel: 'Open transcript', idle: ago, idleLabel: 'Last transcript activity', protection: 'Task closing unavailable · manage in the host app',
           metric: x.engine ? 'Shared by the backend' : 'Shared by the session', metricLabel: 'Memory / CPU', facts: [['Project', t.cwd || 'Unknown'], ['Task ID', t.id || 'Unknown'], [x.engine ? 'Backend PID' : 'Session PID', x.pid], ['Visibility', 'Transcript held open']],
-          note: 'An open transcript shows this task is loaded. Last activity does not prove it is running or finished. Manage this task in its host app.' });
+          note: 'AutoTrim observed an open transcript for this task. This does not confirm it is still loaded, running, or finished. This row cannot be archived without verified lifecycle and protection data. Closing a shared backend would affect all its tasks.' });
       }
       if (x.engine) continue;
     }
@@ -437,7 +455,7 @@ function sessionRows(list) {
     rows.push({ id: sessionKey(x), data: x, ...projectGroup(x.engine ? 'Shared backends' : x.project || x.cwd),
       title: x.engine ? `${AGENT_LABEL[x.kind] || 'Agent'} backend` : sessionName(x), context: `${x.host || 'Host unknown'}${x.engine ? ' · Shared backend' : ''}`, location: x.project || x.cwd || '',
       type: x.engine ? 'Shared backend' : 'Agent session', status: x.state, statusLabel: protection || (x.state === 'stale' ? 'Stale' : 'Idle'), idle, idleLabel: x.idle_secs != null ? 'Last activity' : 'CPU quiet for', idleIsDuration: x.idle_secs == null,
-      metric: bytes(x.rss), metricLabel: x.engine ? 'Shared memory across loaded tasks' : 'Memory footprint', rss: x.rss, eligible: canCloseSession(x), protection,
+      metric: bytes(x.rss), metricLabel: x.engine ? 'Shared backend memory' : 'Memory footprint', rss: x.rss, eligible: canCloseSession(x), protection,
       facts: [['Host', x.host], ['Project', x.project || x.cwd || 'Unknown'], ['Open', dur(x.age_secs)], ['CPU', (x.cpu_window_mean ?? x.cpu ?? 0).toFixed(1) + '%'], ['PID', x.pid], ['Ports', (x.ports || []).join(', ') || 'None'], [x.idle_secs != null ? 'Last activity' : 'CPU quiet for', x.state === 'active' ? 'Working now' : idle != null ? dur(idle) : 'Unknown']],
       note: x.engine ? `${x.host}'s agent engine serves the app's threads. Task details are unavailable in this snapshot; manage them in the app.` : `${x.first_prompt && x.first_prompt !== sessionName(x) ? x.first_prompt + '\n\n' : ''}The transcript stays on disk. Available resume commands are saved in Actions before closing.`,
       action: protection ? '' : `<button class="primary" data-close-session="${x.pid}">Review close</button>` });
@@ -459,7 +477,8 @@ function sessionTable(list) {
   const rows = sessionRows(list);
   const resources = resourceList('sessions', rows, { kind: 'sess', label: 'Agent work', noun: 'session', plural: 'sessions', review: chosen => reviewSessions(chosen.map(r => r.data)), empty: 'No work matches. Try another search or choose All activity.' });
   const backends = list.filter(x => !goneSession(x) && x.engine && x.threads?.length);
-  return resources + (backends.length ? `<details class="backend-resources" data-keep-open="backend-resources"><summary>Shared backend resources <span>${bytes(backends.reduce((sum, x) => sum + x.rss, 0))}</span></summary><p class="help">Loaded tasks share this memory and CPU. Individual task usage is unavailable.</p>${backends.map(x => `<div class="backend-row"><strong>${esc(AGENT_LABEL[x.kind] || 'Agent')} backend</strong><span>${esc(sessionCount([x]))}${x.threads.some(t => t.helper) ? ` · ${plural(x.threads.filter(t => t.helper).length, 'helper')}` : ''}</span><span title="Shared memory across loaded tasks">${bytes(x.rss)}</span></div>`).join('')}</details>` : '');
+  const errors = (state.snap?.codex_backends || []).filter(b => b.error && (b.pid === 0 && list.some(x => x.kind === "codex") || list.some(x => x.pid === b.pid)));
+  return resources + errors.map(b => `<p class="help">Codex task control unavailable: ${esc(b.error)}</p>`).join('') + (backends.length ? `<details class="backend-resources" data-keep-open="backend-resources"><summary>Shared backend resources <span>${bytes(backends.reduce((sum, x) => sum + x.rss, 0))}</span></summary><p class="help">Task transcripts are observed through open files; the host may report a different loaded-task count. Memory and CPU belong to the shared backend. Individual task memory is unavailable. Connected Codex tasks offer Archive task when protection checks pass.</p>${backends.map(x => `<div class="backend-row"><strong>${esc(AGENT_LABEL[x.kind] || 'Agent')} backend</strong><span>${esc(sessionCount([x]))}${x.threads.some(t => t.helper) ? ` · ${plural(x.threads.filter(t => t.helper).length, 'helper')}` : ''}</span><span title="Shared backend memory">${bytes(x.rss)}</span></div>`).join('')}</details>` : '');
 }
 
 function workOptions(kind, browser) {
@@ -478,7 +497,7 @@ function viewAgents(h) {
   const ports = s.ports.filter(p => h.pids.includes(p.pid) && !h.sessions.some(x => (x.pids || []).includes(p.pid)));
   const trend = (s.trends || []).find(t => t.key === h.key && t.span_secs >= 600);
   return `<div class="work-heading">${holderIcon(h)}<div><h1>${esc(h.name.replace(/ sessions$/, ''))}</h1><p>${bytes(h.rss)} footprint <span>/</span> ${sessionCount(live)}</p></div>${workOptions('sess')}</div>
-    ${sessionTable(h.sessions)}<p class="help work-help">${live.some(x => !x.engine) ? 'Select checkboxes to review sessions. Shift-click selects a range. Active work stays open.' : 'Loaded tasks share the app backend. Manage these tasks in their host app.'}</p>
+    ${sessionTable(h.sessions)}<p class="help work-help">A lock means AutoTrim cannot close that row. Click it for the reason. ${live.some(x => !x.engine) ? 'Select checkboxes to review sessions. Shift-click selects a range. Active work stays open.' : 'Open a task’s details to archive it when available. Protected tasks stay locked.'}</p>
     <details class="browser-details" data-keep-open="agent-details"><summary><span>App details &amp; actions</span><small>Memory, trends, servers, and app controls</small></summary><div class="browser-detail-body">
     ${h.app ? `<p class="help">The ${esc(h.app)} app holds ${bytes(appRss)}. The remaining footprint belongs to its sessions, including those running in terminals.</p>` : ''}
     ${holderMemoryHelp(h)}${trend ? trendsTable([trend]) : ''}${ports.length ? `<h2>Listening ports</h2>${portsTable(ports)}` : ''}${quitBlock(h)}</div></details>`;
@@ -599,6 +618,7 @@ function recoveryDetails(r) {
 
 
 function recoveryControl(r) {
+  if (r.action === 'archive_codex_task') return `<p class="muted">${esc(r.resume)}</p>${r.id ? `<button data-restore-codex="${esc(r.id)}">Restore task</button>` : ''}`;
   const { command, hint } = recoveryDetails(r);
   if (!command) return "";
   return `<button type="button" class="copy-command" data-copy-command="${esc(command)}" title="Copy to clipboard" aria-label="Copy recovery command for ${esc(r.target)}: ${esc(command)}">
@@ -621,7 +641,7 @@ function observedMemory(r) {
 }
 
 function viewActions() {
-  const labels = {close_session: "Close session", stop_server: "Stop server", close_tab: "Close tab", quit_app: "Quit app", restart_app: "Restart app"};
+  const labels = {archive_codex_task: "Archive task", restore_codex_task: "Restore task", close_session: "Close session", stop_server: "Stop server", close_tab: "Close tab", quit_app: "Quit app", restart_app: "Restart app"};
   if (!state.log.length) return `<h1>Actions</h1>${cleanupSummary({ showDetails: false })}<div class="note">No actions yet. When you close something, its result and available recovery instructions will appear here.</div>`;
   const rows = state.log.slice().reverse().map((r, index) => {
     const preview = r.mode === "dry-run";
@@ -629,7 +649,7 @@ function viewActions() {
     const skipped = r.status === "skipped" || /^skipped:/i.test(r.result);
     const mode = preview ? "Preview only" : r.mode === "auto" ? "Automatic" : "Manual";
     const succeeded = r.status === "success" || /^(terminated|closed|stopped|quit|already gone|not open any more)\b/i.test(r.result);
-    const result = preview ? "Preview" : skipped ? "Skipped" : failed ? (r.status === "partial" ? "Partial" : "Failed") : succeeded ? ({ close_session: "Closed", stop_server: "Stopped", close_tab: "Closed", quit_app: "Quit", restart_app: "Restarted" }[r.action] || "Done") : "Recorded";
+    const result = preview ? "Preview" : skipped ? "Skipped" : failed ? (r.status === "partial" ? "Partial" : "Failed") : succeeded ? ({ archive_codex_task: "Archived", restore_codex_task: "Restored", close_session: "Closed", stop_server: "Stopped", close_tab: "Closed", quit_app: "Quit", restart_app: "Restarted" }[r.action] || "Done") : "Recorded";
     const key = r.id || JSON.stringify([r.ts, r.action, r.pid, r.target]);
     const open = state.expandedAction === key;
     const detailId = `action-detail-${index}`;
@@ -644,7 +664,7 @@ function viewActions() {
       <div class="action-detail-heading">${esc(r.target)}</div>
       <dl class="action-result"><dt>Result</dt><dd class="${failed ? "state stale" : ""}">${preview ? "Nothing was closed. " : ""}${esc(r.result)}</dd></dl>
       ${!preview ? observedMemory(r) : ""}
-      ${r.resume && !preview ? `<div class="action-recovery"><div class="action-detail-label">${r.action === "close_session" ? "Resume command" : "Reopen command"}</div>${recoveryControl(r)}</div>` : ""}
+      ${r.resume && !preview ? `<div class="action-recovery"><div class="action-detail-label">${r.action === "archive_codex_task" ? "Restore archived task" : r.action === "close_session" ? "Resume command" : "Reopen command"}</div>${recoveryControl(r)}</div>` : ""}
     </div></td></tr>`;
   }).join("");
   return `<h1>Actions</h1>${cleanupSummary({ showDetails: false })}<div class="wrap actions-wrap"><table class="actions-table" aria-label="Action history"><colgroup><col class="action-col"><col><col class="result-col"><col class="memory-col"><col class="time-col"></colgroup><thead><tr><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Result</th><th scope="col">Memory</th><th scope="col">When</th></tr></thead><tbody>${rows}</tbody></table></div><p class="help">Memory held before the action, not recovered. Details include recovery commands and whole-machine changes.</p>`;

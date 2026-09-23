@@ -144,16 +144,16 @@ test('auto modes preserve server-only selection and atomically switch preview/li
   const ui = load();
   const c = { auto_close_sessions: false, auto_stop_servers: true, auto_close_tabs: false, auto_dry_run: false };
   assert.equal(ui.autoMode(c), 'on');
-  assert.equal(JSON.stringify(ui.autoModeValues(c, 'preview')), JSON.stringify({ close_sessions: false, stop_servers: true, close_tabs: false, dry_run: true }));
-  assert.equal(JSON.stringify(ui.autoModeValues(c, 'off')), JSON.stringify({ close_sessions: false, stop_servers: false, close_tabs: false }));
-  assert.equal(JSON.stringify(ui.autoModeValues({ ...c, auto_stop_servers: false }, 'on')), JSON.stringify({ close_sessions: true, stop_servers: false, close_tabs: false, dry_run: false }));
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'preview')), JSON.stringify({ close_sessions: false, archive_codex: false, stop_servers: true, close_tabs: false, dry_run: true }));
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'off')), JSON.stringify({ close_sessions: false, archive_codex: false, stop_servers: false, close_tabs: false }));
+  assert.equal(JSON.stringify(ui.autoModeValues({ ...c, auto_stop_servers: false }, 'on')), JSON.stringify({ close_sessions: true, archive_codex: false, stop_servers: false, close_tabs: false, dry_run: false }));
 });
 
 test('domain-only cleanup is an active auto mode target', () => {
   const ui = load();
   const c = { auto_close_sessions: false, auto_stop_servers: false, auto_close_tabs: true, auto_dry_run: true };
   assert.equal(ui.autoMode(c), 'preview');
-  assert.equal(JSON.stringify(ui.autoModeValues(c, 'on')), JSON.stringify({ close_sessions: false, stop_servers: false, close_tabs: true, dry_run: false }));
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'on')), JSON.stringify({ close_sessions: false, archive_codex: false, stop_servers: false, close_tabs: true, dry_run: false }));
 });
 
 test('settings writes cannot overlap', async () => {
@@ -550,16 +550,20 @@ test('shared Codex backend exposes older tasks and helpers without task-level cl
     ] };
   const markup = ui.sessionTable([backend]);
   assert.match(markup, /Codex backend/);
-  assert.match(markup, /2 loaded tasks/);
+  assert.match(markup, /2 observed tasks/);
   assert.match(markup, /1 helper/);
   assert.match(markup, /Older &lt;project&gt;/);
   assert.match(markup, /Review helper/);
-  assert.match(markup, /Shared memory across loaded tasks/);
+  assert.match(markup, /Shared backend memory/);
   assert.doesNotMatch(markup, /data-close-session=/);
   assert.doesNotMatch(markup, /data-list-review=/);
   const taskLists = vm.runInContext('[...listModels.values()].filter(m => m.options.label === "Agent work")', ui.context);
   assert.equal(taskLists[0].rows.length, 3);
   assert.ok(taskLists[0].rows.every(r => r.rss == null && !r.eligible && !r.action));
+  assert.ok(taskLists[0].rows.every(r => r.status === "unknown" && r.statusLabel === "Open transcript"));
+  const detail = vm.runInContext("compactInspector([...listModels.values()].find(m => m.options.label === 'Agent work').rows[0], 'Task')", ui.context);
+  assert.match(detail, /Task closing unavailable/);
+  assert.match(detail, /does not confirm it is still loaded/);
   ui.state.sessFilter = 'archive';
   assert.equal(ui.filteredSessions([backend]).length, 1);
   const filtered = ui.sessionTable(ui.filteredSessions([backend]));
@@ -730,4 +734,57 @@ test('activity charts show real zero values and leave gaps for missing readings 
   assert.equal((html.match(/class="activity-line"/g) || []).length, 2);
   assert.doesNotMatch(html, /NaN|Infinity/);
   assert.doesNotMatch(html, /Collecting samples/);
+});
+
+test('verified idle Codex tasks offer individual archive and protected tasks stay locked', () => {
+  const ui = load();
+  const backend = { ...sessions[2], kind: 'codex', host: 'Codex app', engine: true, start_time: 10,
+    threads: [{ id: 'idle', name: 'Old title', cwd: '/project' }] };
+  ui.state.snap = { taken_at: 50000, codex_backends: [{ pid: backend.pid, error: null, tasks: [
+    { id: 'idle', name: 'Ready task', cwd: '/project', backend_pid: backend.pid, updated_at: 100, state: 'idle', protection: null },
+    { id: 'protected', name: 'Pinned task', cwd: '/project', backend_pid: backend.pid, updated_at: 100, state: 'idle', protection: 'Pinned task' },
+  ] }] };
+  const markup = ui.sessionTable([backend]);
+  assert.match(markup, /data-review-codex="idle"/);
+  assert.doesNotMatch(markup, /data-review-codex="protected"/);
+  assert.doesNotMatch(markup, /data-close-session=/);
+  const rows = vm.runInContext('[...listModels.values()].find(m => m.options.label === "Agent work").rows', ui.context);
+  assert.equal(rows.length, 2, 'verified and observed records are deduplicated');
+  assert.ok(rows.every(r => !r.eligible && r.rss == null), 'tasks never enter process close batches');
+  ui.state.sessFilter = 'Ready task';
+  assert.equal(ui.filteredSessions([backend]).length, 1, 'live task titles participate in search');
+});
+
+test('Codex review sends frozen task identity and never closes its shared PID', async () => {
+  const calls = [];
+  const ui = load(async (command, args) => {
+    calls.push([command, args]);
+    return { status: 'success', result: 'archived and verified unloaded', target: 'Task' };
+  });
+  const task = { id: 'task-id', backend_pid: 42, revision: 'reviewed-revision' };
+  ui.setReview({ kind: 'codex', targets: [{ id: 0, name: 'Task', task }], selected: new Set([0]), busy: false });
+  await ui.executeReview();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'archive_codex_task');
+  assert.equal(calls[0][1].task.revision, 'reviewed-revision');
+  assert.equal(ui.state.gone.pids.size, 0, 'other tasks and backend stay visible');
+});
+
+test('Codex recovery uses archive identity instead of a shell resume command', () => {
+  const ui = load();
+  ui.state.log = [{ id: 'archive-123', action: 'archive_codex_task', status: 'success', mode: 'manual',
+    ts: 1, rss: 0, target: 'Task', resume: 'Restore this task from Actions.', result: 'archived and verified unloaded' }];
+  const markup = ui.viewActions();
+  assert.match(markup, /data-restore-codex="archive-123"/);
+  assert.match(markup, /Archived/);
+  assert.doesNotMatch(markup, /data-copy-command=/);
+});
+
+test('Codex-only auto archiving participates in Off, Preview, and On without enabling session closing', () => {
+  const ui = load();
+  const c = { auto_close_sessions: false, auto_archive_codex: true, auto_stop_servers: false, auto_close_tabs: false, auto_dry_run: true };
+  assert.equal(ui.autoMode(c), 'preview');
+  assert.equal(JSON.stringify(ui.autoModeValues(c, 'on')), JSON.stringify({ close_sessions:false, archive_codex:true, stop_servers:false, close_tabs:false, dry_run:false }));
+  assert.equal(ui.autoModeValues(c, 'off').archive_codex, false);
+  assert.equal(ui.autoModeValues(c, 'preview').archive_codex, true);
 });

@@ -67,6 +67,12 @@ autotrim quit <app>           # Ask an app to quit
 autotrim restart <app>        # Quit and reopen an app
 ```
 
+With the optional [Codex desktop bridge](experiments/codex-bridge/README.md),
+open an eligible task’s details and choose **Archive task**. Restore it from
+Actions. Enable **Archive idle Codex tasks** in Settings for timed archiving
+after the configured session inactivity threshold and warning period. The newest
+task in each project stays open, and the shared backend keeps running.
+
 The app provides search and filters. Tabs close directly from the selection or
 details; sessions and servers have a target review before closing. Settings offers **Off**, **Preview only**, and **On** for
 automatic cleanup. Auto mode warns first and rechecks activity before acting.

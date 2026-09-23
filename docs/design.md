@@ -175,7 +175,7 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   the entire tree, deduplicates paths, and retains each task's ID, title (or
   first prompt), project, transcript, last activity, and helper marker in
   the snapshot. The window shows a backend count and expandable, searchable
-  loaded tasks; the CLI also lists each observed task. Saved history without
+  observed tasks; the CLI also lists each observed task. Saved history without
   an open transcript is excluded. Task activity does not establish execution
   state, and memory/CPU cannot be divided among tasks. Close controls and
   resource trends remain attached to the process tree. Older snapshots without
@@ -220,9 +220,9 @@ Exact per-tab attribution and browser discarding also remain unimplemented.
   summaries with profile and state filters. Batch actions apply to the
   displayed results; pinned and active tabs remain protected. Stale-tab
   filters use the configured threshold. The existing app trends, hosted
-  sessions, ports, Quit, and Restart remain available. Overview puts advice
-  first, separates lower-severity growth/CPU observations, and shows memory
-  by kind and trends. The sidebar carries background and auto-mode status;
+  sessions, ports, Quit, and Restart remain available. Overview puts system
+  activity charts first, with compact advice below and observations and memory
+  breakdowns collapsed. The sidebar carries background and auto-mode status;
   pending auto closes also appear on Overview. Settings holds two cards.
   *Auto mode* offers Off, Preview only, and On, with session/server target
   switches and, once the daemon has
@@ -633,9 +633,11 @@ the session gone.
 
 The dashboard and native window use dark appearance regardless of the system
 appearance. The Grouped work design uses graphite surfaces, quiet blue selection,
-compact secondary controls, and one main content column. Overview puts a compact workload summary
-above full-width recommendations, with the footprint breakdown collapsed below.
-At the bottom, three mini charts show RAM used, whole-machine CPU, and swap used
+compact secondary controls, and one main content column. Overview leads with three
+charts, then a compact workload summary and recommendations. Recommendation evidence,
+lower-severity observations, and the footprint breakdown are collapsed; pending
+cleanup stays visible. Recent cleanup is available in Actions only.
+The charts show RAM used, whole-machine CPU, and swap used
 over the last ten minutes sampled while the dashboard is open. Accepted snapshots
 feed a bounded in-memory series across navigation; repeated timestamps replace
 the current point. Missing samples and long gaps are not interpolated. RAM and CPU
@@ -647,7 +649,7 @@ compact vertical layout. Cleanup targets and Chrome domain rules live under a
 collapsed Cleanup options disclosure; maintenance controls live under Background
 service details. Pending closes and configuration errors stay visible. Saving
 cleanup settings preserves open disclosures and scroll position.
-Browser tabs group by website; agent sessions and loaded tasks group by full
+Browser tabs group by website; agent sessions and observed tasks group by full
 project path, with short labels where unambiguous. Groups collapse independently.
 Search opens from the heading, reveals matching collapsed groups, and restores
 their previous state when cleared. Activity filtering is a single dropdown;
@@ -656,7 +658,7 @@ Checkboxes (including Shift-click ranges) select eligible visible items. Collaps
 or filtering away rows clears their selection. Titles and info buttons open inline
 details. Tab Close buttons act directly, freezing URL/profile identities for
 native revalidation; sessions retain the target review dialog.
-Loaded tasks cannot be selected or closed individually and never receive a share
+Observed tasks cannot be selected or closed individually and never receive a share
 of backend memory. Task transcript timestamps are not classified as session
 activity; the session filters apply only to sessions. Shared backend totals remain
 in a separate disclosure. Ports, site summaries, and trends keep inline details.
@@ -677,23 +679,72 @@ fixture, run `python3 tests/preview-tray.py` and open localhost:8766; that serve
 injects fake IPC into the production modules and refuses unsupported commands.
 It cannot close real sessions, tabs, or apps.
 
-## Experimental Codex desktop bridge
+## Individual Codex task archiving
 
-`experiments/codex-bridge` contains an opt-in macOS transport prototype, separate
-from the shipped daemon and tray. A per-launch `CODEX_CLI_PATH` override starts
-the installed Codex backend on a private Unix socket, while forwarding desktop
-stdio messages over a WebSocket connection. A second local client can inspect
-that same backend. CLI arguments, environment and non-app-server invocations
-are preserved; no model calls or automatic cleanup are introduced.
+With an already-running opt-in macOS bridge, snapshots contain verified loaded
+tasks separately from observed open transcripts. Eligible task details offer
+**Archive task** with a frozen review, and Actions offers **Restore task**.
+Archiving uses `thread/archive` on the owning backend, then checks
+`thread/loaded/list`. It never signals the backend, deletes transcripts, or
+attributes shared RAM to a task. Success requires verified unloading; a successful
+archive without verified unloading is recorded as partial. Restore uses
+`thread/unarchive` and verifies persisted archive state.
 
-Thirteen protocol, launcher and isolated backend tests cover argument forwarding, individual
-task archive/restore, notifications to the desktop connection, read-only status,
-message bounds/fragmentation, and EOF/signal/backend-failure shutdown. The trial
-launcher verifies desktop initialization and a second connection, and restores
-normal app startup if verification fails. Desktop workflow compatibility still
-needs testing; this is not a native automatic archive rule. See the
-[prototype instructions](../experiments/codex-bridge/README.md) and
-[research](codex-desktop-control-research.md).
+All writes go through `actions`, which saves task identity, title, project,
+transcript, backend generation, and recovery instructions before dispatch. The
+helper rechecks activity and a fingerprint of task/transcript metadata after the
+journal write and immediately before archiving. New activity or protection means
+skip; uncertain RPC results are never immediately retried. Recovery uses the
+saved journal identity, including intents whose completion response was lost.
+
+Active or unknown states, unfinished turns/tools, pinned tasks, queued work,
+unfinished goals, automation-linked tasks (including paused schedules), excluded
+projects/apps, and the current task when identified by the environment are
+protected. Parents with any recorded child tasks and helpers are conservatively
+excluded, avoiding archive cascades entirely. The backend has no atomic archive-if-idle operation,
+so the final check narrows but cannot eliminate concurrent activity races.
+
+Automatic task archiving is a separate opt-in `auto_archive_codex` setting,
+controlled by the native Off/Preview/On modes. It uses `stale_after_hours` (six
+hours by default) plus `auto_grace_minutes` (ten minutes by default). Activity is
+the latest task update, recency timestamp, or transcript modification. Only
+verified idle loaded tasks qualify; retain the newest task in each project,
+including ties. Missing backend evidence prevents automatic selection. At most
+two tasks archive per daemon pass, and even a zero grace needs a later observation.
+Pending identities live in the existing persisted policy state, keyed by backend
+generation, task revision, and settings revision. Activity, protection, or settings
+changes cancel the warning; leaving Preview also requires a fresh warning.
+Before each archive the action adapter samples again, checks the exact saved
+settings revision, journals recovery in native Actions, and rechecks activity,
+protections, and the newest remaining task on the owning backend. The helper
+checks the settings file identity immediately before mutation. Preview journals
+without calling archive. A failed attempt needs a fresh warning before it can
+qualify again. Automatic cleanup never terminates a shared backend.
+
+`src/codex.rs` embeds the standard-library Python transport and controller; the
+macOS installation needs `/usr/bin/python3` and an existing private bridge registry
+under AutoTrim's data directory. It does not install a bridge or restart Codex.
+The helper uses read-only Codex SQLite databases and desktop metadata to establish
+protections. The current adapter expects `state_5.sqlite`, `queue_1.sqlite`,
+`goals_1.sqlite`, and `sqlite/codex-dev.db` under the registered Codex home. Missing
+stores, incompatible schemas, or custom SQLite locations fail closed and display
+an availability reason. Socket/registry ownership and permissions are checked;
+requests and responses are bounded, with a 20-second helper deadline and a
+25-second parent timeout. No new Rust dependency or persistent helper is added.
+
+Open transcripts without verified lifecycle data remain **observed tasks** and
+locked. Their count can differ from the host's loaded count. Shared engines remain
+excluded from stale-session close advice and the menu's close batch. Separate idle
+Claude Code and Codex CLI processes keep the existing process close paths. Python
+transport wrappers are skipped when finding the owning desktop app.
+
+The optional `experiments/codex-bridge` launcher forwards desktop stdio to the same
+backend over a private Unix socket. Fourteen protocol/launcher/backend tests,
+including isolated archive/restore through the production controller, use synthetic
+tasks only. Protection-race and partial-result fixtures live in
+`tests/codex-control.test.py`; journal tests cover intent failure and partial
+unloading. UI tests cover reviewed task identities and recovery without closing
+shared PIDs. See the [bridge instructions](../experiments/codex-bridge/README.md).
 
 
 ## First-run setup
@@ -795,7 +846,7 @@ The app and CLI label this as an observed whole-machine change, not attributed
 savings; overlapping observations must not be added together. Observation write
 failures report that the action completed, while retaining the earlier completion.
 
-Overview and Actions show a compact Recent cleanup summary over the loaded action
+Actions shows a compact Recent cleanup summary over the loaded action
 history (currently the last 30 actions), with the scope visible beside its title.
 It counts successful closures and their automatic subset, and sums the footprints
 those items held before closing. Tab estimates are marked; missing footprint data

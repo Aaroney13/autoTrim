@@ -364,15 +364,15 @@ function reviewPorts(list) {
   openReview("ports", [...processes.values()]);
 }
 
-const reviewNoun = kind => kind === "ports" ? "server" : "session";
+const reviewNoun = kind => kind === "codex" ? "task" : kind === "ports" ? "server" : "session";
 
-const reviewVerb = kind => kind === "ports" ? "Stop" : "Close";
+const reviewVerb = kind => kind === "codex" ? "Archive" : kind === "ports" ? "Stop" : "Close";
 
 function openReview(kind, targets) {
   if (state.actionReview || !targets.length) return;
   state.actionReview = { kind, targets, selected: new Set(targets.map(t => t.id)), busy: false, returnView: state.view };
   const dialog = document.getElementById("action-review"), noun = reviewNoun(kind), verb = reviewVerb(kind);
-  dialog.innerHTML = `<div class="review-content"><h2 id="review-title">${verb} these ${noun}s?</h2><p id="review-description">Review the exact targets below. Uncheck anything you want to keep.</p><div class="review-targets">${targets.map(t => `<label class="review-target"><input type="checkbox" data-review-target="${t.id}" checked><span><span class="l1">${esc(t.name)}</span><span class="l2" style="display:block">${esc(t.detail)}</span></span><span class="num">${t.rss ? `${bytes(t.rss)}` : ""}</span></label>`).join("")}</div><div class="review-total"><span id="review-count"></span><span id="review-memory"></span></div><div class="recovery-note">${icon("resume")}<span>${kind === "ports" ? "Stopping a server ends its process and closes all ports it owns. Restart it from the terminal or app that launched it." : "Closing stops the session’s processes. Its transcript stays on disk. Available resume commands are saved in Actions."}</span></div><p>${kind === "ports" ? "Each process is checked again before stopping. Services managed by an app or the system are skipped." : "Active sessions, app engines, and sessions whose process has changed are skipped when checked before closing."}</p><p id="review-status" role="status"></p><div class="review-actions"><button id="review-cancel" autofocus>Cancel</button><button class="primary" id="review-submit">${verb} ${plural(targets.length, noun)}</button></div></div>`;
+  dialog.innerHTML = `<div class="review-content"><h2 id="review-title">${verb} these ${noun}s?</h2><p id="review-description">Review the exact targets below. Uncheck anything you want to keep.</p><div class="review-targets">${targets.map(t => `<label class="review-target"><input type="checkbox" data-review-target="${t.id}" checked><span><span class="l1">${esc(t.name)}</span><span class="l2" style="display:block">${esc(t.detail)}</span></span><span class="num">${t.rss ? `${bytes(t.rss)}` : ""}</span></label>`).join("")}</div><div class="review-total"><span id="review-count"></span><span id="review-memory"></span></div><div class="recovery-note">${icon("resume")}<span>${kind === "codex" ? "Archiving unloads this task and removes it from the active list. The backend stays running. Restore it from Actions; no transcript is deleted." : kind === "ports" ? "Stopping a server ends its process and closes all ports it owns. Restart it from the terminal or app that launched it." : "Closing stops the session’s processes. Its transcript stays on disk. Available resume commands are saved in Actions."}</span></div><p>${kind === "codex" ? "Activity, pins, queued work, goals, automations, and child tasks are checked again before archiving. A changed or protected task stays open." : kind === "ports" ? "Each process is checked again before stopping. Services managed by an app or the system are skipped." : "Active sessions, app engines, and sessions whose process has changed are skipped when checked before closing."}</p><p id="review-status" role="status"></p><div class="review-actions"><button id="review-cancel" autofocus>Cancel</button><button class="primary" id="review-submit">${verb} ${plural(targets.length, noun)}</button></div></div>`;
   dialog.oncancel = event => { if (state.actionReview?.busy) event.preventDefault(); };
   dialog.onclose = () => { state.actionReview = null; };
   dialog.querySelectorAll("[data-review-target]").forEach(cb => cb.onchange = () => { cb.checked ? state.actionReview.selected.add(+cb.dataset.reviewTarget) : state.actionReview.selected.delete(+cb.dataset.reviewTarget); updateReviewTotal(); });
@@ -397,19 +397,19 @@ async function executeReview() {
   r.busy = true;
   const dialog = document.getElementById("action-review"), status = document.getElementById("review-status");
   dialog.querySelectorAll("button, input").forEach(el => el.disabled = true);
-  status.textContent = `Checking the selected targets and ${r.kind === "ports" ? "stopping" : "closing"}…`;
+  status.textContent = `Checking the selected targets and ${r.kind === "codex" ? "archiving" : r.kind === "ports" ? "stopping" : "closing"}…`;
   const targets = r.targets.filter(t => r.selected.has(t.id)), results = [];
   try {
     for (const target of targets) {
       try {
-        const record = r.kind === "ports" ? await invoke("stop_server", { pid: target.id, force: false, expectedStartTime: target.startTime }) : await invoke("close_session", { pid: target.id, expectedStartTime: target.startTime });
+        const record = r.kind === "codex" ? await invoke("archive_codex_task", { task: target.task }) : r.kind === "ports" ? await invoke("stop_server", { pid: target.id, force: false, expectedStartTime: target.startTime }) : await invoke("close_session", { pid: target.id, expectedStartTime: target.startTime });
         if (r.kind === "sessions" && actionSucceeded(record)) state.gone.pids.add(target.id);
         results.push(record);
       } catch (e) { results.push({ target: target.name, result: `Skipped: ${e}` }); }
     }
     const ok = record => actionSucceeded(record);
     const completed = results.filter(ok).length, failed = results.filter(record => !ok(record));
-    status.textContent = `${completed} of ${plural(targets.length, reviewNoun(r.kind))} ${r.kind === "ports" ? "stopped" : "closed"} or already gone.${failed.length ? "\n" + failed.map(record => `${record.target}: ${record.result}`).join("\n") : r.kind === "ports" ? " Results are in Actions." : " Recovery instructions are in Actions."}`;
+    status.textContent = `${completed} of ${plural(targets.length, reviewNoun(r.kind))} ${r.kind === "codex" ? "archived" : r.kind === "ports" ? "stopped" : "closed"} or already gone.${failed.length ? "\n" + failed.map(record => `${record.target}: ${record.result}`).join("\n") : r.kind === "ports" ? " Results are in Actions." : " Recovery instructions are in Actions."}`;
     document.getElementById("review-submit").textContent = "View actions";
     document.getElementById("review-submit").disabled = false;
     document.getElementById("review-submit").onclick = () => { dialog.close(); navigate("actions"); };
@@ -488,6 +488,15 @@ function wire(root) {
   });
 
   root.querySelectorAll("[data-goto]").forEach(a => { a.href = "#" + encodeURIComponent(a.dataset.goto); a.onclick = e => { e.preventDefault(); navigate(a.dataset.goto); }; });
+  root.querySelectorAll('[data-review-codex]').forEach(b => b.onclick = () => {
+    const task = state.snap.codex_backends?.find(x => x.pid === +b.dataset.backendPid && !x.error)?.tasks.find(t => t.id === b.dataset.reviewCodex);
+    if (!task || task.protection) return toast('Task changed or is protected. Refresh and review again.');
+    openReview('codex', [{ id: 0, name: task.name, detail: task.cwd, rss: 0, task: { ...task } }]);
+  });
+  root.querySelectorAll('[data-restore-codex]').forEach(b => b.onclick = () => twoStep(b, 'restore:' + b.dataset.restoreCodex, async () => {
+    const record = await invoke('restore_codex_task', { actionId: b.dataset.restoreCodex });
+    toast(record.result);
+  }));
   root.querySelectorAll("[data-close-session]").forEach(b => b.onclick = () => reviewSessions(state.snap.sessions.filter(x => x.pid === +b.dataset.closeSession)));
   root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); if (h) reviewSessions(filteredSessions(h.sessions).filter(x => x.state === "stale")); });
   root.querySelectorAll("[data-close-tab], [data-close-tabs]").forEach(button => button.onclick = () => {

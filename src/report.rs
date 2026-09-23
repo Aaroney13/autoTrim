@@ -65,7 +65,7 @@ pub fn render(s: &Snapshot) -> String {
                     .count();
                 let noun = if tasks > 0 {
                     format!(
-                        "{noun} · {tasks} loaded task{}",
+                        "{noun} · {tasks} observed task{}",
                         if tasks == 1 { "" } else { "s" }
                     )
                 } else {
@@ -262,7 +262,7 @@ pub fn render(s: &Snapshot) -> String {
             if !x.threads.is_empty() {
                 let _ = writeln!(
                     o,
-                    "    Loaded tasks (shared memory above; only open transcripts are visible)"
+                    "    Observed task transcripts (shared memory above; loaded state is unverified)"
                 );
                 for t in &x.threads {
                     let name = t

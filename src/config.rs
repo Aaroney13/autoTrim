@@ -78,6 +78,8 @@ pub struct Config {
 
     /// Close stale agent sessions on a timer. Off by default.
     pub auto_close_sessions: bool,
+    /// Archive idle Codex desktop tasks through an existing bridge. Off by default.
+    pub auto_archive_codex: bool,
     /// Stop old local servers on a timer. Off by default.
     pub auto_stop_servers: bool,
     /// Close inactive tabs whose domains appear in `auto_tab_domains`.
@@ -142,6 +144,7 @@ impl Default for Config {
             probe_ports: true,
             probe_timeout_ms: 300,
             auto_close_sessions: false,
+            auto_archive_codex: false,
             auto_stop_servers: false,
             auto_close_tabs: false,
             auto_tab_inactive_hours: 24.0,
@@ -271,6 +274,7 @@ probe_timeout_ms = {probe_timeout_ms}
 # Auto mode. Off by default. Try auto_dry_run = true first: it logs and
 # notifies what it would have closed, and closes nothing.
 auto_close_sessions = {auto_close_sessions}
+auto_archive_codex = {auto_archive_codex}     # uses stale_after_hours; keeps newest task per project
 auto_stop_servers = {auto_stop_servers}
 auto_close_tabs = {auto_close_tabs}
 auto_tab_inactive_hours = {auto_tab_inactive_hours}       # listed domains inactive this long may be closed
@@ -319,6 +323,7 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
             probe_ports = d.probe_ports,
             probe_timeout_ms = d.probe_timeout_ms,
             auto_close_sessions = d.auto_close_sessions,
+            auto_archive_codex = d.auto_archive_codex,
             auto_stop_servers = d.auto_stop_servers,
             auto_close_tabs = d.auto_close_tabs,
             auto_tab_inactive_hours = d.auto_tab_inactive_hours,
@@ -330,7 +335,10 @@ ignore_projects = []            # substrings of project paths, e.g. ["/long-runn
 
     /// Whether auto mode does anything at all.
     pub fn auto_on(&self) -> bool {
-        self.auto_close_sessions || self.auto_stop_servers || self.auto_close_tabs
+        self.auto_close_sessions
+            || self.auto_archive_codex
+            || self.auto_stop_servers
+            || self.auto_close_tabs
     }
 
     pub fn validate_tab_rules(&mut self) -> Result<()> {

@@ -270,10 +270,20 @@ fn host_label(app: &str) -> String {
 }
 
 fn host_of(table: &ProcTable, p: &Proc) -> (String, Option<String>) {
+    let mut runtime_host = None;
     for a in table.ancestors(p.pid) {
         if let Some(b) = app_name(a) {
+            // macOS packages Python as an app. A transport wrapper is not
+            // the desktop host; keep walking to the app that launched it.
+            if b == "Python" {
+                runtime_host = Some(b);
+                continue;
+            }
             return (host_label(&b), Some(b));
         }
+    }
+    if let Some(b) = runtime_host {
+        return (host_label(&b), Some(b));
     }
     ("terminal".to_string(), None)
 }
@@ -454,6 +464,30 @@ mod tests {
             start_time: 0,
             run_time: 0,
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn desktop_host_is_found_through_python_bridge() {
+        let mut app = proc("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", &[]);
+        app.pid = 10;
+        let mut bridge = proc("/Library/Python.app/Contents/MacOS/Python", &[]);
+        bridge.pid = 20;
+        bridge.ppid = Some(10);
+        let mut backend = proc("/Applications/ChatGPT.app/Contents/Resources/codex", &[]);
+        backend.pid = 30;
+        backend.ppid = Some(20);
+        let table = ProcTable::from_procs(vec![app, bridge.clone(), backend.clone()]);
+        assert_eq!(
+            host_of(&table, &backend),
+            ("ChatGPT app".into(), Some("ChatGPT".into()))
+        );
+        bridge.ppid = None;
+        let table = ProcTable::from_procs(vec![bridge, backend.clone()]);
+        assert_eq!(
+            host_of(&table, &backend),
+            ("Python".into(), Some("Python".into()))
+        );
     }
 
     #[test]
