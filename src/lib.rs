@@ -9,6 +9,7 @@ pub mod agents;
 pub mod app;
 pub mod automation;
 pub mod browser;
+pub mod codex;
 pub mod config;
 pub mod daemon;
 pub mod diagnostics;
@@ -47,6 +48,9 @@ pub struct Snapshot {
     pub system: system::SystemInfo,
     pub groups: Vec<groups::AppGroup>,
     pub sessions: Vec<agents::AgentSession>,
+    /// Verified task state from connected desktop bridges; separate from open transcripts.
+    #[serde(default)]
+    pub codex_backends: Vec<codex::Backend>,
     pub browsers: Vec<browser::BrowserInfo>,
     #[serde(default)]
     pub ports: Vec<ports::PortInfo>,
@@ -123,6 +127,7 @@ pub fn take_snapshot_with(
         system,
         groups,
         sessions: det.sessions,
+        codex_backends: codex::inspect(),
         browsers,
         ports,
         trends: Vec::new(),

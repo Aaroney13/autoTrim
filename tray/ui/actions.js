@@ -1,6 +1,6 @@
 // IPC, confirmation, polling, and event handlers. Renderer callbacks are injected.
 import { icon, bytes, dur, esc, plural } from "./format.js";
-import { domainInactivityLabel, domainRecommendations, state, armed, listModels, holders, holderByKey, appIconName, sync, autoMode, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
+import { recordActivity, domainInactivityLabel, domainRecommendations, state, armed, listModels, holders, holderByKey, appIconName, sync, autoMode, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded } from "./state.js";
 
 const invoke = (...a) => window.__TAURI__.core.invoke(...a);
 
@@ -123,6 +123,7 @@ async function refresh(opts = {}) {
   if (!first && (snap.taken_at < state.snap.taken_at || snap.taken_at === state.snap.taken_at && (sync.acceptedFresh && !opts.fresh || !!opts.fresh === sync.acceptedFresh && requestId < sync.acceptedRequest))) { state.src = src; state.log = log; if (revision === state.settingsRevision && !state.settingsBusy) state.settings = settings; state.service = service; renderAll(false); return; }
   sync.acceptedRequest = requestId; sync.acceptedFresh = !!opts.fresh;
   state.snap = snap; state.src = src; state.log = log; if (revision === state.settingsRevision && !state.settingsBusy) state.settings = settings; state.service = service;
+  recordActivity(snap);
   pruneGone(snap);
   renderAll(first);
   void loadAppIcons();
@@ -137,15 +138,15 @@ function navigate(view) {
 
 async function saveAuto(values) {
   if (state.settingsBusy) return;
-  state.settingsBusy = true; ++state.settingsRevision; renderMain(true);
+  state.settingsBusy = true; ++state.settingsRevision; renderMain(false, true);
   try { state.settings = await invoke("set_auto", values); }
   catch (e) { toast(String(e)); }
-  finally { state.settingsBusy = false; ++state.settingsRevision; renderSide(); renderMain(true); refresh(); }
+  finally { state.settingsBusy = false; ++state.settingsRevision; renderSide(); renderMain(false, true); refresh(); }
 }
 
 async function saveTabRules(domains, inactiveHours) {
   if (state.settingsBusy) return false;
-  state.settingsBusy = true; ++state.settingsRevision; renderMain(true);
+  state.settingsBusy = true; ++state.settingsRevision; renderMain(false, true);
   try {
     state.settings = await invoke("set_tab_rules", { domains, inactive_hours: inactiveHours, expected_revision: state.settings?.tab_rules_revision ?? "" });
     return true;
@@ -158,7 +159,7 @@ async function saveTabRules(domains, inactiveHours) {
     } else toast(message);
     return false;
   } finally {
-    state.settingsBusy = false; ++state.settingsRevision; renderSide(); renderMain(true); refresh();
+    state.settingsBusy = false; ++state.settingsRevision; renderSide(); renderMain(false, true); refresh();
   }
 }
 
@@ -333,9 +334,26 @@ function reviewSessions(list) {
   openReview("sessions", targets);
 }
 
-function reviewTabs(b, list) {
-  const targets = list.filter(t => canCloseTab(b, t)).map(t => ({ id: t.id, name: t.title.trim() || t.url, detail: `${t.url} · ${b.open_profiles.find(p => p.dir === t.profile)?.label || t.profile}`, rss: b.per_tab_estimate || 0, url: t.url, profile: t.profile }));
-  openReview("tabs", targets, b.name);
+async function closeTabs(b, list) {
+  if (state.tabsClosing) return;
+  // Freeze identities before IPC; the native action rechecks URL, profile,
+  // and protection state immediately before closing each tab.
+  const targets = list.filter(t => canCloseTab(b, t)).map(t => ({ id: t.id, url: t.url, profile: t.profile }));
+  if (!targets.length) return;
+  state.tabsClosing = true;
+  renderMain(false, true);
+  try {
+    const records = await invoke("close_tabs", { browser: b.name, expectedTabs: targets });
+    markGone("tabs", targets.map(t => t.id), records, actionSucceeded);
+    const completed = records.filter(actionSucceeded).length;
+    const remaining = targets.length - completed;
+    toast(`${plural(completed, "tab")} closed or already gone.${remaining ? ` ${plural(remaining, "tab")} stayed open. Check Actions for details.` : " Reopen with ⌘⇧T. Recovery instructions are in Actions."}`);
+  } catch (e) {
+    toast(`Could not complete the request: ${e}\nCheck Actions and refresh before trying again.`);
+  } finally {
+    state.tabsClosing = false;
+    afterAction();
+  }
 }
 
 function reviewPorts(list) {
@@ -346,15 +364,15 @@ function reviewPorts(list) {
   openReview("ports", [...processes.values()]);
 }
 
-const reviewNoun = kind => kind === "tabs" ? "tab" : kind === "ports" ? "server" : "session";
+const reviewNoun = kind => kind === "codex" ? "task" : kind === "ports" ? "server" : "session";
 
-const reviewVerb = kind => kind === "ports" ? "Stop" : "Close";
+const reviewVerb = kind => kind === "codex" ? "Archive" : kind === "ports" ? "Stop" : "Close";
 
-function openReview(kind, targets, browser = null) {
+function openReview(kind, targets) {
   if (state.actionReview || !targets.length) return;
-  state.actionReview = { kind, targets, browser, selected: new Set(targets.map(t => t.id)), busy: false, returnView: state.view };
+  state.actionReview = { kind, targets, selected: new Set(targets.map(t => t.id)), busy: false, returnView: state.view };
   const dialog = document.getElementById("action-review"), noun = reviewNoun(kind), verb = reviewVerb(kind);
-  dialog.innerHTML = `<div class="review-content"><h2 id="review-title">${verb} these ${noun}s?</h2><p id="review-description">Review the exact targets below. Uncheck anything you want to keep.</p><div class="review-targets">${targets.map(t => `<label class="review-target"><input type="checkbox" data-review-target="${t.id}" checked><span><span class="l1">${esc(t.name)}</span><span class="l2" style="display:block">${esc(t.detail)}</span></span><span class="num">${t.rss ? `${kind === "tabs" ? "≈ " : ""}${bytes(t.rss)}` : ""}</span></label>`).join("")}</div><div class="review-total"><span id="review-count"></span><span id="review-memory"></span></div><div class="recovery-note">${icon("resume")}<span>${kind === "ports" ? "Stopping a server ends its process and closes all ports it owns. Restart it from the terminal or app that launched it." : kind === "tabs" ? "Use ⌘⇧T in the same browser profile to reopen a recently closed tab. Its URL is saved in Actions. Unsaved drafts and temporary chats may not be restored." : "Closing stops the session’s processes. Its transcript stays on disk. Available resume commands are saved in Actions."}</span></div><p>${kind === "ports" ? "Each process is checked again before stopping. Services managed by an app or the system are skipped." : kind === "tabs" ? "Pinned, active, or navigated tabs are skipped when checked before closing. Memory figures are estimates, not expected RAM savings." : "Active sessions, app engines, and sessions whose process has changed are skipped when checked before closing."}</p><p id="review-status" role="status"></p><div class="review-actions"><button id="review-cancel" autofocus>Cancel</button><button class="primary" id="review-submit">${verb} ${plural(targets.length, noun)}</button></div></div>`;
+  dialog.innerHTML = `<div class="review-content"><h2 id="review-title">${verb} these ${noun}s?</h2><p id="review-description">Review the exact targets below. Uncheck anything you want to keep.</p><div class="review-targets">${targets.map(t => `<label class="review-target"><input type="checkbox" data-review-target="${t.id}" checked><span><span class="l1">${esc(t.name)}</span><span class="l2" style="display:block">${esc(t.detail)}</span></span><span class="num">${t.rss ? `${bytes(t.rss)}` : ""}</span></label>`).join("")}</div><div class="review-total"><span id="review-count"></span><span id="review-memory"></span></div><div class="recovery-note">${icon("resume")}<span>${kind === "codex" ? "Archiving unloads this task and removes it from the active list. The backend stays running. Restore it from Actions; no transcript is deleted." : kind === "ports" ? "Stopping a server ends its process and closes all ports it owns. Restart it from the terminal or app that launched it." : "Closing stops the session’s processes. Its transcript stays on disk. Available resume commands are saved in Actions."}</span></div><p>${kind === "codex" ? "Activity, pins, queued work, goals, automations, and child tasks are checked again before archiving. A changed or protected task stays open." : kind === "ports" ? "Each process is checked again before stopping. Services managed by an app or the system are skipped." : "Active sessions, app engines, and sessions whose process has changed are skipped when checked before closing."}</p><p id="review-status" role="status"></p><div class="review-actions"><button id="review-cancel" autofocus>Cancel</button><button class="primary" id="review-submit">${verb} ${plural(targets.length, noun)}</button></div></div>`;
   dialog.oncancel = event => { if (state.actionReview?.busy) event.preventDefault(); };
   dialog.onclose = () => { state.actionReview = null; };
   dialog.querySelectorAll("[data-review-target]").forEach(cb => cb.onchange = () => { cb.checked ? state.actionReview.selected.add(+cb.dataset.reviewTarget) : state.actionReview.selected.delete(+cb.dataset.reviewTarget); updateReviewTotal(); });
@@ -367,7 +385,7 @@ function updateReviewTotal() {
   const r = state.actionReview, chosen = r.targets.filter(t => r.selected.has(t.id));
   document.getElementById("review-count").textContent = `${plural(chosen.length, reviewNoun(r.kind))} selected`;
   const rss = chosen.reduce((n, t) => n + t.rss, 0);
-  document.getElementById("review-memory").innerHTML = rss ? `<b>${r.kind === "tabs" ? "≈ " : ""}${bytes(rss)}</b> ${r.kind === "tabs" ? "estimated footprint, not RAM savings" : "held now, not RAM savings"}` : "";
+  document.getElementById("review-memory").innerHTML = rss ? `<b>${bytes(rss)}</b> held now, not RAM savings` : "";
   const button = document.getElementById("review-submit");
   button.textContent = `${reviewVerb(r.kind)} ${plural(chosen.length, reviewNoun(r.kind))}`;
   button.disabled = !chosen.length || r.busy;
@@ -379,25 +397,19 @@ async function executeReview() {
   r.busy = true;
   const dialog = document.getElementById("action-review"), status = document.getElementById("review-status");
   dialog.querySelectorAll("button, input").forEach(el => el.disabled = true);
-  status.textContent = `Checking the selected targets and ${r.kind === "ports" ? "stopping" : "closing"}…`;
+  status.textContent = `Checking the selected targets and ${r.kind === "codex" ? "archiving" : r.kind === "ports" ? "stopping" : "closing"}…`;
   const targets = r.targets.filter(t => r.selected.has(t.id)), results = [];
   try {
-    if (r.kind === "sessions" || r.kind === "ports") {
-      for (const target of targets) {
-        try {
-          const record = r.kind === "ports" ? await invoke("stop_server", { pid: target.id, force: false, expectedStartTime: target.startTime }) : await invoke("close_session", { pid: target.id, expectedStartTime: target.startTime });
-          if (r.kind === "sessions" && actionSucceeded(record)) state.gone.pids.add(target.id);
-          results.push(record);
-        } catch (e) { results.push({ target: target.name, result: `Skipped: ${e}` }); }
-      }
-    } else {
-      const records = await invoke("close_tabs", { browser: r.browser, expectedTabs: targets.map(t => ({ id: t.id, url: t.url, profile: t.profile })) });
-      records.forEach((record, i) => { if (/^(closed|not open any more|already gone)/.test(record.result)) state.gone.tabs.add(targets[i].id); });
-      results.push(...records);
+    for (const target of targets) {
+      try {
+        const record = r.kind === "codex" ? await invoke("archive_codex_task", { task: target.task }) : r.kind === "ports" ? await invoke("stop_server", { pid: target.id, force: false, expectedStartTime: target.startTime }) : await invoke("close_session", { pid: target.id, expectedStartTime: target.startTime });
+        if (r.kind === "sessions" && actionSucceeded(record)) state.gone.pids.add(target.id);
+        results.push(record);
+      } catch (e) { results.push({ target: target.name, result: `Skipped: ${e}` }); }
     }
     const ok = record => actionSucceeded(record);
     const completed = results.filter(ok).length, failed = results.filter(record => !ok(record));
-    status.textContent = `${completed} of ${plural(targets.length, reviewNoun(r.kind))} ${r.kind === "ports" ? "stopped" : "closed"} or already gone.${failed.length ? "\n" + failed.map(record => `${record.target}: ${record.result}`).join("\n") : r.kind === "ports" ? " Results are in Actions." : " Recovery instructions are in Actions."}`;
+    status.textContent = `${completed} of ${plural(targets.length, reviewNoun(r.kind))} ${r.kind === "codex" ? "archived" : r.kind === "ports" ? "stopped" : "closed"} or already gone.${failed.length ? "\n" + failed.map(record => `${record.target}: ${record.result}`).join("\n") : r.kind === "ports" ? " Results are in Actions." : " Recovery instructions are in Actions."}`;
     document.getElementById("review-submit").textContent = "View actions";
     document.getElementById("review-submit").disabled = false;
     document.getElementById("review-submit").onclick = () => { dialog.close(); navigate("actions"); };
@@ -452,14 +464,46 @@ async function runUpdate(action) {
 
 function wire(root) {
 
+  const showActionDetails = key => {
+    state.expandedAction = key;
+    root.querySelectorAll("[data-action-details]").forEach(button => {
+      const open = button.dataset.actionDetails === key;
+      button.setAttribute("aria-expanded", String(open));
+      button.closest("tr").classList.toggle("expanded", open);
+      document.getElementById(button.getAttribute("aria-controls")).hidden = !open;
+    });
+  };
+  root.querySelectorAll("[data-action-details]").forEach(button => {
+    button.onclick = () => showActionDetails(state.expandedAction === button.dataset.actionDetails ? null : button.dataset.actionDetails);
+    button.onkeydown = event => {
+      if (event.key === "Escape") { showActionDetails(null); event.preventDefault(); }
+    };
+  });
+  root.querySelectorAll("[data-action-detail-panel]").forEach(panel => panel.onkeydown = event => {
+    if (event.key !== "Escape") return;
+    const button = root.querySelector(`[aria-controls="${panel.id}"]`);
+    showActionDetails(null);
+    button?.focus();
+    event.preventDefault();
+  });
+
   root.querySelectorAll("[data-goto]").forEach(a => { a.href = "#" + encodeURIComponent(a.dataset.goto); a.onclick = e => { e.preventDefault(); navigate(a.dataset.goto); }; });
+  root.querySelectorAll('[data-review-codex]').forEach(b => b.onclick = () => {
+    const task = state.snap.codex_backends?.find(x => x.pid === +b.dataset.backendPid && !x.error)?.tasks.find(t => t.id === b.dataset.reviewCodex);
+    if (!task || task.protection) return toast('Task changed or is protected. Refresh and review again.');
+    openReview('codex', [{ id: 0, name: task.name, detail: task.cwd, rss: 0, task: { ...task } }]);
+  });
+  root.querySelectorAll('[data-restore-codex]').forEach(b => b.onclick = () => twoStep(b, 'restore:' + b.dataset.restoreCodex, async () => {
+    const record = await invoke('restore_codex_task', { actionId: b.dataset.restoreCodex });
+    toast(record.result);
+  }));
   root.querySelectorAll("[data-close-session]").forEach(b => b.onclick = () => reviewSessions(state.snap.sessions.filter(x => x.pid === +b.dataset.closeSession)));
   root.querySelectorAll("[data-close-stale]").forEach(b => b.onclick = () => { const h = holderByKey("g:" + b.dataset.closeStale); if (h) reviewSessions(filteredSessions(h.sessions).filter(x => x.state === "stale")); });
   root.querySelectorAll("[data-close-tab], [data-close-tabs]").forEach(button => button.onclick = () => {
     const b = state.snap.browsers.find(b => b.name === button.dataset.browser);
     if (!b) return;
     const ids = (button.dataset.closeTabs ?? button.dataset.closeTab).split(",").filter(Boolean).map(Number);
-    reviewTabs(b, b.tabs.filter(t => ids.includes(t.id)));
+    closeTabs(b, b.tabs.filter(t => ids.includes(t.id)));
   });
   root.querySelectorAll("[data-stop]").forEach(b => b.onclick = () => twoStep(b, "p" + b.dataset.stop, async () => report(await invoke("stop_server", { pid: +b.dataset.stop, force: false }))));
   root.querySelectorAll("[data-quit]").forEach(b => b.onclick = () => twoStep(b, "q" + b.dataset.quit, async () => report(await invoke("quit_app", { name: b.dataset.quit, force: false }))));
@@ -576,11 +620,17 @@ function wire(root) {
       b.onclick = () => { const model = listModels.get(b.getAttribute(attribute)); if (!model) return; action(model); const options = b.closest(".list-options"); if (options) { options.open = false; options.querySelector("summary").focus({ preventScroll: true }); } if (!state.actionReview) renderMain(false, true); };
     });
   }
+  root.querySelectorAll('[data-close-tab], [data-close-tabs], [data-list-review="tabs"], [data-list-stale="tabs"]').forEach(button => {
+    if (!state.tabsClosing) return;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "Closing…";
+  });
   root.querySelectorAll("[data-review-port]").forEach(b => b.onclick = () => reviewPorts(state.snap.ports.filter(p => p.pid === +b.dataset.reviewPort)));
   root.querySelectorAll("[data-copy-command]").forEach(b => b.onclick = () => copyCommand(b));
 
 }
 
 
-return { toast, copyText, copyCommand, twoStep, afterAction, report, refresh, navigate, saveAuto, saveTabRules, removeDomainRule, requestTabPreview, openDomainEditor, openTabPreview, reviewSessions, reviewTabs, reviewPorts, reviewNoun, reviewVerb, openReview, updateReviewTotal, executeReview, markGone, pruneGone, runUpdate, wire };
+return { toast, copyText, copyCommand, twoStep, afterAction, report, refresh, navigate, saveAuto, saveTabRules, removeDomainRule, requestTabPreview, openDomainEditor, openTabPreview, reviewSessions, closeTabs, reviewPorts, reviewNoun, reviewVerb, openReview, updateReviewTotal, executeReview, markGone, pruneGone, runUpdate, wire };
 }

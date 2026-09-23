@@ -95,6 +95,13 @@ pub fn run() {
     );
     assert!(close.is_enabled().unwrap());
     assert_eq!(close.text().unwrap(), "Close 1 stale session");
+    let mut engine = snap.sessions[0].clone();
+    engine.pid = 200;
+    engine.engine = true;
+    snap.sessions.push(engine);
+    refresh_menu(app.handle(), &snap).unwrap();
+    assert_eq!(close.text().unwrap(), "Close 1 stale session");
+    assert_eq!(stale_sessions(&snap), vec![100]);
     assert!(auto.is_checked().unwrap());
     assert_eq!(auto.text().unwrap(), "Auto mode (dry run)");
     let pending = menu.get("pending").unwrap().as_menuitem_unchecked().clone();

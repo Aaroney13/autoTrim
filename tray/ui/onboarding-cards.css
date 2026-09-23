@@ -1,0 +1,31 @@
+.setup-footer[hidden] { display: none; }
+.setup-entry-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.setup-entry-card { display: flex; flex-direction: column; align-items: flex-start; text-align: left; padding: 24px; min-height: 258px; white-space: normal; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.setup-entry-card:hover { border-color: var(--muted); background: var(--hover); }
+.setup-entry-free { border-color: var(--accent); background: var(--soft); }
+.setup-entry-free:hover { border-color: var(--accent); background: var(--sel); }
+.setup-entry-art { display: flex; align-items: center; height: 56px; margin-bottom: 24px; color: var(--muted); }
+.setup-entry-art svg, .setup-entry-art img { width: 48px; height: 48px; object-fit: contain; }
+.setup-card-title { display: block; font-size: 18px; font-weight: 600; line-height: 1.3; letter-spacing: -.25px; }
+.setup-card-description { display: block; margin-top: 9px; font-size: 13px; line-height: 1.6; color: var(--muted); }
+.setup-card-trailing { display: flex; justify-content: space-between; width: 100%; padding-top: 24px; margin-top: auto; color: var(--muted); font-size: 12px; }
+.setup-entry-free .setup-card-trailing { color: var(--accent); font-weight: 600; }
+.setup-focus-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.setup-focus-card { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 280px; padding: 18px 14px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.setup-focus-card:hover { background: var(--hover); }
+.setup-focus-card:has(input:checked) { border-color: var(--accent); background: var(--soft); }
+.setup-focus-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.setup-focus-card input { align-self: flex-end; margin: 0 0 18px; accent-color: var(--button); width: 16px; height: 16px; }
+.setup-app-logos { display: flex; align-items: center; gap: 4px; min-height: 44px; margin-bottom: 20px; }
+.setup-app-logos img { display: block; width: 40px; height: 40px; object-fit: contain; }
+.setup-focus-card .setup-card-title { font-size: 17px; }
+.setup-focus-card small { display: block; margin-top: auto; padding-top: 20px; font-size: 11px; line-height: 1.5; color: var(--muted); }
+@media (max-width: 560px) {
+  .setup-entry-cards, .setup-focus-cards { grid-template-columns: 1fr; }
+  .setup-entry-card { min-height: 200px; padding: 20px; }
+  .setup-entry-art { margin-bottom: 14px; height: 44px; }
+  .setup-focus-card { min-height: 0; padding: 20px; }
+  .setup-focus-card input { position: absolute; top: 20px; right: 20px; margin: 0; }
+  .setup-app-logos { margin: 0 0 14px; padding-right: 24px; }
+  .setup-focus-card small { padding-top: 12px; }
+}

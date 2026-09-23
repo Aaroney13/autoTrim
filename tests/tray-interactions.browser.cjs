@@ -130,21 +130,58 @@ const uiDir = path.join(__dirname, '../tray/ui');
         }
       }
     });
+    await check('settings stay compact and cleanup options survive saves and refreshes', async () => {
+      await go('settings');
+      const options = page.locator('[data-keep-open="cleanup-options"]');
+      assert.equal(await options.evaluate(el => el.open), false);
+      assert.equal(await page.locator('[data-add-domain]').isVisible(), false);
+      for (const width of [1000, 760, 390]) {
+        await page.setViewportSize({width, height:740});
+        assert.equal(await page.locator('#main').evaluate(el => el.scrollWidth <= el.clientWidth), true);
+        if (width === 1000) assert.equal(await page.locator('#main').evaluate(el => el.scrollHeight <= el.clientHeight), true);
+        await page.screenshot({path:`/private/tmp/autotrim-settings-${width}.png`});
+      }
+      await page.setViewportSize({width:760, height:740});
+      await options.locator('summary').first().focus();
+      await page.keyboard.press('Enter');
+      assert.equal(await page.locator('[data-add-domain]').isVisible(), true);
+      await page.locator('[data-auto-mode="preview"]').check();
+      await page.waitForFunction(() => !state.settingsBusy && state.settings.auto_close_sessions);
+      assert.equal(await options.evaluate(el => el.open), true);
+      await page.locator('[data-auto="stop_servers"]').check();
+      await page.waitForFunction(() => !state.settingsBusy && state.settings.auto_stop_servers);
+      assert.equal(await options.evaluate(el => el.open), true);
+      await page.evaluate(() => refresh());
+      assert.equal(await options.evaluate(el => el.open), true);
+      await page.locator('[data-domain-hours]').selectOption('2');
+      await page.waitForFunction(() => !state.settingsBusy && state.settings.auto_tab_inactive_hours === 2);
+      assert.equal(await options.evaluate(el => el.open), true);
+      await page.locator('[data-auto-mode="off"]').check();
+      await page.waitForFunction(() => !state.settingsBusy && !state.settings.auto_close_sessions);
+    });
     for (const colorScheme of ['light','dark']) {
       await page.emulateMedia({colorScheme});
       for (const width of [1000,760]) {
         await page.setViewportSize({width,height:740});
         await go('overview');
-        for (const area of ['.row-context','.metric','blank']) {
-          await check(`${colorScheme} ${width}px Overview ${area} selects and fills whole row`,async()=>{
-            await openFirstRow();
-            const row=page.locator('tbody tr.compact-row').nth(1);
-            if(area==='blank'){const cell=row.locator('td').first();const b=await cell.boundingBox();await cell.click({position:{x:b.width-10,y:b.height-4}});}else await row.locator(area).click();
-            assert.equal(await page.locator('.list-inspector h3').textContent(),'Codex sessions');
-            assert.equal(await selectedFill(row),true,'selected fill must win over hover/focus on every cell');
-            assert.equal(await row.locator('.row-title').evaluate(el=>el===document.activeElement),true);
+        await check(`${colorScheme} ${width}px Overview has compact charts instead of trends`, async () => {
+          assert.equal(await page.locator('.activity-chart').count(), 3);
+          assert.equal(await page.locator('.activity-chart svg[role="img"]').count(), 3);
+          assert.equal(await page.locator('.overview-trends').count(), 0);
+          assert.equal(await page.locator('#main tbody tr').count(), 0);
+          assert.equal(await page.locator('#main').evaluate(el => el.scrollWidth <= el.clientWidth), true);
+          await page.evaluate(async () => {
+            await refresh();
+            state.snap = {...state.snap, taken_at: state.snap.taken_at + 30,
+              system: {...state.snap.system, used_mem: 9 * GB, cpu_pct: 25, used_swap: GB / 4}};
+            await refresh();
           });
-        }
+          assert.equal(await page.locator('.activity-line').count(), 3);
+          assert.equal(await page.locator('.activity-chart.cpu figcaption b').textContent(), '25.0%');
+          await go('ports');
+          await go('overview');
+          assert.equal(await page.locator('.activity-line').count(), 3);
+        });
       }
       await page.setViewportSize({width:1000,height:740});
       await go('ports');
@@ -266,6 +303,7 @@ const uiDir = path.join(__dirname, '../tray/ui');
       await page.emulateMedia({colorScheme});
       await page.setViewportSize({width:760,height:740});
       await page.evaluate(()=>{state.settings.auto_tab_domains=[];state.settings.auto_tab_inactive_hours=24;state.view='settings';renderAll(true);window.__bridgeCalls=[];});
+      await page.locator('[data-keep-open="cleanup-options"] > summary').click();
       await check(`${colorScheme} suggestions filter and add an exact domain by keyboard`,async()=>{
         await page.evaluate(()=>{
           for (const tab of state.snap.browsers[0].tabs) tab.last_active=state.snap.taken_at-tab.idle_secs;
@@ -308,6 +346,7 @@ const uiDir = path.join(__dirname, '../tray/ui');
         }
       });
       await check(`${colorScheme} domain settings fit 760px and add by keyboard`,async()=>{
+        await page.locator('[data-keep-open="cleanup-options"] > summary').click();
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true);
         assert.equal(await page.locator('[data-auto-domain-target]').locator('xpath=preceding-sibling::span/small').evaluate(el=>getComputedStyle(el).display),'block');
         await page.locator('[data-add-domain]').click();
@@ -392,6 +431,7 @@ const uiDir = path.join(__dirname, '../tray/ui');
     }
     await check('editor refuses a stale save after polling replaces and reorders rules',async()=>{
       await go('settings');
+      await page.locator('[data-keep-open="cleanup-options"] > summary').click();
       await page.locator('[data-edit-domain="0"]').click();
       await page.locator('#domain-input').fill('renamed.example.com');
       await page.evaluate(()=>{

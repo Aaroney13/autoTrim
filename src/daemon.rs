@@ -44,6 +44,7 @@ pub struct DaemonConfig {
 #[derive(Clone, Debug, Default)]
 pub struct AutoConfig {
     pub close_sessions: bool,
+    pub archive_codex: bool,
     pub stop_servers: bool,
     pub close_tabs: bool,
     pub tab_inactive_secs: u64,
@@ -71,6 +72,19 @@ pub struct Overrides {
 }
 
 impl DaemonConfig {
+    pub fn codex_rules_revision(&self) -> String {
+        serde_json::to_string(&(
+            self.auto.archive_codex,
+            self.thresholds.stale_after_secs,
+            self.auto.grace.as_secs(),
+            self.auto.dry_run,
+            &self.auto.config_file_revision,
+            &self.thresholds.ignore_projects,
+            &self.thresholds.ignore_apps,
+        ))
+        .expect("Codex rules are serializable")
+    }
+
     /// The file's settings with the command line's overrides on top.
     pub fn from_config(cfg: &Config, o: &Overrides) -> DaemonConfig {
         let mut thresholds = cfg.thresholds();
@@ -96,6 +110,7 @@ impl DaemonConfig {
             remind_every: Duration::from_secs((remind * 3600.0).max(60.0) as u64),
             auto: AutoConfig {
                 close_sessions: cfg.auto_close_sessions,
+                archive_codex: cfg.auto_archive_codex,
                 stop_servers: cfg.auto_stop_servers,
                 close_tabs: cfg.auto_close_tabs,
                 tab_inactive_secs: crate::tab_rules::inactivity_secs(cfg.auto_tab_inactive_hours),
@@ -111,7 +126,7 @@ impl DaemonConfig {
 
 impl AutoConfig {
     pub fn on(&self) -> bool {
-        self.close_sessions || self.stop_servers || self.close_tabs
+        self.close_sessions || self.archive_codex || self.stop_servers || self.close_tabs
     }
 
     /// Authorization identity: even a save restoring old values starts a new
@@ -157,6 +172,7 @@ impl AutoConfig {
     pub fn status(&self, pending: Vec<PendingTarget>) -> AutoStatus {
         AutoStatus {
             close_sessions: self.close_sessions,
+            archive_codex: self.archive_codex,
             stop_servers: self.stop_servers,
             close_tabs: self.close_tabs,
             tab_rules_revision: self.tab_rules_revision(),
@@ -176,6 +192,8 @@ impl AutoConfig {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AutoStatus {
     pub close_sessions: bool,
+    #[serde(default)]
+    pub archive_codex: bool,
     pub stop_servers: bool,
     #[serde(default)]
     pub close_tabs: bool,
@@ -191,12 +209,15 @@ pub struct AutoStatus {
 impl AutoStatus {
     /// One line: what it does and how, or "off".
     pub fn describe(&self) -> String {
-        if !self.close_sessions && !self.stop_servers && !self.close_tabs {
+        if !self.close_sessions && !self.archive_codex && !self.stop_servers && !self.close_tabs {
             return "off".to_string();
         }
         let mut what = Vec::new();
         if self.close_sessions {
             what.push("closes stale sessions");
+        }
+        if self.archive_codex {
+            what.push("archives idle Codex tasks");
         }
         if self.stop_servers {
             what.push("stops old servers");
@@ -713,9 +734,9 @@ fn run_auto(
         let title = format!(
             "{} {} in {}",
             if auto.dry_run {
-                "Would close"
+                "Would clean up"
             } else {
-                "Closing"
+                "Cleaning up"
             },
             if warned.len() == 1 {
                 "1 idle target".to_string()

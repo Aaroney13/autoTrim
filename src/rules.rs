@@ -214,7 +214,9 @@ pub fn evaluate(
     // 2. Stale agent sessions.
     let stale: Vec<&AgentSession> = sessions
         .iter()
-        .filter(|s| s.state == SessionState::Stale && !s.is_self && !ignored_project(s))
+        .filter(|s| {
+            s.state == SessionState::Stale && !s.is_self && !s.engine && !ignored_project(s)
+        })
         .collect();
     if !stale.is_empty() {
         let total: u64 = stale.iter().map(|s| s.rss).sum();
@@ -653,6 +655,40 @@ pub fn evaluate(
 mod classification_tests {
     use super::*;
     use crate::test_support::session;
+
+    #[test]
+    fn stale_advice_excludes_shared_engines_and_current_session() {
+        let snap = crate::test_support::snapshot();
+        let mut engine = session();
+        engine.engine = true;
+        let mut current = session();
+        current.is_self = true;
+        let advice = |sessions: &[AgentSession]| {
+            evaluate(
+                &snap.system,
+                &[],
+                sessions,
+                &[],
+                &[],
+                &[],
+                None,
+                &Thresholds::default(),
+            )
+        };
+        assert!(
+            advice(&[engine.clone(), current.clone()])
+                .iter()
+                .all(|a| a.id != "stale_sessions")
+        );
+        let mixed = advice(&[engine, current, session()]);
+        let stale = mixed.iter().find(|a| a.id == "stale_sessions").unwrap();
+        assert!(
+            stale
+                .title
+                .starts_with("Close 1 stale agent session holding")
+        );
+        assert_eq!(stale.recovery, Some(session().rss));
+    }
 
     #[test]
     fn estimates_explain_method_and_unknown_values() {

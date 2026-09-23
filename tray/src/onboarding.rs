@@ -1,6 +1,7 @@
 //! Persist wizard choices using the same config and service paths as Settings.
 use super::{Settings, cli, off_thread, service, settings_now};
 use autotrim::config::Config;
+use autotrim::tab_rules::{DomainRule, matches_url, normalize_domain, serialize_rules};
 
 #[derive(serde::Deserialize)]
 pub(crate) struct Choices {
@@ -10,10 +11,17 @@ pub(crate) struct Choices {
     notify: bool,
     background: bool,
     open_window_at_launch: bool,
+    #[serde(default)]
+    add_tab_domains: Vec<String>,
+    #[serde(default)]
+    tab_rules_revision: String,
 }
 
 impl Choices {
     fn pairs(&self) -> anyhow::Result<Vec<(&'static str, String)>> {
+        for domain in &self.add_tab_domains {
+            normalize_domain(domain)?;
+        }
         anyhow::ensure!(
             !self.focus_areas.is_empty()
                 && self.focus_areas.len() <= 3
@@ -43,14 +51,43 @@ impl Choices {
             ),
         ])
     }
+
+    fn merged_rules(&self, cfg: &Config) -> anyhow::Result<Vec<DomainRule>> {
+        let mut rules = cfg.auto_tab_domains.clone();
+        for domain in &self.add_tab_domains {
+            let domain = normalize_domain(domain)?;
+            if !rules
+                .iter()
+                .any(|rule| matches_url(rule, &format!("https://{domain}/")))
+            {
+                rules.push(DomainRule {
+                    domain,
+                    include_subdomains: false,
+                });
+            }
+        }
+        // Allow a retry after preferences saved but service startup failed.
+        if rules != cfg.auto_tab_domains {
+            let current = autotrim::daemon::DaemonConfig::from_config(cfg, &Default::default());
+            anyhow::ensure!(
+                current.auto.tab_rules_revision() == self.tab_rules_revision,
+                "Chrome cleanup settings changed. Cancel and reopen setup to review the current rules."
+            );
+        }
+        Ok(rules)
+    }
 }
 
 #[tauri::command]
 pub(crate) async fn complete_onboarding(choices: Choices) -> Result<Settings, String> {
     off_thread(move || {
-        let pairs = choices.pairs()?;
+        let mut pairs = choices.pairs()?;
         // Never overwrite an unreadable config with wizard defaults.
-        Config::load()?;
+        let (cfg, _) = Config::load()?;
+        let rules = choices.merged_rules(&cfg)?;
+        if rules != cfg.auto_tab_domains {
+            pairs.push(("auto_tab_domains", serialize_rules(&rules)?));
+        }
         let info = service::info();
         anyhow::ensure!(!choices.background || info.supported,
             "Background startup is currently supported on macOS only.");
@@ -61,7 +98,7 @@ pub(crate) async fn complete_onboarding(choices: Choices) -> Result<Settings, St
         } else {
             None
         };
-        Config::set_values(&pairs)?;
+        Config::set_values_if_unchanged(&pairs, &cfg.file_revision)?;
         // Save settings first so a newly started daemon uses the chosen thresholds.
         // Leave first-run incomplete on failure: the user can retry or choose manual.
         let result = if let Some(exe) = exe {
@@ -91,6 +128,8 @@ mod tests {
             notify: true,
             background: false,
             open_window_at_launch: true,
+            add_tab_domains: vec![],
+            tab_rules_revision: String::new(),
         }
     }
 
@@ -121,5 +160,51 @@ mod tests {
                 .iter()
                 .any(|(key, value)| *key == "focus_areas" && value == "[\"browser\",\"agent\"]")
         );
+    }
+
+    #[test]
+    fn whitelist_additions_preserve_rules_and_retry_without_duplicates() {
+        let mut cfg = Config::default();
+        cfg.auto_tab_domains.push(DomainRule {
+            domain: "example.com".into(),
+            include_subdomains: true,
+        });
+        let mut c = choices();
+        c.tab_rules_revision =
+            autotrim::daemon::DaemonConfig::from_config(&cfg, &Default::default())
+                .auto
+                .tab_rules_revision();
+        c.add_tab_domains = vec![
+            "news.example.com".into(),
+            " Shop.example.org. ".into(),
+            "shop.example.org".into(),
+        ];
+        let merged = c.merged_rules(&cfg).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0], cfg.auto_tab_domains[0]);
+        assert_eq!(
+            merged[1],
+            DomainRule {
+                domain: "shop.example.org".into(),
+                include_subdomains: false
+            }
+        );
+        cfg.auto_tab_domains = merged.clone();
+        assert_eq!(c.merged_rules(&cfg).unwrap(), merged);
+        assert!(
+            c.pairs()
+                .unwrap()
+                .iter()
+                .all(|(key, _)| !key.starts_with("auto_"))
+        );
+    }
+
+    #[test]
+    fn whitelist_rejects_invalid_domains_and_stale_authorization() {
+        let mut c = choices();
+        c.add_tab_domains = vec!["https://example.com".into()];
+        assert!(c.pairs().is_err());
+        c.add_tab_domains = vec!["example.com".into()];
+        assert!(c.merged_rules(&Config::default()).is_err());
     }
 }

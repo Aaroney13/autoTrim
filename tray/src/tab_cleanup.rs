@@ -9,6 +9,75 @@ use serde::Serialize;
 use std::time::Duration;
 
 #[derive(Debug, Serialize)]
+pub(crate) struct TabRuleSuggestion {
+    domain: String,
+    tabs: Vec<TabRulePreview>,
+}
+
+fn suggestion_rows(
+    snap: &Snapshot,
+    existing: &[DomainRule],
+    inactive_hours: f64,
+) -> anyhow::Result<Vec<TabRuleSuggestion>> {
+    let mut domains = std::collections::BTreeSet::new();
+    for browser in &snap.browsers {
+        if browser.name != "Google Chrome" {
+            continue;
+        }
+        anyhow::ensure!(
+            browser.can_close_tabs,
+            "Chrome tab closing is unavailable on this platform."
+        );
+        for tab in &browser.tabs {
+            if !existing.iter().any(|rule| matches_url(rule, &tab.url))
+                && let Some(domain) = domain_of_url(&tab.url)
+            {
+                domains.insert(domain);
+            }
+        }
+    }
+    let rules: Vec<_> = domains
+        .into_iter()
+        .map(|domain| DomainRule {
+            domain,
+            include_subdomains: false,
+        })
+        .collect();
+    let mut grouped = std::collections::BTreeMap::<String, Vec<TabRulePreview>>::new();
+    for row in preview_rows(snap, &rules, inactive_hours)? {
+        if row.status == "eligible" {
+            grouped.entry(row.domain.clone()).or_default().push(row);
+        }
+    }
+    let mut suggestions: Vec<_> = grouped
+        .into_iter()
+        .map(|(domain, mut tabs)| {
+            tabs.sort_by_key(|tab| std::cmp::Reverse(tab.idle_secs));
+            TabRuleSuggestion { domain, tabs }
+        })
+        .collect();
+    suggestions.sort_by(|a, b| {
+        b.tabs[0]
+            .idle_secs
+            .cmp(&a.tabs[0].idle_secs)
+            .then_with(|| b.tabs.len().cmp(&a.tabs.len()))
+            .then_with(|| a.domain.cmp(&b.domain))
+    });
+    Ok(suggestions)
+}
+
+/// A local, read-only scan. Suggestions never authorize or execute closing.
+#[tauri::command]
+pub(crate) async fn suggest_tab_rules() -> Result<Vec<TabRuleSuggestion>, String> {
+    off_thread(move || {
+        let (cfg, _) = Config::load()?;
+        let snap = scan_now(&cfg.thresholds(), Duration::from_millis(300));
+        suggestion_rows(&snap, &cfg.auto_tab_domains, cfg.auto_tab_inactive_hours)
+    })
+    .await
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct TabRulePreview {
     browser: String,
     profile: String,
@@ -172,6 +241,15 @@ mod tests {
         );
         assert_eq!(rows[0].domain, "reddit.com");
         assert_eq!(rows[0].idle_secs, Some(99999));
+
+        let suggested = suggestion_rows(&snap, &[], 24.0).unwrap();
+        assert_eq!(suggested.len(), 2);
+        assert_eq!(suggested[0].domain, "reddit.com");
+        assert_eq!(suggested[0].tabs.len(), 1);
+        assert_eq!(suggested[0].tabs[0].id, 1);
+        let suggested = suggestion_rows(&snap, &rules, 24.0).unwrap();
+        assert_eq!(suggested.len(), 1);
+        assert_eq!(suggested[0].domain, "reddit.com.example.org");
     }
 
     #[test]
@@ -188,7 +266,52 @@ mod tests {
             include_subdomains: false,
         }];
         assert!(preview_rows(&snap, &rules, 24.0).is_err());
+        assert!(suggestion_rows(&snap, &[], 24.0).is_err());
         snap.browsers[0].tabs_note = None;
         assert!(preview_rows(&snap, &rules, 24.0).unwrap().is_empty());
+        assert!(suggestion_rows(&snap, &[], 24.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn suggestions_group_profiles_rank_idle_tabs_and_respect_rule_boundaries() {
+        let mut snap: Snapshot = serde_json::from_value(serde_json::json!({
+            "taken_at": 100000, "scanner_pid": 1,
+            "system": {"os":"fixture", "total_mem":0,"used_mem":0,"available_mem":0,"total_swap":0,"used_swap":0,"uptime_secs":0},
+            "groups":[],"sessions":[],"advice":[],
+            "browsers":[{"name":"Google Chrome","rss":0,"procs":1,"renderers":0,"extension_renderers":0,"gpu":0,"utility":0,"can_close_tabs":true,
+                "tabs":[] }]
+        })).unwrap();
+        for (id, url, profile, last) in [
+            (1, "https://news.example.com/a", "Default", 5000),
+            (2, "https://news.example.com/b", "Work", 1),
+            (3, "https://other.example.org/", "Default", 1000),
+            (4, "chrome://newtab", "Default", 1),
+            (5, "http://localhost/", "Default", 1),
+        ] {
+            snap.browsers[0].tabs.push(
+                serde_json::from_value(serde_json::json!({
+                    "id":id,"window_id":1,"profile":profile,"index":id,"url":url,"site":"ignored",
+                    "title":"Fixture","active":false,"pinned":false,"last_active":last,
+                }))
+                .unwrap(),
+            );
+        }
+        let suggestions = suggestion_rows(&snap, &[], 24.0).unwrap();
+        assert_eq!(suggestions.len(), 2);
+        assert_eq!(suggestions[0].domain, "news.example.com");
+        assert_eq!(
+            suggestions[0].tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        let rules = [DomainRule {
+            domain: "example.com".into(),
+            include_subdomains: true,
+        }];
+        assert_eq!(suggestion_rows(&snap, &rules, 24.0).unwrap().len(), 1);
+        snap.browsers[0].name = "Chromium".into();
+        assert!(suggestion_rows(&snap, &[], 24.0).unwrap().is_empty());
+        snap.browsers[0].name = "Google Chrome".into();
+        snap.browsers[0].can_close_tabs = false;
+        assert!(suggestion_rows(&snap, &[], 24.0).is_err());
     }
 }

@@ -74,6 +74,7 @@ fn source(interval_secs: u64) -> Source {
 #[derive(serde::Serialize, Clone)]
 struct Settings {
     auto_close_sessions: bool,
+    auto_archive_codex: bool,
     auto_stop_servers: bool,
     auto_close_tabs: bool,
     auto_tab_inactive_hours: f64,
@@ -102,6 +103,7 @@ fn settings_now() -> Settings {
     };
     Settings {
         auto_close_sessions: cfg.auto_close_sessions,
+        auto_archive_codex: cfg.auto_archive_codex,
         auto_stop_servers: cfg.auto_stop_servers,
         auto_close_tabs: cfg.auto_close_tabs,
         auto_tab_inactive_hours: cfg.auto_tab_inactive_hours,
@@ -132,6 +134,7 @@ fn toggle_auto(on: bool) -> anyhow::Result<()> {
     } else {
         vec![
             ("auto_close_sessions", "false".to_string()),
+            ("auto_archive_codex", "false".to_string()),
             ("auto_stop_servers", "false".to_string()),
             ("auto_close_tabs", "false".to_string()),
         ]
@@ -233,7 +236,7 @@ fn tray_image(used: u64, total: u64) -> Image<'static> {
 fn stale_sessions(snap: &Snapshot) -> Vec<u32> {
     snap.sessions
         .iter()
-        .filter(|s| s.state == SessionState::Stale && !s.is_self)
+        .filter(|s| s.state == SessionState::Stale && !s.is_self && !s.engine)
         .map(|s| s.pid)
         .collect()
 }
@@ -316,7 +319,10 @@ fn refresh_menu<R: Runtime>(app: &AppHandle<R>, snap: &Snapshot) -> tauri::Resul
     // Auto mode: the file's setting as a check mark, and what the daemon
     // is about to do with it underneath.
     let cfg = settings_now();
-    let on = cfg.auto_close_sessions || cfg.auto_stop_servers || cfg.auto_close_tabs;
+    let on = cfg.auto_close_sessions
+        || cfg.auto_archive_codex
+        || cfg.auto_stop_servers
+        || cfg.auto_close_tabs;
     let auto_label = if on && cfg.auto_dry_run {
         "Auto mode (dry run)"
     } else {
@@ -468,7 +474,7 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
         let auto = snap
             .auto
             .as_ref()
-            .filter(|a| a.close_sessions || a.stop_servers || a.close_tabs)
+            .filter(|a| a.close_sessions || a.archive_codex || a.stop_servers || a.close_tabs)
             .map(|a| {
                 if a.dry_run {
                     " · auto mode (dry run)"
@@ -520,14 +526,21 @@ fn show_window_at<R: Runtime>(app: &AppHandle<R>, settings: bool) {
     )
     .title("autoTrim")
     .theme(Some(tauri::Theme::Dark))
+    .background_color(tauri::webview::Color(17, 19, 23, 255))
+    // macOS cannot color the webview before navigation. Reveal it only
+    // after the local page and styles load, without waiting for a scan.
+    .visible(false)
+    .on_page_load(|window, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    })
     .inner_size(1000.0, 740.0)
     .min_inner_size(760.0, 500.0)
     .build();
-    match built {
-        Ok(w) => {
-            let _ = w.set_focus();
-        }
-        Err(e) => eprintln!("could not open the autoTrim window: {e}"),
+    if let Err(e) = built {
+        eprintln!("could not open the autoTrim window: {e}");
     }
 }
 
@@ -588,6 +601,7 @@ fn settings() -> Settings {
 #[tauri::command(rename_all = "snake_case")]
 async fn set_auto(
     close_sessions: Option<bool>,
+    archive_codex: Option<bool>,
     stop_servers: Option<bool>,
     close_tabs: Option<bool>,
     dry_run: Option<bool>,
@@ -596,6 +610,9 @@ async fn set_auto(
         let mut pairs: Vec<(&str, String)> = Vec::new();
         if let Some(v) = close_sessions {
             pairs.push(("auto_close_sessions", v.to_string()));
+        }
+        if let Some(v) = archive_codex {
+            pairs.push(("auto_archive_codex", v.to_string()));
         }
         if let Some(v) = stop_servers {
             pairs.push(("auto_stop_servers", v.to_string()));
@@ -692,6 +709,16 @@ async fn close_session(
 }
 
 #[tauri::command]
+async fn archive_codex_task(task: autotrim::codex::Task) -> Result<actions::ActionRecord, String> {
+    off_thread(move || actions::archive_codex_task(&task)).await
+}
+
+#[tauri::command]
+async fn restore_codex_task(action_id: String) -> Result<actions::ActionRecord, String> {
+    off_thread(move || actions::restore_codex_task(&action_id)).await
+}
+
+#[tauri::command]
 async fn stop_server(
     pid: u32,
     force: bool,
@@ -764,6 +791,7 @@ fn main() {
             set_auto,
             tab_cleanup::set_tab_rules,
             tab_cleanup::preview_tab_rules,
+            tab_cleanup::suggest_tab_rules,
             set_open_window_at_launch,
             service_info,
             service_install,
@@ -771,6 +799,8 @@ fn main() {
             service_restart,
             hide_window,
             close_session,
+            archive_codex_task,
+            restore_codex_task,
             stop_server,
             close_tabs,
             quit_app,
@@ -811,6 +841,7 @@ fn main() {
                         std::thread::spawn(move || {
                             let now = settings_now();
                             let on = now.auto_close_sessions
+                                || now.auto_archive_codex
                                 || now.auto_stop_servers
                                 || now.auto_close_tabs;
                             if let Err(e) = toggle_auto(!on) {

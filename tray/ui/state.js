@@ -1,10 +1,59 @@
 // Explicit application state and pure selectors.
 import { plural } from "./format.js";
-const state = { actionReview: null, domainEditor: null, tabPreview: { requestId: 0, busy: false, rows: [], error: "" }, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), searchOpen: new Set(), settingsBusy: false, update: null, updateBusy: false,
+const state = { actionReview: null, tabsClosing: false, domainEditor: null, tabPreview: { requestId: 0, busy: false, rows: [], error: "" }, settingsRevision: 0, snap: null, src: null, log: [], settings: null, service: null, view: window.location?.hash === "#settings" ? "settings" : "overview", showAll: false, tabSort: "idle", tabReverse: false, tabFilter: "", tabProfile: "", sessSort: "rss", sessReverse: false, sessFilter: "", sessState: "all", tabState: "all", listState: new Map(), searchOpen: new Set(), settingsBusy: false, update: null, updateBusy: false,
   // Things closed from here that the daemon's snapshot has not caught up with yet.
   gone: { tabs: new Set(), pids: new Set() } };
 
 const armed = {};
+state.expandedAction = null;
+
+const ACTIVITY_WINDOW = 600;
+state.activityHistory = [];
+
+// Keep only observed samples; polling the same snapshot must not invent history.
+function recordActivity(snap) {
+  if (!Number.isFinite(snap?.taken_at) || !snap.system) return;
+  const history = state.activityHistory, last = history.at(-1);
+  if (last && snap.taken_at < last.taken_at) return;
+  const sample = { taken_at: snap.taken_at, used_mem: snap.system.used_mem,
+    cpu_pct: snap.system.cpu_pct, used_swap: snap.system.used_swap };
+  if (last?.taken_at === sample.taken_at) history[history.length - 1] = sample;
+  else history.push(sample);
+  state.activityHistory = history.filter(point => point.taken_at >= sample.taken_at - ACTIVITY_WINDOW).slice(-601);
+}
+
+// Summarize the bounded action history, never cumulative physical RAM savings.
+function cleanupImpact(log = state.log) {
+  const unique = new Map();
+  log.forEach((record, index) => unique.set(record.id || index, record));
+  const records = [...unique.values()];
+  const impact = { recorded: records.length, closed: 0, automatic: 0, footprint: 0, measured: 0, estimated: false, latest: null };
+  const closing = new Set(["close_session", "close_tab", "stop_server", "quit_app"]);
+  for (const record of records) {
+    if (record.mode === "dry-run" || ["dry_run", "intent", "skipped"].includes(record.status)) continue;
+    const observation = record.memory_observation;
+    const validSample = sample => sample && [sample.taken_at_ms, sample.used_mem, sample.used_swap].every(value => Number.isFinite(value) && value >= 0);
+    if (validSample(observation?.before) && validSample(observation?.after)
+      && observation.after.taken_at_ms >= observation.before.taken_at_ms
+      && (!impact.latest || observation.after.taken_at_ms > impact.latest.after.taken_at_ms)) {
+      impact.latest = observation;
+    }
+    // Already-absent targets and restarted apps did not leave a closed workload.
+    const legacy = !record.status || record.status === "legacy";
+    const success = record.status === "success" || legacy && /^(terminated|closed|stopped|quit)\b/i.test(record.result);
+    if (!closing.has(record.action) || !success || /already gone|not open any more|fail|error|refus|still running|could not/i.test(record.result)) continue;
+    const processes = record.termination?.processes;
+    if (processes && !processes.some(process => ["graceful", "forced"].includes(process.exit))) continue;
+    impact.closed++;
+    if (record.mode === "auto") impact.automatic++;
+    if (Number.isFinite(record.rss) && record.rss > 0) {
+      impact.footprint += record.rss;
+      impact.measured++;
+      if (record.action === "close_tab") impact.estimated = true;
+    }
+  }
+  return impact;
+}
 
 state.appIcons = new Map();
 state.appIconsPending = new Set();
@@ -44,7 +93,7 @@ const POLL_MS = 5000; // how often this window reads the daemon's snapshot
 
 const sync = { lastPoll: 0, scans: 0, requestId: 0, acceptedRequest: 0, acceptedFresh: false };
 
-const autoMode = c => !c || !(c.auto_close_sessions || c.auto_stop_servers || c.auto_close_tabs) ? "off" : c.auto_dry_run ? "preview" : "on";
+const autoMode = c => !c || !(c.auto_close_sessions || c.auto_archive_codex || c.auto_stop_servers || c.auto_close_tabs) ? "off" : c.auto_dry_run ? "preview" : "on";
 
 const autoModeWord = () => autoMode(state.settings) === "off" ? "" : autoMode(state.settings) === "preview" ? "preview only" : "on";
 
@@ -56,15 +105,18 @@ const tabKey = (b, t) => JSON.stringify([b.name, t.id, t.profile, t.url]);
 
 const sessionName = x => x.session_name || x.project || "Unnamed session";
 
+function codexBackend(pid) { return state.snap?.codex_backends?.find(b => b.pid === pid && !b.error); }
+
 function sessionCount(list) {
   const engines = list.filter(x => x.engine).length, standalone = list.length - engines;
-  const tasks = list.flatMap(x => x.threads || []).filter(t => !t.helper).length;
-  return [engines ? plural(engines, "backend") : "", standalone ? plural(standalone, "session") : "", tasks ? plural(tasks, "loaded task") : ""].filter(Boolean).join(" · ") || "0 sessions";
+  const loaded = list.reduce((n, x) => n + (codexBackend(x.pid)?.tasks.length || 0), 0);
+  const observed = list.flatMap(x => (x.threads || []).filter(t => !t.helper && !codexBackend(x.pid)?.tasks.some(v => v.id === t.id))).length;
+  return [engines ? plural(engines, "backend") : "", standalone ? plural(standalone, "session") : "", loaded ? plural(loaded, "loaded task") : "", observed ? plural(observed, "observed task") : ""].filter(Boolean).join(" · ") || "0 sessions";
 }
 
 const taskSearch = t => [t.name, t.first_prompt, t.cwd, t.id].join(" ").toLowerCase();
 
-const sessionProtection = x => goneSession(x) ? "Closed" : x.is_self ? "This session" : x.engine ? "App engine" : x.state === "active" ? "In use" : "";
+const sessionProtection = x => goneSession(x) ? "Closed" : x.is_self ? "Current session · kept open" : x.engine ? "Shared app engine · closing affects all tasks" : x.state === "active" ? "Active session · kept open" : "";
 
 function reconcileList(key, rows) {
   let saved = state.listState.get(key);
@@ -151,7 +203,7 @@ const canCloseTab = (b, t) => b.can_close_tabs && !goneTab(t) && !t.pinned && !t
 
 function filteredSessions(list) {
   const q = state.sessFilter.trim().toLowerCase();
-  const result = list.filter(x => !goneSession(x) && (state.sessState === "all" || x.state === state.sessState) && (!q || [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q) || (x.threads || []).some(t => taskSearch(t).includes(q))))
+  const result = list.filter(x => !goneSession(x) && (state.sessState === "all" || x.state === state.sessState) && (!q || [x.session_name, x.project, x.first_prompt, x.host].join(" ").toLowerCase().includes(q) || [...(x.threads || []), ...(codexBackend(x.pid)?.tasks || [])].some(t => taskSearch(t).includes(q))))
     .sort((a, b) => state.sessSort === "idle" ? (b.idle_secs ?? b.quiet_for_secs ?? -1) - (a.idle_secs ?? a.quiet_for_secs ?? -1) : state.sessSort === "age" ? b.age_secs - a.age_secs : state.sessSort === "name" ? String(a.session_name ?? a.project).localeCompare(String(b.session_name ?? b.project)) : b.rss - a.rss);
   return state.sessReverse ? result.reverse() : result;
 }
@@ -164,9 +216,9 @@ function filteredTabs(b, filter = state.tabState) {
 }
 
 function autoModeValues(c, mode) {
-  if (mode === "off") return { close_sessions: false, stop_servers: false, close_tabs: false };
-  const anyTarget = c.auto_close_sessions || c.auto_stop_servers || c.auto_close_tabs;
-  return { close_sessions: c.auto_close_sessions || !anyTarget, stop_servers: c.auto_stop_servers, close_tabs: c.auto_close_tabs, dry_run: mode === "preview" };
+  if (mode === "off") return { close_sessions: false, archive_codex: false, stop_servers: false, close_tabs: false };
+  const anyTarget = c.auto_close_sessions || c.auto_archive_codex || c.auto_stop_servers || c.auto_close_tabs;
+  return { close_sessions: c.auto_close_sessions || !anyTarget, archive_codex: !!c.auto_archive_codex, stop_servers: c.auto_stop_servers, close_tabs: c.auto_close_tabs, dry_run: mode === "preview" };
 }
 
 function actionSucceeded(record) {
@@ -180,4 +232,4 @@ function domainInactivityLabel(hours) {
     ? plural(Math.round(hours * 60), "minute") : plural(hours, "hour");
 }
 
-export { domainInactivityLabel, domainRecommendations, state, armed, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };
+export { ACTIVITY_WINDOW, recordActivity, cleanupImpact, domainInactivityLabel, domainRecommendations, state, armed, listModels, goneTab, goneSession, holders, holderByKey, appIconName, POLL_MS, sync, autoMode, autoModeWord, sessionKey, tabKey, sessionName, sessionCount, codexBackend, taskSearch, sessionProtection, reconcileList, isStale, sitesOf, hostnameOfTab, siteHostChoices, canCloseSession, canCloseTab, filteredSessions, filteredTabs, autoModeValues, actionSucceeded };

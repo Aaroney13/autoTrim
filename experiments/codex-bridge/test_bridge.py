@@ -170,7 +170,7 @@ class BackendTest(unittest.TestCase):
         (self.directory / 'codex').mkdir()
         (self.directory / 'sqlite').mkdir()
         self.env = {**os.environ, 'CODEX_HOME': str(self.directory / 'codex'),
-                    'CODEX_SQLITE_HOME': str(self.directory / 'sqlite'),
+                    'CODEX_SQLITE_HOME': str(self.directory / 'codex'),
                     'AUTOTRIM_CODEX_BRIDGE_DIR': str(self.directory / 'registry'),
                     'AUTOTRIM_CODEX_REAL_CLI': os.environ['AUTOTRIM_TEST_CODEX_CLI']}
         self.log = (self.directory / 'stderr.log').open('wb')
@@ -242,6 +242,48 @@ class BackendTest(unittest.TestCase):
         self.process.stdin.close()
         self.assert_shutdown()
         self.assertEqual(self.process.returncode, 0)
+
+    def test_autotrim_controller_archive_restore(self):
+        import sqlite3
+        home = self.directory / 'codex'
+        # Minimal desktop stores in this disposable Codex home only.
+        (home / 'automations').mkdir(exist_ok=True)
+        (home / '.codex-global-state.json').write_text(json.dumps({'queued-follow-ups': {}}))
+        (home / 'sqlite').mkdir(exist_ok=True)
+        for name, statements in {
+            'queue_1.sqlite': ['CREATE TABLE IF NOT EXISTS queued_items (thread_id TEXT)'],
+            'goals_1.sqlite': ['CREATE TABLE IF NOT EXISTS thread_goals (thread_id TEXT, status TEXT)'],
+            'sqlite/codex-dev.db': ['CREATE TABLE automations (target_thread_id TEXT)', 'CREATE TABLE automation_runs (thread_id TEXT)'],
+        }.items():
+            with sqlite3.connect(home / name) as db:
+                for sql in statements: db.execute(sql)
+        first = self.synthetic_task('archive by AutoTrim')
+        time.sleep(3)
+        keep = self.synthetic_task('keep running')
+        helper = (HERE / 'wire.py').read_text() + '\n' + (HERE.parents[1] / 'src/codex_control.py').read_text()
+        def control(operation, task=None, automatic=None):
+            result = subprocess.run([sys.executable, '-I', '-c', helper], input=json.dumps({
+                'operation': operation, 'registry': str(self.directory / 'registry'), 'task': task, 'automatic': automatic,
+            }), text=True, capture_output=True, timeout=25, check=True)
+            result = json.loads(result.stdout)
+            self.assertNotIn('error', result, result)
+            return result['ok']
+        backends = control('inspect')
+        self.assertIsNone(backends[0]['error'], backends)
+        task = next(t for t in backends[0]['tasks'] if t['id'] == first)
+        kept = next(t for t in backends[0]['tasks'] if t['id'] == keep)
+        self.assertGreater(kept['updated_at'], task['updated_at'], backends)
+        self.assertIsNone(task['protection'])
+        reviewed = control('prepare', task)
+        config = self.directory / 'config.toml'
+        config.write_text('auto_archive_codex = true\n')
+        meta = config.stat()
+        automatic = {'config_path': str(config), 'config_stamp': [meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns], 'stale_after_secs': 0}
+        self.assertEqual(control('archive', reviewed, automatic)['result'], 'archived and verified unloaded')
+        self.assertEqual(self.desktop.request('thread/loaded/list', {})['data'], [keep])
+        self.assertIsNone(self.process.poll(), 'shared backend remains running')
+        self.assertEqual(control('restore', reviewed)['result'], 'restored')
+        self.assertEqual(control('restore', reviewed)['result'], 'already restored')
 
     def test_sigterm_removes_only_its_backend_and_registry(self):
         self.process.send_signal(signal.SIGTERM)
